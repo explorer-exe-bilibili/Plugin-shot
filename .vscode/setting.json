@@ -1,0 +1,16 @@
+{
+    "cmake.useCMakePresets": "always",
+    "cmake.configureOnOpen": true,
+    "cmake.buildBeforeRun": true,
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "files.encoding": "utf8",
+    "files.associations": {
+        "*.h":   "cpp",
+        "*.hpp": "cpp"
+    },
+    "files.exclude": {
+        "build": true,
+        ".cache": true,
+        "out": true
+    }
+}

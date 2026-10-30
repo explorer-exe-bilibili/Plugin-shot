@@ -1,0 +1,36 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "CMake: configure (debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [ "--preset", "debug" ],
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
+            "label": "CMake: build (debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [ "--build", "--preset", "debug" ],
+            "problemMatcher": [ "$gcc" ],
+            "group": { "kind": "build", "isDefault": true }
+        },
+        {
+            "label": "CMake: clean",
+            "type": "shell",
+            "command": "cmake",
+            "args": [ "--build", "--preset", "debug", "--target", "clean" ],
+            "problemMatcher": []
+        },
+        {
+            "label": "CMake: build (auto, no kill)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [ "--build", "--preset", "debug", "--", "-DENABLE_KILL_RUNNING=OFF" ],
+            "problemMatcher": [ "$gcc" ],
+            "group": "build"
+        }
+    ]
+}
