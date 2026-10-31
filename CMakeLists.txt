@@ -771,11 +771,13 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND}
             "-DVCPKG_BIN_DIR=${VCPKG_BIN_DIR}"
             "-DVCPKG_LIB_DIR=${VCPKG_LIB_DIR}"
+            "-DVCPKG_DEBUG_BIN_DIR=${VCPKG_DEBUG_BIN_DIR}"
+            "-DVCPKG_DEBUG_LIB_DIR=${VCPKG_TRIPLET_DIR}/debug/lib"
             "-DVCPKG_INC_DIR=${VCPKG_INC_DIR}"
             "-DCONTRACT_INCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/include"
             "-DSDK_OUTPUT_DIR=${SDK_OUTPUT_DIR}"
             -P "${EXPORT_SDK_SCRIPT}"
-        COMMENT "导出离线 SDK：include/lib/bin 均无 PDB，无 pkgconfig 噪音"
+        COMMENT "导出离线 SDK：release 在 lib|bin，debug 在 lib\\debug|bin\\debug，均无 PDB"
         VERBATIM
     )
 else()

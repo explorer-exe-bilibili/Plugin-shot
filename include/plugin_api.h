@@ -6,9 +6,7 @@
 
 // 宿主与插件之间的 ABI 契约版本。任何对 Image / IImageProcessor / 三个导出函数
 // 的布局或语义改动都必须递增；宿主读到不匹配的版本会立刻卸载该插件。
-//   1 -> Image 无 channels 字段，plugin_abi_version 返回 uint32_t
-//   2 -> Image 追加 channels（BGRA 语义显式化），plugin_abi_version 改为返回 int
-#define PLUGIN_ABI_VERSION 2
+#define PLUGIN_ABI_VERSION 1
 
 // ============================================================================
 //  二进制兼容前提（务必遵守，否则是未定义行为）
@@ -26,27 +24,34 @@
 //  · stride 以字节计：可以为负（自底向上存储），其绝对值也可以大于 width*channels
 //    （每行尾部有填充）。因此必须按行寻址，不能假设 data 是连续块。
 //  · 可用字节数至少为 (height-1)*|stride| + width*channels。
+
+enum PluginType {
+    Window,
+    Tray,
+    ImageProcessor
+};
 struct Image {
     std::uint8_t* data;
     int width;
     int height;
     int stride;
-    int channels;   // 追加在末尾：不移动既有字段偏移，渐进升级更安全
+    int channels;
 };
 
-class IImageProcessor {
-public:
-    virtual ~IImageProcessor() = default;
+typedef struct{
+    int type;
+    const char* name;
+    void* internal_data;
 
-    // 返回静态存储期的名字，宿主不负责释放。
-    virtual const char* name() const = 0;
+    int (*process)(void* internal_data, Image* image);
+}CPluginHandle;
 
-    // 原地处理。允许抛异常，宿主会逐插件隔离。
-    virtual void process(Image& image) = 0;
-};
-
+#ifdef __cplusplus
 extern "C" {
-SCREENSHOT_API int plugin_abi_version(void);
-SCREENSHOT_API IImageProcessor* plugin_create_processor(void);
-SCREENSHOT_API void plugin_destroy_processor(IImageProcessor* processor);
+#endif
+    SCREENSHOT_API int plugin_abi_version(void);
+    SCREENSHOT_API CPluginHandle* plugin_create_processor(void);
+    SCREENSHOT_API void plugin_destroy(CPluginHandle* Handle);
+#ifdef __cplusplus
 }
+#endif

@@ -120,6 +120,36 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# 4.1 debug 变体：lib/debug 与 bin/debug
+#
+# 为什么必须分目录、绝不能平铺：vcpkg 的 debug 产物里有大量与 release 【同名】的
+# 文件（jpeg62.dll / turbojpeg.dll / liblzma.dll / libwebp*.dll / jpeg.lib /
+# lzma.lib ... 文件名里没有 d 后缀）。平铺进同一个 sdk/bin 或 sdk/lib 会互相
+# 覆盖 —— SDK 会被悄悄替换成其中一种变体，而且不会有任何报错。
+# ---------------------------------------------------------------------------
+if(DEFINED VCPKG_DEBUG_LIB_DIR AND IS_DIRECTORY "${VCPKG_DEBUG_LIB_DIR}")
+    file(GLOB _debug_libs "${VCPKG_DEBUG_LIB_DIR}/*.lib")
+    if(_debug_libs)
+        _copy_files_flat("${SDK_OUTPUT_DIR}/lib/debug" ${_debug_libs})
+        list(LENGTH _debug_libs _debug_lib_count)
+        message(STATUS "export_sdk: ${_debug_lib_count} 个 debug 导入库 -> sdk/lib/debug")
+    endif()
+else()
+    message(WARNING "export_sdk: 未找到 debug 导入库目录 ${VCPKG_DEBUG_LIB_DIR}，SDK 仅含 release")
+endif()
+
+if(DEFINED VCPKG_DEBUG_BIN_DIR AND IS_DIRECTORY "${VCPKG_DEBUG_BIN_DIR}")
+    file(GLOB _debug_dlls "${VCPKG_DEBUG_BIN_DIR}/*.dll")
+    if(_debug_dlls)
+        _copy_files_flat("${SDK_OUTPUT_DIR}/bin/debug" ${_debug_dlls})
+        list(LENGTH _debug_dlls _debug_dll_count)
+        message(STATUS "export_sdk: ${_debug_dll_count} 个 debug 运行时 DLL -> sdk/bin/debug")
+    endif()
+else()
+    message(WARNING "export_sdk: 未找到 debug 运行时目录 ${VCPKG_DEBUG_BIN_DIR}，SDK 仅含 release")
+endif()
+
+# ---------------------------------------------------------------------------
 # 5. 全树清洗：*.pdb / *.pc / pkgconfig 噪音
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE _sdk_pdb "${SDK_OUTPUT_DIR}/*.pdb")
@@ -164,8 +194,10 @@ file(WRITE "${SDK_OUTPUT_DIR}/README.md" "\
 | 目录 | 内容 | 用途 |
 | --- | --- | --- |
 | `include/` | `plugin_api.h`、`plugin_api_export.h`、`opencv4/` | 契约头 + OpenCV 头 |
-| `lib/` | 仅 `*.lib` 导入库 | 链接期使用 |
-| `bin/` | 仅 `*.dll` 运行时库 | **不要拷进插件目录**，见下 |
+| `lib/` | release 版 `*.lib` 导入库 | Release 构建链接期使用 |
+| `lib/debug/` | debug 版 `*.lib`（`opencv_*4d.lib` 等） | Debug 构建链接期使用 |
+| `bin/` | release 版 `*.dll` 运行时库 | **不要拷进插件目录**，见下 |
+| `bin/debug/` | debug 版 `*.dll`（`opencv_*4d.dll` 等） | Debug 宿主/插件运行时使用 |
 
 ## 编译
 
@@ -196,6 +228,14 @@ target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
 4. **PLUGIN_ABI_VERSION 必须与宿主一致**
    版本不匹配的插件会被宿主拒绝加载。升级 SDK 后请整体替换
    `include/`，不要新旧混用。
+
+## debug 变体（重要）
+
+`lib/debug/` 与 `bin/debug/` 是 Debug 构建专用的一套变体。
+**绝对不要把两个变体的 DLL 放进同一个目录**：`jpeg62.dll`、`turbojpeg.dll`、
+`liblzma.dll`、`libwebp*.dll` 这些文件名在 debug 与 release 下【完全相同】，
+混放会互相覆盖且不会有任何报错。运行时的规则是：宿主 exe 所在目录里的那一套
+必须与你编译插件时用的那一套一致（Debug 宿主缺 `opencv_*4d.dll` 会启动失败）。
 
 ## 注意
 
