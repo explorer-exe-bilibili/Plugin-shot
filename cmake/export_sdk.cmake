@@ -48,13 +48,13 @@ function(_copy_files_tree _base _dest)
     endforeach()
 endfunction()
 
-foreach(_required VCPKG_BIN_DIR VCPKG_LIB_DIR VCPKG_INC_DIR CONTRACT_INCLUDE_DIR SDK_OUTPUT_DIR)
+foreach(_required VCPKG_BIN_DIR VCPKG_LIB_DIR VCPKG_INC_DIR CONTRACT_INCLUDE_DIR SDK_OUTPUT_DIR SHOT_CMAKE_DIR)
     if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
         message(FATAL_ERROR "export_sdk: 缺少必需参数 -D${_required}=<path>")
     endif()
 endforeach()
 
-foreach(_required_dir VCPKG_BIN_DIR VCPKG_LIB_DIR VCPKG_INC_DIR CONTRACT_INCLUDE_DIR)
+foreach(_required_dir VCPKG_BIN_DIR VCPKG_LIB_DIR VCPKG_INC_DIR CONTRACT_INCLUDE_DIR SHOT_CMAKE_DIR)
     if(NOT IS_DIRECTORY "${${_required_dir}}")
         message(FATAL_ERROR "export_sdk: 目录不存在 ${_required_dir} = ${${_required_dir}}")
     endif()
@@ -182,7 +182,20 @@ if(_pkgconfig_dirs)
 endif()
 
 # ---------------------------------------------------------------------------
-# 6. README.md —— 写清 include/lib/bin 用法
+# 5.5 cmake/：插件工程构建模块，让 SDK 用户也能直接用 shot_add_plugin()
+# ---------------------------------------------------------------------------
+file(MAKE_DIRECTORY "${SDK_OUTPUT_DIR}/cmake")
+foreach(_module ShotPlugin.cmake AppendPluginMeta.cmake prune_output_dir.cmake)
+    if(EXISTS "${SHOT_CMAKE_DIR}/${_module}")
+        configure_file("${SHOT_CMAKE_DIR}/${_module}" "${SDK_OUTPUT_DIR}/cmake/${_module}" COPYONLY)
+    else()
+        message(WARNING "export_sdk: 缺少构建模块 ${SHOT_CMAKE_DIR}/${_module}")
+    endif()
+endforeach()
+message(STATUS "export_sdk: 插件构建模块 -> sdk/cmake")
+
+# ---------------------------------------------------------------------------
+# 6. README.md —— 写清 include/lib/bin/cmake 用法
 # ---------------------------------------------------------------------------
 file(WRITE "${SDK_OUTPUT_DIR}/README.md" "\
 # 插件开发 SDK
@@ -198,10 +211,28 @@ file(WRITE "${SDK_OUTPUT_DIR}/README.md" "\
 | `lib/debug/` | debug 版 `*.lib`（`opencv_*4d.lib` 等） | Debug 构建链接期使用 |
 | `bin/` | release 版 `*.dll` 运行时库 | **不要拷进插件目录**，见下 |
 | `bin/debug/` | debug 版 `*.dll`（`opencv_*4d.dll` 等） | Debug 宿主/插件运行时使用 |
+| `cmake/` | `ShotPlugin.cmake`、`AppendPluginMeta.cmake`、`prune_output_dir.cmake` | 用 `shot_add_plugin()` 构建插件工程 |
 
 ## 编译
 
+最省事的方式是用 SDK 自带的构建模块（宿主仓库的 `plugins/example_processor` 就是完整样板）：
+
+```cmake
+list(APPEND CMAKE_MODULE_PATH \"<SDK>/cmake\")
+include(ShotPlugin)
+
+shot_add_plugin(my_plugin
+    METADATA     metadata.json
+    SOURCES      src/plugin_entry.cpp src/my_processor.cpp
+    INCLUDE_DIRS include
+    LINK_LIBRARIES opencv_core4 opencv_imgproc4   # 可选
+)
 ```
+
+`shot_add_plugin()` 统一处理 /MD、隐藏符号、产物目录、元数据贴尾与产物剪枝。
+手工搭建时，等价的最小配置是：
+
+```cmake
 include_directories(<SDK>/include <SDK>/include/opencv4)
 link_directories(<SDK>/lib)
 target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
@@ -225,9 +256,18 @@ target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
    类型信息、全局状态、内存分配器全部割裂，表现为莫名崩溃或
    `cv::Exception`。插件产物目录只应出现插件自己的 DLL。
 
-4. **PLUGIN_ABI_VERSION 必须与宿主一致**
+4. **导出四个 C 函数，一个 DLL 可以装多个插件**
+   `plugin_abi_version()` / `plugin_get_count()` / `plugin_create(int index)` /
+   `plugin_destroy(handle)`。索引与 `metadata.json` 的 `plugins[]` 顺序一一对应。
+
+5. **PLUGIN_ABI_VERSION 必须与宿主一致**
    版本不匹配的插件会被宿主拒绝加载。升级 SDK 后请整体替换
    `include/`，不要新旧混用。
+
+6. **metadata.json 会被贴到 DLL 尾部**
+   构建期由 `cmake/AppendPluginMeta.cmake` 追加纯文本标记（见 `plugin_api.h` 的
+   `PLUGIN_META_START_MARKER` / `PLUGIN_META_END_MARKER`）。文件尾的额外数据不影响
+   装载，元数据跟着插件文件走，不会与 DLL 分家。
 
 ## debug 变体（重要）
 

@@ -9,7 +9,7 @@
 
 核心保持极小且稳定，能力通过插件无限扩展（类似 DeepSeek Harness 的思路）。
 
-**宿主**（当前产物名为 `my-project.exe`）负责：
+**宿主**（当前产物名为 `Plugin-shot.exe`）负责：
 
 - 扫描插件目录，动态加载 `.dll` / `.so` / `.dylib`
 - 用 `plugin_abi_version()` 校验 ABI，版本不匹配立刻拒绝加载
@@ -23,14 +23,17 @@
 | 能力 | 状态 |
 | --- | --- |
 | 插件加载 / ABI 校验 / 按类型索引 | ✅ 可用 |
-| `ImageProcessor` 插件类型 | ✅ 可用（`plugins/example_processor` 为最小示例） |
+| 一 DLL 多插件（`plugin_get_count()` + `plugin_create(index)`） | ✅ 可用 |
+| `ImageProcessor` 插件类型 | ✅ 可用（`plugins/example_processor` 一个 DLL 装两个插件） |
+| 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主尚未读取，见路线图） |
+| 插件工程公共构建规则（`shot_add_plugin()`） | ✅ 可用（宿主与离线 SDK 共用） |
 | 离线插件 SDK 导出（`export_sdk` 目标） | ✅ 可用 |
 | `Window` / `Tray` 插件类型 | 🚧 仅有类型枚举，头文件待实现 |
 | 正式截图采集流程 | 🚧 未实现（`main.cpp` 目前用 2×2 假图做冒烟验证） |
 | 录屏等新插件类型 | 📋 规划中 |
 
-> ⚠️ `CMakeLists.txt` 里的 `PROJECT_NAME` 仍是模板占位值 `my-project`，所以产物叫
-> `my-project.exe`。改名只需改这一个变量。
+> 产物名取自 `CMakeLists.txt` 的 `PROJECT_NAME`（当前 `Plugin-shot`）：宿主叫 `Plugin-shot.exe`，
+> 插件落 `bin/plugins/`。应用图标缺失时 `.rc` 会自动降级成不含 ICON 行，所以改名不会把构建搞挂。
 
 ## 目录结构
 
@@ -45,9 +48,13 @@
 │   ├── pluginManager.h     # 插件扫描、ABI 校验、按类型索引
 │   └── PluginInstances/    # 宿主侧插件对象包装（base / ImageProcessor / window / tray）
 ├── src/                    # 宿主实现与入口
-├── plugins/
-│   └── example_processor/  # 最小示例插件：RGB 取反，保留 alpha
-├── cmake/                  # 运行时依赖布局、产物剪枝、SDK 导出、链接前杀进程
+├── plugins/                # 每个子目录都是一个独立插件工程
+│   └── example_processor/  # 完整示例：CMakeLists + metadata.json + include/ + src/
+├── cmake/
+│   ├── ShotPlugin.cmake        # shot_add_plugin()：插件工程公共构建规则
+│   ├── AppendPluginMeta.cmake  # 把 metadata.json 贴到 DLL 尾部
+│   ├── prune_output_dir.cmake  # 产物目录剪枝（不留 pdb/ilk/exp/lib）
+│   └── ...                     # 运行时依赖布局、SDK 导出、链接前杀进程
 └── sdk/                    # export_sdk 生成的离线 SDK（不入库，见 .gitignore）
 ```
 
@@ -71,7 +78,7 @@ cmake --build build/Windows --target export_sdk
 ### 运行
 
 ```bash
-cd build/Windows/bin && ./my-project.exe
+cd build/Windows/bin && ./Plugin-shot.exe
 ```
 
 插件目录按相对路径 `./plugins` 解析，因此**必须在 `bin/` 下启动**。
@@ -90,13 +97,17 @@ cd build/Windows/bin && ./my-project.exe
 
 ## 插件契约
 
-跨边界头只有一个：`include/plugin_api.h`。插件必须导出三个 C 函数：
+跨边界头只有一个：`include/plugin_api.h`。插件必须导出四个 C 函数：
 
 | 符号 | 作用 |
 | --- | --- |
 | `plugin_abi_version()` | 返回 `PLUGIN_ABI_VERSION`，不一致则宿主拒绝加载 |
-| `plugin_create_processor()` | 在插件自己的堆上分配 `CPluginHandle` 并返回 |
+| `plugin_get_count()` | 本模块里有几个插件，`<= 0` 视为空包 |
+| `plugin_create(int index)` | 在插件自己的堆上分配第 `index` 个 `CPluginHandle`；越界返回 `nullptr` |
 | `plugin_destroy(handle)` | 销毁句柄——**只能由插件自己调用**，宿主绝不 `delete` |
+
+一个 DLL 就是**一个插件包**：索引工厂让宿主不必提前知道包里有什么，
+`metadata.json` 的 `plugins[]` 顺序与 `plugin_create(index)` 一一对应。
 
 `CPluginHandle` 携带 `type`（`Window` / `Tray` / `ImageProcessor`）、`name`、
 `internal_data`，以及 `process(internal_data, Image*) -> int`（非 0 表示成功）。
@@ -115,26 +126,52 @@ cd build/Windows/bin && ./my-project.exe
 4. **跨边界不要传 STL 容器 / `std::string` / `cv::Mat`**，除非确认两边 CRT 完全相同；跨边界传的是 C++ vtable，不是纯 C 结构体。
 5. **`PLUGIN_ABI_VERSION` 必须与宿主一致**；升级 SDK 时整体替换 `include/`，不要新旧混用。
 
+### 元数据贴尾
+
+`metadata.json` 由 `cmake/AppendPluginMeta.cmake` 在**链接之后**追加到 DLL 尾部：
+
+```text
+<原始二进制>
+---PLUGIN_META_START---
+{ "package": "example_processor", "plugins": [ ... ] }
+---PLUGIN_META_END---
+```
+
+- 纯文本标记，不需要 Python、不需要贴尾小工具，宿主 `rfind` 就能取出来。
+- 文件尾的额外数据不在 PE/ELF 的节表里，加载器直接忽略，不影响装载。
+- 元数据跟着文件走：用户复制或重命名插件也不会出现「清单与 DLL 分家」。
+- 标记字面量只在 `plugin_api.h` 里定义一次，构建脚本构建期直接读头文件取宏值。
+
 ### 写一个插件
 
-最小可用实现见 [`plugins/example_processor/main.cpp`](plugins/example_processor/main.cpp)（不足 60 行）。
-SDK 目录说明与完整编译约束见 [`sdk/README.md`](document/README_SDK.md)。
+完整样板见 [`plugins/example_processor/`](plugins/example_processor/README.md)：
+一个 DLL 里装两个插件，目录结构 `CMakeLists.txt` + `metadata.json` + `include/` + `src/`。
+SDK 目录说明与完整编译约束见 [`document/README_SDK.md`](document/README_SDK.md)。
 
 ```cpp
 #include "plugin_api.h"
 
-// int process_blur(void* internal_data, Image* image);  // 非 0 表示成功
+// 索引表：顺序必须与 metadata.json 的 plugins[] 一致
+constexpr Entry kEntries[] = {
+    {::ImageProcessor, "acme.blur",   &process_blur},
+    {::ImageProcessor, "acme.sharpen", &process_sharpen},
+};
 
 extern "C" {
 
 SCREENSHOT_API int plugin_abi_version(void) { return PLUGIN_ABI_VERSION; }
 
-SCREENSHOT_API CPluginHandle* plugin_create_processor(void) {
+SCREENSHOT_API int plugin_get_count(void) {
+    return static_cast<int>(std::size(kEntries));
+}
+
+SCREENSHOT_API CPluginHandle* plugin_create(int index) {
+    if (index < 0 || index >= static_cast<int>(std::size(kEntries))) return nullptr;
     auto* handle = new CPluginHandle{};
-    handle->type = PluginType::ImageProcessor;
-    handle->name = "acme.blur";
+    handle->type = kEntries[index].type;
+    handle->name = kEntries[index].name;
     handle->internal_data = nullptr;
-    handle->process = &process_blur;
+    handle->process = kEntries[index].process;
     return handle;
 }
 
@@ -143,19 +180,20 @@ SCREENSHOT_API void plugin_destroy(CPluginHandle* handle) { delete handle; }
 }
 ```
 
-CMake 侧指到 `bin/plugins/` 即可，注意 `PREFIX ""` 与运行库设置：
+插件工程的 CMakeLists 只有三件事——找模块、列源文件、指元数据：
 
 ```cmake
-add_library(my_plugin SHARED main.cpp)
-set_target_properties(my_plugin PROPERTIES
-    PREFIX ""
-    CXX_VISIBILITY_PRESET hidden
-    VISIBILITY_INLINES_HIDDEN ON
-    RUNTIME_OUTPUT_DIRECTORY "${HOST_BIN}/plugins"
-    LIBRARY_OUTPUT_DIRECTORY "${HOST_BIN}/plugins"
-    MSVC_RUNTIME_LIBRARY "MultiThreaded<$<$<CONFIG:Debug>:Debug>DLL")
-target_include_directories(my_plugin PRIVATE "${SDK}/include" "${SDK}/include/opencv4")
+list(APPEND CMAKE_MODULE_PATH "${HOST}/cmake")   # 或 <SDK>/cmake
+include(ShotPlugin)
+
+shot_add_plugin(acme_tools
+    METADATA     metadata.json
+    SOURCES      src/plugin_entry.cpp src/blur.cpp src/sharpen.cpp
+    INCLUDE_DIRS include)
 ```
+
+`shot_add_plugin()` 统一处理 `/MD`、`PREFIX ""`、隐藏符号、产物目录、pdb 重定向、
+贴元数据与产物剪枝——这些规则以前散落在根 `CMakeLists.txt` 里，容易和文档漂移。
 
 ## 路线图
 
@@ -163,7 +201,9 @@ target_include_directories(my_plugin PRIVATE "${SDK}/include" "${SDK}/include/op
 - [x] `ImageProcessor` 契约 + 示例插件 + 离线 SDK 导出
 - [ ] 正式截图采集（全屏 / 区域 / 窗口）与 `Window`、`Tray` 插件
 - [ ] 录屏类插件（新增 `PluginType` 与对应契约，届时递增 `PLUGIN_ABI_VERSION`）
-- [ ] 插件元数据（版本、作者、依赖声明）与热重载
+- [x] 插件元数据贴尾（纯 CMake 追加 `metadata.json`）与一 DLL 多插件
+- [ ] 宿主读取元数据（校验 id/type/依赖后再 `LoadLibrary`）
+- [ ] 插件热重载与插件间依赖声明
 
 ## 平台
 

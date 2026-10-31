@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "package": "example_processor",
+  "abi_version": 1,
+  "plugins": [
+    {
+      "id": "example.invert",
+      "type": "image_processor",
+      "name": "Invert (keep alpha)",
+      "version": "1.0.0"
+    },
+    {
+      "id": "example.grayscale",
+      "type": "image_processor",
+      "name": "Grayscale (BT.601)",
+      "version": "1.0.0"
+    }
+  ]
+}

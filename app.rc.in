@@ -1,8 +1,8 @@
 #include <windows.h>
 
 // ---- 应用程序图标 ----
-// 图标文件由 CMake 复制到生成目录，与 .rc 同目录
-IDI_ICON1 ICON "@PROJECT_NAME@.ico"
+// 由 CMake 决定：图标存在时写 ICON 行，缺失时降级为注释（重命名项目后不会挂构建）
+@APP_ICON_RESOURCE_LINE@
 
 // ---- 版本信息 ----
 VS_VERSION_INFO VERSIONINFO

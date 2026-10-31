@@ -333,22 +333,26 @@ configure_file(
 #  11. Windows 资源文件处理
 # ============================================================================
 if(WIN32)
-    configure_file(
-        "${APP_RC_IN}"
-        "${CMAKE_BINARY_DIR}/generated/${PROJECT_NAME}.rc"
-        @ONLY
-    )
-    set(RESOURCE_FILES "${CMAKE_BINARY_DIR}/generated/${PROJECT_NAME}.rc")
-
+    # 图标必须在 .rc 之前定稿：改名后 ${PROJECT_NAME}.ico 往往还没跟上，
+    # 而 .rc 里写死 ICON 语句会让 rc.exe 直接 RC2135 失败。缺失就降级成注释。
     if(EXISTS "${APP_ICON}")
         configure_file(
             "${APP_ICON}"
             "${CMAKE_BINARY_DIR}/generated/${PROJECT_NAME}.ico"
             COPYONLY
         )
+        set(APP_ICON_RESOURCE_LINE "IDI_ICON1 ICON \"${PROJECT_NAME}.ico\"")
     else()
-        message(WARNING "App icon not found: ${APP_ICON}")
+        message(WARNING "App icon not found: ${APP_ICON}，生成的 .rc 不含图标资源")
+        set(APP_ICON_RESOURCE_LINE "// 无图标资源：${APP_ICON} 不存在")
     endif()
+
+    configure_file(
+        "${APP_RC_IN}"
+        "${CMAKE_BINARY_DIR}/generated/${PROJECT_NAME}.rc"
+        @ONLY
+    )
+    set(RESOURCE_FILES "${CMAKE_BINARY_DIR}/generated/${PROJECT_NAME}.rc")
 
     if(ENABLE_UPGRADE)
         configure_file(
@@ -518,59 +522,36 @@ if(ENABLE_UPGRADE)
 endif()
 
 # ============================================================================
-#  15.1 示例插件目标 —— plugins/example_processor/
+#  15.1 插件工程 —— plugins/*/
 #
-#  该目录源码由插件侧维护，configure 期可能尚不存在，故用 if(EXISTS ...) 保护。
+#  每个插件是一个独立的小工程：自带 CMakeLists.txt + metadata.json + include/ + src/。
+#  构建规则统一由 cmake/ShotPlugin.cmake 的 shot_add_plugin() 提供（/MD、隐藏符号、
+#  输出目录、贴元数据、剪枝），宿主这里只负责发现并纳入，不再重复写目标属性。
 #  关键：绝不为插件复制任何依赖 DLL。宿主已 target_link_libraries(OpenCV_LIBS)，
 #  进程启动即加载 opencv_*4.dll，插件必须复用宿主那份实例；自带副本会在
 #  同一进程内造出第二个 OpenCV（类型信息/内存分配器全部割裂）。
 # ============================================================================
-set(EXAMPLE_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins/example_processor")
+set(SHOT_APP_OUTPUT_DIR       "${APP_OUTPUT_DIR}")
+set(SHOT_PLUGINS_OUTPUT_DIR   "${PLUGINS_OUTPUT_DIR}")
+set(SHOT_BUILD_LIB_DIR        "${CMAKE_BINARY_DIR}/lib")
+set(SHOT_PDB_DIR              "${PROJECT_PDB_DIR}/plugins")
+set(SHOT_CONTRACT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${INC_DIR}")
 
-if(EXISTS "${EXAMPLE_PLUGIN_DIR}/main.cpp")
-    file(GLOB EXAMPLE_PLUGIN_SOURCES CONFIGURE_DEPENDS
-        "${EXAMPLE_PLUGIN_DIR}/*.cpp"
-        "${EXAMPLE_PLUGIN_DIR}/*.h"
-        "${EXAMPLE_PLUGIN_DIR}/*.hpp"
-    )
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ShotPlugin.cmake")
 
-    add_library(example_processor SHARED ${EXAMPLE_PLUGIN_SOURCES})
+file(GLOB SHOT_PLUGIN_PROJECTS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/plugins/*/CMakeLists.txt"
+)
 
-    set_target_properties(example_processor PROPERTIES
-        OUTPUT_NAME               "example_processor"
-        PREFIX                    ""
-        CXX_VISIBILITY_PRESET     hidden
-        VISIBILITY_INLINES_HIDDEN ON
-        RUNTIME_OUTPUT_DIRECTORY  "${PLUGINS_OUTPUT_DIR}"
-        LIBRARY_OUTPUT_DIRECTORY  "${PLUGINS_OUTPUT_DIR}"
-        # 导入库留在 build 树，绝不能落进 bin/plugins/
-        ARCHIVE_OUTPUT_DIRECTORY  "${CMAKE_BINARY_DIR}/lib"
-        # 缺陷2：链接器默认把 .pdb 放在 dll 旁边（= bin/plugins/），必须重定向。
-        # 注意 .ilk（增量链接库）没有对应的 CMake 属性，只能靠 POST_BUILD 剪掉。
-        PDB_OUTPUT_DIRECTORY         "${PROJECT_PDB_DIR}/plugins"
-        COMPILE_PDB_OUTPUT_DIRECTORY "${PROJECT_PDB_DIR}/plugins"
-    )
-
-    target_include_directories(example_processor PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/${INC_DIR}"
-        ${OpenCV_INCLUDE_DIRS}
-    )
-
-    target_compile_definitions(example_processor PRIVATE NOMINMAX)
-
-    target_link_libraries(example_processor PRIVATE
-        ${OpenCV_LIBS}
-    )
-
-    if(MSVC)
-        set_property(TARGET example_processor PROPERTY
-            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-        target_compile_options(example_processor PRIVATE /utf-8)
-    endif()
-
-    message(STATUS "示例插件目标 example_processor -> ${PLUGINS_OUTPUT_DIR}")
+if(SHOT_PLUGIN_PROJECTS)
+    foreach(_plugin_project IN LISTS SHOT_PLUGIN_PROJECTS)
+        get_filename_component(_plugin_dir  "${_plugin_project}" DIRECTORY)
+        get_filename_component(_plugin_name "${_plugin_dir}" NAME)
+        add_subdirectory("${_plugin_dir}" "${CMAKE_BINARY_DIR}/plugins/${_plugin_name}")
+        message(STATUS "插件工程 ${_plugin_name} -> ${PLUGINS_OUTPUT_DIR}")
+    endforeach()
 else()
-    message(STATUS "跳过示例插件目标：${EXAMPLE_PLUGIN_DIR}/main.cpp 尚未创建")
+    message(STATUS "跳过插件工程：plugins/*/CMakeLists.txt 尚未创建")
 endif()
 
 
@@ -758,14 +739,6 @@ if(WIN32)
         VERBATIM
     )
 
-    if(TARGET example_processor)
-        add_custom_command(TARGET example_processor POST_BUILD
-            COMMAND ${PRUNE_OUTPUT_COMMAND}
-            COMMENT "剪枝插件输出目录：只保留插件自身 *.dll（清 pdb/ilk/exp/lib）"
-            VERBATIM
-        )
-    endif()
-
     # ---- 离线 SDK 导出（手动 target：cmake --build <dir> --target export_sdk）----
     add_custom_target(export_sdk
         COMMAND ${CMAKE_COMMAND}
@@ -775,6 +748,7 @@ if(WIN32)
             "-DVCPKG_DEBUG_LIB_DIR=${VCPKG_TRIPLET_DIR}/debug/lib"
             "-DVCPKG_INC_DIR=${VCPKG_INC_DIR}"
             "-DCONTRACT_INCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "-DSHOT_CMAKE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake"
             "-DSDK_OUTPUT_DIR=${SDK_OUTPUT_DIR}"
             -P "${EXPORT_SDK_SCRIPT}"
         COMMENT "导出离线 SDK：release 在 lib|bin，debug 在 lib\\debug|bin\\debug，均无 PDB"

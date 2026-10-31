@@ -21,7 +21,9 @@
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
-foreach(_required APP_OUTPUT_DIR PLUGINS_OUTPUT_DIR)
+# APP_OUTPUT_DIR 允许为空：插件工程用 SDK 独立构建时没有宿主产物目录。
+# 空值/不存在的目录在下面按"跳过"处理，不报错。
+foreach(_required PLUGINS_OUTPUT_DIR)
     if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
         message(FATAL_ERROR "prune_output_dir: 缺少必需参数 -D${_required}=<path>")
     endif()
