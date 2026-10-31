@@ -19,7 +19,7 @@
 # ============================================================================
 
 # --- 项目标识 ------------------------------------------------
-set(PROJECT_NAME                  "my-project")            # 项目名称 = 可执行文件名
+set(PROJECT_NAME                  "Plugin-shot")            # 项目名称 = 可执行文件名
 set(PROJECT_DESCRIPTION           "A cross-platform C++ project")
 set(PROJECT_HOMEPAGE_URL          "https://alist.1class.top/")
 set(PROJECT_COMPANY               "My Company")           # 出现在 exe 属性的 CompanyName
