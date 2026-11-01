@@ -15,7 +15,8 @@
 #  规则（硬约束）：
 #    APP_OUTPUT_DIR     : 不得出现 *.pdb（*.ilk 一并清掉）
 #    PLUGINS_OUTPUT_DIR : 只允许插件自身 *.dll；*.pdb / *.ilk / *.exp / *.lib
-#                         以及任何非 .dll 的文件都清掉
+#                         以及任何非 .dll 的文件都清掉；与 vcpkg 运行时 DLL
+#                         同名的（base 依赖）也清掉，见第 2.5 节
 #
 #  禁止 cmake -E remove 带通配符（不展开）；一律 file(GLOB)+file(REMOVE)。
 # ============================================================================
@@ -73,6 +74,38 @@ if(IS_DIRECTORY "${PLUGINS_OUTPUT_DIR}")
         file(REMOVE ${_non_dll})
         math(EXPR _pruned_total "${_pruned_total} + ${_non_dll_count}")
         message(STATUS "prune_output_dir: 插件目录清掉 ${_non_dll_count} 个非 *.dll 文件")
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# 2.5 插件目录不许出现基础依赖（vcpkg 的 applocal 会把它们拷到插件旁边）
+#
+#    -DDEP_SCAN_DIRS="<vcpkg bin>;<vcpkg debug bin>"：凡是这些目录里同名的 DLL
+#    都算基础依赖，一律从插件目录清走。
+#
+#    为什么必须清：插件一旦链接 OpenCV，vcpkg 的 applocal 就会在 POST_BUILD 把
+#    opencv_*4d.dll 之类拷到插件旁边。那会在同一进程里造出第二个 OpenCV ——
+#    类型信息、全局状态、内存分配器全部割裂，表现为莫名其妙的崩溃。插件必须复用
+#    宿主已加载的那一份（宿主 exe 旁边那套由同一机制布置）。
+#    这里只作用于 PLUGINS_OUTPUT_DIR：宿主输出目录当然要留着这些 DLL。
+# ---------------------------------------------------------------------------
+if(DEFINED DEP_SCAN_DIRS AND DEP_SCAN_DIRS AND IS_DIRECTORY "${PLUGINS_OUTPUT_DIR}")
+    file(GLOB _plugin_dlls "${PLUGINS_OUTPUT_DIR}/*.dll")
+    set(_leaked_deps "")
+    foreach(_dll IN LISTS _plugin_dlls)
+        get_filename_component(_dll_name "${_dll}" NAME)
+        foreach(_scan IN LISTS DEP_SCAN_DIRS)
+            if(EXISTS "${_scan}/${_dll_name}")
+                list(APPEND _leaked_deps "${_dll}")
+                break()
+            endif()
+        endforeach()
+    endforeach()
+    if(_leaked_deps)
+        list(LENGTH _leaked_deps _leaked_count)
+        file(REMOVE ${_leaked_deps})
+        math(EXPR _pruned_total "${_pruned_total} + ${_leaked_count}")
+        message(STATUS "prune_output_dir: 插件目录清掉 ${_leaked_count} 个基础依赖 DLL（applocal 拷进来的）")
     endif()
 endif()
 

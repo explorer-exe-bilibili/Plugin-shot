@@ -7,6 +7,7 @@
 
 namespace Plugin{
 enum PluginType{
+    Lib,
     Window,
     Tray,
     ImageProcessor

@@ -38,19 +38,14 @@ public:
         DllHandler(const DllHandler&) = delete;
         DllHandler& operator=(const DllHandler&) = delete;
 
-        void* getFunction(const std::string& funcName) {
+        // 取符号：找不到返回 nullptr，不抛。
+        // 契约只有一个必需符号（shot_module_entry），"找不到"本身就是一种可处理的
+        // 结果（这个 DLL 不是插件），所以这里不需要抛异常的版本。
+        void* tryGetFunction(const std::string& funcName) noexcept {
 #ifdef _WIN32
-            void* func = reinterpret_cast<void*>(GetProcAddress(m_handle, funcName.c_str()));
-            if (!func) {
-                throw std::runtime_error("Failed to get function: " + funcName);
-            }
-            return func;
+            return reinterpret_cast<void*>(GetProcAddress(m_handle, funcName.c_str()));
 #else
-            void* func = dlsym(m_handle, funcName.c_str());
-            if (!func) {
-                throw std::runtime_error("Failed to get function: " + funcName);
-            }
-            return func;
+            return dlsym(m_handle, funcName.c_str());
 #endif
         }
 };

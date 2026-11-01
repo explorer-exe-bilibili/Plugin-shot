@@ -54,20 +54,9 @@ set(UPGRADE_TARGET                "upgrade")
 # --- C++ 标准 ------------------------------------------------
 set(CPP_STANDARD                  23)                     # 17 / 20 / 23
 
-# ========================================================================
-#  >>> DEPENDENCIES — 你的项目依赖在这里添加 <<<
-# ========================================================================
-#  用 find_package(xxx CONFIG REQUIRED) 查找，vcpkg 会处理安装。
-#  添加后，同步更新下方 [15. 查找并链接依赖库] 中对应的 include / link。
-#
-#  示例：
-#    find_package(glfw3 CONFIG REQUIRED)
-#    find_package(nlohmann_json CONFIG REQUIRED)
-#    find_package(fmt CONFIG REQUIRED)
-
-# ========================================================================
-#  <<< END OF CONFIGURATION — 以下内容无需手动修改 >>>
-# ========================================================================
+# ============================================================================
+# 在15处添加你的 find_package 调用，并在 15. 查找并链接依赖库 中同步更新 include/link
+# ===========================================================================
 
 
 # ============================================================================
@@ -483,9 +472,7 @@ message(STATUS "Using vcpkg dependencies")
 #   find_package(glfw3 CONFIG REQUIRED)
 #   find_package(nlohmann_json CONFIG REQUIRED)
 #   find_package(fmt CONFIG REQUIRED)
-
-find_package(OpenCV REQUIRED)
-
+find_package(nlohmann_json CONFIG REQUIRED)
 # ---- 编译定义 ----
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     NOMINMAX
@@ -496,19 +483,16 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${INC_DIR}
     ${CMAKE_BINARY_DIR}/generated
-    ${SRC_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-    ${OpenCV_INCLUDE_DIRS}
     # 在这里添加你的 xxx_INCLUDE_DIRS
 )
 
 # ---- 链接 ----
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    ${OpenCV_LIBS}
     # 在这里添加你的链接库
     # glfw
-    # nlohmann_json::nlohmann_json
+    nlohmann_json::nlohmann_json
 )
 
 # ---- upgrade 子程序（如启用） ----
@@ -527,9 +511,11 @@ endif()
 #  每个插件是一个独立的小工程：自带 CMakeLists.txt + metadata.json + include/ + src/。
 #  构建规则统一由 cmake/ShotPlugin.cmake 的 shot_add_plugin() 提供（/MD、隐藏符号、
 #  输出目录、贴元数据、剪枝），宿主这里只负责发现并纳入，不再重复写目标属性。
-#  关键：绝不为插件复制任何依赖 DLL。宿主已 target_link_libraries(OpenCV_LIBS)，
-#  进程启动即加载 opencv_*4.dll，插件必须复用宿主那份实例；自带副本会在
-#  同一进程内造出第二个 OpenCV（类型信息/内存分配器全部割裂）。
+#  关键：绝不为插件复制任何依赖 DLL。宿主本身不链接 OpenCV，`bin/` 里的
+#  opencv_*4.dll 由 copy_runtime_deps 从 vcpkg 运行时目录整目录布置 —— 需要 OpenCV
+#  的插件在自己的 CMakeLists 里 find_package(OpenCV) 并链接，运行时解析到 bin/ 那一份。
+#  插件目录里再放一份副本会在同一进程内造出第二个 OpenCV（类型/分配器全部割裂），
+#  所以 prune_output_dir 会把与 vcpkg 同名的基础依赖从插件目录清走。
 # ============================================================================
 set(SHOT_APP_OUTPUT_DIR       "${APP_OUTPUT_DIR}")
 set(SHOT_PLUGINS_OUTPUT_DIR   "${PLUGINS_OUTPUT_DIR}")

@@ -1,19 +1,24 @@
 {
   "schema": 1,
-  "package": "example_processor",
-  "abi_version": 1,
+  "abi": { "major": 1, "minor": 1 },
   "plugins": [
     {
       "id": "example.invert",
-      "type": "image_processor",
       "name": "Invert (keep alpha)",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "description": "把 B/G/R 逐字节取反，alpha 可选保留",
+      "interfaces": ["shot.image_processor", "shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
     },
     {
       "id": "example.grayscale",
-      "type": "image_processor",
-      "name": "Grayscale (BT.601)",
-      "version": "1.0.0"
+      "name": "Grayscale (luma / average)",
+      "version": "1.0.0",
+      "description": "按 BT.601 亮度或算术平均转灰度，可调混合强度",
+      "interfaces": ["shot.image_processor", "shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
     }
   ]
 }

@@ -87,8 +87,12 @@ else()
     message(WARNING "export_sdk: ${VCPKG_INC_DIR}/opencv4 不存在，SDK 将缺少 OpenCV 头")
 endif()
 
-# 契约头：plugin_api.h / plugin_api_export.h（以及日后新增的 plugin_api*.h）
-file(GLOB _contract_headers "${CONTRACT_INCLUDE_DIR}/plugin_api*.h")
+# 契约头 + 插件侧工具头：plugin_api*.h / shot_plugin*.h
+# （shot_plugin_helpers.h 是插件侧的能力目录与 SHOT_OPS 宏，第三方必须一起拿到）
+file(GLOB _contract_headers
+    "${CONTRACT_INCLUDE_DIR}/plugin_api*.h"
+    "${CONTRACT_INCLUDE_DIR}/shot_plugin*.h"
+)
 if(_contract_headers)
     _copy_files_flat("${SDK_OUTPUT_DIR}/include" ${_contract_headers})
 else()
@@ -185,7 +189,7 @@ endif()
 # 5.5 cmake/：插件工程构建模块，让 SDK 用户也能直接用 shot_add_plugin()
 # ---------------------------------------------------------------------------
 file(MAKE_DIRECTORY "${SDK_OUTPUT_DIR}/cmake")
-foreach(_module ShotPlugin.cmake AppendPluginMeta.cmake prune_output_dir.cmake)
+foreach(_module ShotPlugin.cmake AppendPluginMeta.cmake ValidatePluginMeta.cmake prune_output_dir.cmake)
     if(EXISTS "${SHOT_CMAKE_DIR}/${_module}")
         configure_file("${SHOT_CMAKE_DIR}/${_module}" "${SDK_OUTPUT_DIR}/cmake/${_module}" COPYONLY)
     else()
@@ -206,12 +210,12 @@ file(WRITE "${SDK_OUTPUT_DIR}/README.md" "\
 
 | 目录 | 内容 | 用途 |
 | --- | --- | --- |
-| `include/` | `plugin_api.h`、`plugin_api_export.h`、`opencv4/` | 契约头 + OpenCV 头 |
+| `include/` | `plugin_api.h`、`plugin_api_export.h`、`shot_plugin_helpers.h`、`opencv4/` | 契约头 + 插件侧小工具 + OpenCV 头 |
 | `lib/` | release 版 `*.lib` 导入库 | Release 构建链接期使用 |
 | `lib/debug/` | debug 版 `*.lib`（`opencv_*4d.lib` 等） | Debug 构建链接期使用 |
 | `bin/` | release 版 `*.dll` 运行时库 | **不要拷进插件目录**，见下 |
 | `bin/debug/` | debug 版 `*.dll`（`opencv_*4d.dll` 等） | Debug 宿主/插件运行时使用 |
-| `cmake/` | `ShotPlugin.cmake`、`AppendPluginMeta.cmake`、`prune_output_dir.cmake` | 用 `shot_add_plugin()` 构建插件工程 |
+| `cmake/` | `ShotPlugin.cmake`、`AppendPluginMeta.cmake`、`ValidatePluginMeta.cmake`、`prune_output_dir.cmake` | 用 `shot_add_plugin()` 构建插件工程（含 metadata 校验） |
 
 ## 编译
 
@@ -250,21 +254,31 @@ target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
    Debug 构建的插件只能加载进 Debug 宿主，反之亦然。
 
 3. **插件不得自带基础依赖**
-   `opencv_*.dll` 等基础依赖由宿主 exe 在启动时加载
-   （宿主已 target_link_libraries(OpenCV_LIBS)）。
+   `opencv_*.dll` 等基础依赖放在宿主 exe 旁边的 bin/ 里（由宿主的运行时
+   依赖布置脚本整目录拷入；宿主本身不链接 OpenCV）。
    插件目录里再放一份会造成「同一进程加载两个 OpenCV 实例」——
    类型信息、全局状态、内存分配器全部割裂，表现为莫名崩溃或
    `cv::Exception`。插件产物目录只应出现插件自己的 DLL。
 
-4. **导出四个 C 函数，一个 DLL 可以装多个插件**
-   `plugin_abi_version()` / `plugin_get_count()` / `plugin_create(int index)` /
-   `plugin_destroy(handle)`。索引与 `metadata.json` 的 `plugins[]` 顺序一一对应。
+4. **只导出 shot_module_entry，一个 DLL 可以装多个插件**
+   插件包只导出 shot_module_entry() 一个符号，它返回自描述的 ShotModule 表
+   （struct_size / abi_major / abi_minor / plugin_count / create / destroy /
+   query_interface，以及可选的 init / shutdown / get_info）。
+   索引与 metadata.json 的 plugins[] 顺序一一对应。
 
-5. **PLUGIN_ABI_VERSION 必须与宿主一致**
+5. **只加字段，不加符号**
+   加能力靠往结构体末尾追加字段；读任何字段前先检查 struct_size
+   （plugin_api.h 里的 SHOT_HAS_FIELD）。这样加东西永远不需要改版本号。
+
+6. **能力用 interface id 查询**
+   query_interface(instance, \"shot.image_processor\", 1) 返回函数表，
+   没有的能力返回 NULL。已注册：shot.image_processor、shot.configurable、shot.lib_provider。
+
+7. **abi_major 必须与宿主一致**
    版本不匹配的插件会被宿主拒绝加载。升级 SDK 后请整体替换
-   `include/`，不要新旧混用。
+   include/，不要新旧混用。
 
-6. **metadata.json 会被贴到 DLL 尾部**
+8. **metadata.json 会被贴到 DLL 尾部**
    构建期由 `cmake/AppendPluginMeta.cmake` 追加纯文本标记（见 `plugin_api.h` 的
    `PLUGIN_META_START_MARKER` / `PLUGIN_META_END_MARKER`）。文件尾的额外数据不影响
    装载，元数据跟着插件文件走，不会与 DLL 分家。

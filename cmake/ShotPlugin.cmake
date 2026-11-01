@@ -15,6 +15,8 @@
 #    · CXX_VISIBILITY_PRESET hidden —— 只导出 SCREENSHOT_API 标注的符号
 #    · MSVC 运行库 /MD —— 与宿主一致，否则跨 DLL 释放会崩
 #    · dll 落插件输出目录，导入库落 build/lib，pdb 落 build/pdb/plugins
+#    · 构建后先校验 metadata.json（id 唯一 / interfaces 已注册 / abi 与头一致），
+#      校验不过就不贴尾、直接构建失败
 #    · 构建后把 metadata.json 贴到 dll 尾部（纯 CMake，不需要 Python）
 #    · 构建后剪枝插件目录（不留 pdb/ilk/exp/lib）
 #
@@ -38,6 +40,13 @@ if(NOT DEFINED SHOT_BUILD_LIB_DIR)
 endif()
 if(NOT DEFINED SHOT_PDB_DIR)
     set(SHOT_PDB_DIR "${CMAKE_BINARY_DIR}/pdb/plugins")
+endif()
+# vcpkg 运行时 DLL 目录：用来把 applocal 拷进插件目录的基础依赖清掉。
+# 独立构建（没有 vcpkg 工具链）时保持为空，剪枝脚本会自动跳过这一步。
+if(NOT DEFINED SHOT_DEP_SCAN_DIRS AND VCPKG_TARGET_TRIPLET)
+    set(SHOT_DEP_SCAN_DIRS
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin"
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/bin")
 endif()
 set(SHOT_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 
@@ -94,6 +103,11 @@ function(shot_add_plugin _target)
     # 只有 POST_BUILD 能保证贴的是刚产出的那一份。
     add_custom_command(TARGET ${_target} POST_BUILD
         COMMAND ${CMAKE_COMMAND}
+            "-DMETADATA_FILE=${_meta}"
+            "-DCONTRACT_HEADER=${SHOT_CONTRACT_INCLUDE_DIR}/plugin_api.h"
+            "-DTARGET_NAME=${_target}"
+            -P "${SHOT_CMAKE_DIR}/ValidatePluginMeta.cmake"
+        COMMAND ${CMAKE_COMMAND}
             "-DTARGET_FILE=$<TARGET_FILE:${_target}>"
             "-DMETADATA_FILE=${_meta}"
             "-DCONTRACT_HEADER=${SHOT_CONTRACT_INCLUDE_DIR}/plugin_api.h"
@@ -101,6 +115,7 @@ function(shot_add_plugin _target)
         COMMAND ${CMAKE_COMMAND}
             "-DAPP_OUTPUT_DIR=${SHOT_APP_OUTPUT_DIR}"
             "-DPLUGINS_OUTPUT_DIR=${SHOT_PLUGINS_OUTPUT_DIR}"
+            "-DDEP_SCAN_DIRS=${SHOT_DEP_SCAN_DIRS}"
             -P "${SHOT_CMAKE_DIR}/prune_output_dir.cmake"
         COMMENT "插件 ${_target}：贴元数据 + 剪枝产物目录"
         VERBATIM
