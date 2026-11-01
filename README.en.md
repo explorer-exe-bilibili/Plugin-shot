@@ -300,7 +300,7 @@ the root `CMakeLists.txt` and drifted away from the docs.
 - [x] Metadata appended to the plugin binary (CMake only) and multiple plugins per DLL
 - [ ] Generic configuration UI on the host side (rendered from `ShotConfigDesc`) plus config storage
 - [x] Host reads the metadata (pre-filter + dependency topological sort + per-plugin skipping)
-- [ ] Cross-check metadata against `get_info` (warn when id / name / version disagree)
+- [x] Cross-check metadata against `get_info` (warn when id / name / version disagree; `get_info` wins)
 - [ ] Real screen capture (full screen / region / window) and the `Window` / `Tray` capabilities
 - [ ] Screen recording (a new interface id; the contract itself does not change)
 - [ ] Plugin hot reload and inter-plugin dependency declarations

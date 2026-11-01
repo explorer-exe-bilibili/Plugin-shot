@@ -17,12 +17,28 @@
 #include "shot_semver.h"
 
 // 一条依赖声明：name[op version]，例如 "opencv>=4.12" / "core>=0.1.0" / "acme.shaper"。
-struct PluginRequirement {
+namespace Plugin{
+
+class PluginRequirement{
+    bool m_isBroken=false;  // 语法坏的依赖当成"无法满足"，宁可跳过这个插件也不误加载
     std::string name;
-    std::string op;          // ">=" ">" "<=" "<" "=="；空 = 任意版本
+    Op op=Op::Invalid;
     ShotVersion version;     // op 非空时有效
     bool hasVersion = false;
-    std::string raw;         // 原始文本，日志里直接打
+    std::string raw;
+    static std::string trim(const std::string& str);
+    static Op parseOp(const std::string& opText);
+    static bool isValidProviderName(const std::string& name);
+public:
+    PluginRequirement() = default;
+    PluginRequirement(const std::string& text);
+    const std::string& getName() const { return name; }
+    const std::string& getRaw() const { return raw; }
+    Op getOp() const { return op; }
+    const ShotVersion& getVersion() const { return version; }
+    operator std::string() const;
+    bool satisfies(const std::string& requirementName, const ShotVersion& have) const;
+    bool isBroken() const { return m_isBroken; }
 };
 
 struct PluginMetaEntry {
@@ -35,17 +51,17 @@ struct PluginMetaEntry {
     std::vector<std::string> provides;
 };
 
-struct PluginPackageMeta {
+class PluginPackageMeta {
     int schema = 0;
     int abiMajor = 0;
     int abiMinor = 0;
-    std::vector<PluginMetaEntry> plugins;
+    std::vector<PluginMetaEntry> datas;
+public:
+    int getSchema() const { return schema; }
+    int getAbiMajor() const { return abiMajor; }
+    int getAbiMinor() const { return abiMinor; }
+    const std::vector<PluginMetaEntry>& getMetaData() const { return datas; }
+    bool readFromFile(const std::string& dllPath, std::string& error);
 };
 
-// 解析一条依赖声明文本（"opencv>=4.12.0"）。语法不合法返回 false。
-bool shotParseRequirement(const std::string& text, PluginRequirement& out);
-
-// 从 DLL 尾部读出元数据并解析。
-// 返回 false 时 error 里是原因；调用方应当把它当成"这个包没有可用的元数据"，
-// 照常加载但不做依赖检查（失败开放：一个包不能因为少了一段 JSON 就打不开）。
-bool readPluginMeta(const std::string& dllPath, PluginPackageMeta& out, std::string& error);
+} // namespace Plugin

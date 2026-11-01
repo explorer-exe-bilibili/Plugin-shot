@@ -15,6 +15,22 @@
 
 using namespace Plugin;
 
+struct PluginManager::Node{
+    std::string dllPath;
+    std::uint32_t index = 0;
+    bool hasMeta = false;   // 读不到元数据 → 失败开放：最后加载、不做依赖检查
+    bool opaque = false;    // 没有元数据 → 加载时登记整个包的所有索引
+    PluginMetaEntry meta;
+
+    bool skip = false;
+    std::string skipReason;
+
+    // 运行期事实（注册后填）
+    std::string runtimeName;
+    std::string runtimeVersion;
+    std::string libName;
+    std::string libVersion;
+};
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -56,26 +72,6 @@ ShotVersion hostCoreVersion() {
     return ShotVersion{VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH};
 }
 
-// ---------------------------------------------------------------------------
-// 依赖图的节点 = 一个插件（不是 DLL）：同一包里不同插件可以有不同依赖。
-// ---------------------------------------------------------------------------
-struct Node {
-    std::string dllPath;
-    std::uint32_t index = 0;
-    bool hasMeta = false;   // 读不到元数据 → 失败开放：最后加载、不做依赖检查
-    bool opaque = false;    // 没有元数据 → 加载时登记整个包的所有索引
-    PluginMetaEntry meta;
-
-    bool skip = false;
-    std::string skipReason;
-
-    // 运行期事实（注册后填）
-    std::string runtimeName;
-    std::string runtimeVersion;
-    std::string libName;
-    std::string libVersion;
-};
-
 struct PreparedDll {
     std::shared_ptr<DllHandler> dll;
     const ShotModule* module = nullptr;
@@ -83,33 +79,39 @@ struct PreparedDll {
     std::string reason;
 };
 
-std::string nodeLabel(const Node& node) {
+}
+
+std::string PluginManager::nodeLabel(const Node& node)  {
     return node.hasMeta ? node.meta.id : (node.dllPath + "#" + std::to_string(node.index));
 }
 
 // 依赖检查：core 由宿主满足，其它名字由别的插件满足（它的 id，或它 provides 的名字）。
-bool checkRequirements(const Node& node,
+bool PluginManager::checkRequirements(const Node& node,
                        const std::map<std::string, std::size_t>& providers,
                        const std::vector<Node>& nodes,
                        std::string& reason) {
     const ShotVersion core = hostCoreVersion();
     for (const PluginRequirement& requirement : node.meta.requireList) {
-        if (requirement.name == "core") {
-            if (!shotSatisfies(core, requirement.op.c_str(), requirement.version)) {
-                reason = "需要 " + requirement.raw + "，宿主是 " + shotVersionToString(core);
+        if(requirement.isBroken()) {
+            reason = "依赖语法错误：" + requirement.getRaw();
+            return false;
+        }
+        if (requirement.getName() == "core") {
+            if(!requirement.satisfies("core", core)) {
+                reason = "需要 " + requirement.getRaw() + "，宿主是 " + core.to_string();
                 return false;
             }
             continue;
         }
 
-        const auto it = providers.find(requirement.name);
+        const auto it = providers.find(requirement.getName());
         if (it == providers.end()) {
-            reason = "没有提供者满足 " + requirement.raw;
+            reason = "没有提供者满足 " + requirement.getRaw();
             return false;
         }
         const Node& provider = nodes[it->second];
         if (provider.skip) {
-            reason = "提供者 " + requirement.name + " 被跳过了";
+            reason = "提供者 " + requirement.getName() + " 被跳过了";
             return false;
         }
 
@@ -117,19 +119,17 @@ bool checkRequirements(const Node& node,
         const std::string& provided =
             provider.libVersion.empty() ? provider.runtimeVersion : provider.libVersion;
         ShotVersion providedVersion;
-        if (!shotParseVersion(provided.c_str(), providedVersion)) {
-            reason = "提供者 " + requirement.name + " 没有报告版本";
+        if (!providedVersion.parse(provided)) {
+            reason = "提供者 " + requirement.getName() + " 没有报告版本";
             return false;
         }
-        if (!shotSatisfies(providedVersion, requirement.op.c_str(), requirement.version)) {
-            reason = "要求 " + requirement.raw + "，实际提供 " + provided;
+        if (!providedVersion.satisfies(requirement.getOp(), requirement.getVersion())) {
+            reason = "要求 " + requirement.getRaw() + "，实际提供 " + provided;
             return false;
         }
     }
     return true;
 }
-
-}  // namespace
 
 PluginManager::~PluginManager() { unloadAll(); }
 
@@ -162,7 +162,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
     for (const std::string& path : dllPaths) {
         PluginPackageMeta package;
         std::string error;
-        if (!readPluginMeta(path, package, error)) {
+        if (!package.readFromFile(path, error)) {
             std::cout << "Note: " << path << " 没有可用的元数据（" << error
                       << "），按无依赖处理，最后加载" << std::endl;
             Node node;
@@ -171,12 +171,12 @@ bool PluginManager::loadPlugins(const std::string& dir) {
             nodes.push_back(std::move(node));
             continue;
         }
-        for (std::uint32_t i = 0; i < package.plugins.size(); ++i) {
+        for (std::uint32_t i = 0; i < package.getMetaData().size(); ++i) {
             Node node;
             node.dllPath = path;
             node.index = i;
             node.hasMeta = true;
-            node.meta = package.plugins[i];
+            node.meta = package.getMetaData()[i];
             nodes.push_back(std::move(node));
         }
     }
@@ -216,7 +216,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
         state[index] = 1;
         if (nodes[index].hasMeta) {
             for (const PluginRequirement& requirement : nodes[index].meta.requireList) {
-                const auto it = providers.find(requirement.name);
+                const auto it = providers.find(requirement.getName());
                 if (it != providers.end() && it->second != index) {
                     visit(it->second);
                 }
@@ -308,8 +308,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
     };
 
     // 创建第 index 个插件，按能力登记。成功时填 node.runtimeName。
-    std::function<bool(Node&, PreparedDll&)> registerOne = [&](Node& node,
-                                                               PreparedDll& dll) -> bool {
+    std::function<bool(Node&, PreparedDll&)> registerOne = [&](Node& node, PreparedDll& dll) -> bool {
         const ShotModule* module = dll.module;
         void* instance = module->create(node.index, &g_hostServices);
         if (instance == nullptr) {
@@ -327,6 +326,27 @@ bool PluginManager::loadPlugins(const std::string& dir) {
                 }
                 if (info.version != nullptr) {
                     node.runtimeVersion = info.version;
+                }
+                // 元数据只是声明，get_info 才是权威：不一致只警告，仍按 get_info 的值走。
+                if (node.hasMeta) {
+                    const auto warn = [&](const char* field, const std::string& declared,
+                                          const char* actual) {
+                        std::cerr << "Warning: " << node.dllPath << " #" << node.index
+                                  << " 元数据与 get_info 不一致：" << field << " 声明 \""
+                                  << declared << "\"，实际 \"" << actual
+                                  << "\"（以 get_info 为准）" << std::endl;
+                    };
+                    if (info.id != nullptr && node.meta.id != info.id) {
+                        warn("id", node.meta.id, info.id);
+                    }
+                    if (info.name != nullptr && !node.meta.name.empty() &&
+                        node.meta.name != info.name) {
+                        warn("name", node.meta.name, info.name);
+                    }
+                    if (info.version != nullptr && !node.meta.version.empty() &&
+                        node.meta.version != info.version) {
+                        warn("version", node.meta.version, info.version);
+                    }
                 }
             }
         }

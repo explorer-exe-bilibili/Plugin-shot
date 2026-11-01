@@ -5,19 +5,30 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <map>
 
 #include "PluginInstances/base.h"
-#include "plugin_api.h"
+
+struct ShotModule;
 
 namespace Plugin {
 class PluginManager{
+    // ---------------------------------------------------------------------------
+    // 依赖图的节点 = 一个插件（不是 DLL）：同一包里不同插件可以有不同依赖。
+    // ---------------------------------------------------------------------------
+    struct Node;
     // <PluginType, PluginInstances>
     std::unordered_map<PluginType, std::vector<std::shared_ptr<PluginBase>>> m_plugins;
     // <DLL Path, Dllhander>
     std::unordered_map<std::string, std::weak_ptr<DllHandler>> m_dllCache;  // 缓存DLL
     // 已 init 过的模块：卸载时要在所有实例销毁之后 shutdown，再放掉 DLL。
     std::vector<std::pair<std::shared_ptr<DllHandler>, const ShotModule*>> m_modules;
-
+    
+    static std::string nodeLabel(const Node& node);
+    static bool checkRequirements(const Node& node,
+                      const std::map<std::string, std::size_t>& providers,
+                      const std::vector<Node>& nodes,
+                      std::string& reason);
 public:
     PluginManager()=default;
     ~PluginManager();

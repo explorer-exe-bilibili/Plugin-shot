@@ -8,67 +8,74 @@
 // ============================================================================
 
 #include <cstdlib>
-#include <cstring>
 #include <string>
 
-struct ShotVersion {
+enum class Op {
+    None,   // 任意版本
+    Invalid,  // 语法坏的依赖当成"无法满足"，宁可跳过这个插件也不误加载
+    Gt,     // ">"
+    Gte,    // ">="
+    Lt,     // "<"
+    Lte,    // "<="
+    Eq,     // "=="
+};
+
+class ShotVersion {
+public:
+    ShotVersion() = default;
+    ShotVersion(int major, int minor, int patch) : major(major), minor(minor), patch(patch) {}
+    int Compare(const ShotVersion& other) const {
+        if (major != other.major) return major < other.major ? -1 : 1;
+        if (minor != other.minor) return minor < other.minor ? -1 : 1;
+        if (patch != other.patch) return patch < other.patch ? -1 : 1;
+        return 0;
+    }
+// 约束满足性。op 取 ">=" ">" "<=" "<" "=="；op 为空表示"任意版本"。
+    bool satisfies(Op op, const ShotVersion& other) const {
+        switch (op){
+            case Op::None: return true;
+            case Op::Invalid: return false;
+            case Op::Gt: return Compare(other) > 0;
+            case Op::Gte: return Compare(other) >= 0;
+            case Op::Lt: return Compare(other) < 0;
+            case Op::Lte: return Compare(other) <= 0;
+            case Op::Eq: return Compare(other) == 0;
+        }
+        return false;
+    }
+    std::string to_string()const{
+        return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
+    }
+    bool parse(const std::string& text) {
+        if (text.empty()) {
+            return false;
+        }
+        int parts[3] = {0, 0, 0};
+        int filled = 0;
+        const char* p = text.c_str();
+        while (filled < 3 && *p >= '0' && *p <= '9') {
+            char* end = nullptr;
+            const long value = std::strtol(p, &end, 10);
+            if (end == p) {
+                return false;
+            }
+            parts[filled++] = static_cast<int>(value);
+            p = end;
+            if (*p == '.') {
+                ++p;
+            } else {
+                break;
+            }
+        }
+        if (filled == 0) {
+            return false;
+        }
+        major = parts[0];
+        minor = parts[1];
+        patch = parts[2];
+        return true;
+    }
     int major = 0;
     int minor = 0;
     int patch = 0;
 };
-
-// 解析 "4.12.0" / "4.12" / "4"。失败返回 false。
-inline bool shotParseVersion(const char* text, ShotVersion& out) {
-    if (text == nullptr) {
-        return false;
-    }
-    int parts[3] = {0, 0, 0};
-    int filled = 0;
-    const char* p = text;
-    while (filled < 3 && *p >= '0' && *p <= '9') {
-        char* end = nullptr;
-        const long value = std::strtol(p, &end, 10);
-        if (end == p) {
-            return false;
-        }
-        parts[filled++] = static_cast<int>(value);
-        p = end;
-        if (*p == '.') {
-            ++p;
-        } else {
-            break;
-        }
-    }
-    if (filled == 0) {
-        return false;
-    }
-    out.major = parts[0];
-    out.minor = parts[1];
-    out.patch = parts[2];
-    return true;
-}
-
-inline int shotCompareVersion(const ShotVersion& a, const ShotVersion& b) {
-    if (a.major != b.major) return a.major < b.major ? -1 : 1;
-    if (a.minor != b.minor) return a.minor < b.minor ? -1 : 1;
-    if (a.patch != b.patch) return a.patch < b.patch ? -1 : 1;
-    return 0;
-}
-
-// 约束满足性。op 取 ">=" ">" "<=" "<" "=="；op 为空表示"任意版本"。
-inline bool shotSatisfies(const ShotVersion& have, const char* op, const ShotVersion& need) {
-    if (op == nullptr || op[0] == '\0') {
-        return true;
-    }
-    const int cmp = shotCompareVersion(have, need);
-    if (std::strcmp(op, ">=") == 0) return cmp >= 0;
-    if (std::strcmp(op, ">") == 0)  return cmp > 0;
-    if (std::strcmp(op, "<=") == 0) return cmp <= 0;
-    if (std::strcmp(op, "<") == 0)  return cmp < 0;
-    if (std::strcmp(op, "==") == 0) return cmp == 0;
-    return false;  // 认不出的运算符：当成不满足，宁可跳过也不误加载
-}
-
-inline std::string shotVersionToString(const ShotVersion& v) {
-    return std::to_string(v.major) + "." + std::to_string(v.minor) + "." + std::to_string(v.patch);
-}

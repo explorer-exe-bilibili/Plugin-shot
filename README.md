@@ -288,7 +288,7 @@ shot_add_plugin(acme_tools
 - [x] 插件元数据贴尾（纯 CMake 追加 `metadata.json`）与一 DLL 多插件
 - [ ] 宿主侧通用配置界面（读 `ShotConfigDesc` 自动生成）与配置存盘
 - [x] 宿主读取元数据（加载前预筛 + 依赖拓扑排序 + 不满足的插件单独跳过）
-- [ ] 元数据与 `get_info` 的交叉校验（id / name / version 不一致时告警）
+- [x] 元数据与 `get_info` 的交叉校验（id / name / version 不一致时告警，以 `get_info` 为准）
 - [ ] 正式截图采集（全屏 / 区域 / 窗口）与 `Window`、`Tray` 能力
 - [ ] 录屏能力（新增 interface id，契约本身不用改）
 - [ ] 插件热重载与插件间依赖声明
