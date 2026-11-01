@@ -8,7 +8,7 @@
       "version": "1.0.0",
       "description": "把 B/G/R 逐字节取反，alpha 可选保留",
       "interfaces": ["shot.image_processor", "shot.configurable"],
-      "requires": ["core>=0.1.0"],
+      "requires": ["core>=0.1.0","opencv>=4.0.0"],
       "provides": []
     },
     {
@@ -17,7 +17,7 @@
       "version": "1.0.0",
       "description": "按 BT.601 亮度或算术平均转灰度，可调混合强度",
       "interfaces": ["shot.image_processor", "shot.configurable"],
-      "requires": ["core>=0.1.0"],
+      "requires": ["core>=0.1.0","opencv>=4.0.0"],
       "provides": []
     }
   ]
