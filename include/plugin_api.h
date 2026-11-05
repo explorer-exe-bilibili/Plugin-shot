@@ -58,9 +58,23 @@
 //  新增一类能力 = 在这一段里加一个 id + 下面加一个结构体，不需要改动任何已有
 //  结构体，因此也不需要改版本号。所有 id 必须登记到 document/ABI_POLICY.md。
 // ============================================================================
-#define SHOT_IFACE_IMAGE_PROCESSOR "shot.image_processor"
-#define SHOT_IFACE_CONFIGURABLE    "shot.configurable"
-#define SHOT_IFACE_LIB_PROVIDER    "shot.lib_provider"
+#define SHOT_IFACE_IMAGE_PROCESSOR  "shot.image_processor"
+#define SHOT_IFACE_CONFIGURABLE     "shot.configurable"
+#define SHOT_IFACE_LIB_PROVIDER     "shot.lib_provider"
+#define SHOT_IFACE_UI_PROVIDER      "shot.ui_provider"
+
+// ============================================================================
+//  前向 typedef
+//
+//  这些结构在后面才定义，但有些能力结构体里已经用到了它们的【指针】。C 允许
+//  只前向声明，所以集中放在这里 —— 放在各自定义前面会在第一次使用处报
+//  "缺少类型说明符"（实测 MSVC C4430 + C2143）。
+//
+//  注意不能写成 "typedef struct ShotModule ShotHostServices" —— 那是给 ShotModule
+//  起别名，后面再定义 struct ShotHostServices 就成了重定义（实测 MSVC C2371）。
+// ============================================================================
+typedef struct ShotHostServices ShotHostServices;
+typedef struct ShotModule ShotModule;
 
 // ============================================================================
 //  结构体自描述与读取规则
@@ -196,6 +210,28 @@ typedef struct ShotConfigurableV1 {
 } ShotConfigurableV1;
 
 // ============================================================================
+//  能力：UI 提供者  "shot.ui_provider"
+//
+//  窗口/托盘归插件自己：宿主只调 init / deinit / post_to_plugin 三个函数，
+//  完全不碰窗口句柄，也不知道插件有几个线程。
+// ============================================================================
+typedef struct ShotEvent {
+    uint32_t    struct_size;   // = sizeof(ShotEvent)
+    const char* name;          // 事件名：必须是编译期静态字符串，活到模块卸载
+    const char* data;          // 不透明字节；接收方必须在调用返回前拷走 data_len 字节
+    uint32_t    data_len;
+    uint32_t    flags;         // 保留，填 0
+} ShotEvent;
+
+typedef struct ShotUIProviderV1 {
+    uint32_t struct_size;                                        // = sizeof(ShotUIProviderV1)
+    uint32_t version;                                            // = 1
+    int32_t (*init)(void* self, const ShotHostServices* host);    // 建窗口+起线程；0 = 成功
+    int32_t (*deinit)(void* self);                                // 返回前必须停线程、销毁窗口；0 = 成功
+    int32_t (*post_to_plugin)(void* self, const ShotEvent* ev);   // 任意线程可调；0 = 已入队
+} ShotUIProviderV1;
+
+// ============================================================================
 //  宿主 → 插件的服务表
 //
 //  宿主构造一张静态实例，通过 create(index, host) 传给插件，有效期覆盖插件实例
@@ -206,12 +242,6 @@ typedef struct ShotConfigurableV1 {
 #define SHOT_LOG_INFO  1
 #define SHOT_LOG_WARN  2
 #define SHOT_LOG_ERROR 3
-
-// 前向 typedef：只要指针，不需要完整类型。
-// 注意不能写成 "typedef struct ShotModule ShotHostServices" —— 那是给 ShotModule
-// 起别名，后面再定义 struct ShotHostServices 就成了重定义（实测 MSVC C2371）。
-typedef struct ShotHostServices ShotHostServices;
-typedef struct ShotModule ShotModule;
 
 struct ShotHostServices {
     uint32_t struct_size;   // = sizeof(ShotHostServices)
@@ -227,6 +257,10 @@ struct ShotHostServices {
     // 向宿主索取一个能力：返回非空 = 宿主有这个服务，否则 NULL。
     // 插件新要一个宿主服务时走这里，连这张表都不用再长大。
     void* (*query_interface)(void* ctx, const char* iface_id, uint32_t version);
+
+    // 向宿主投递一个事件。任意线程可调。返回 0 = 宿主已接收（它必须在返回前
+    // 拷走 ev->data 的 data_len 字节）；非 0 = 没接收，插件可丢弃或稍后重试。
+    int32_t (*post_to_host)(void* ctx, const ShotEvent* ev);
 };
 
 // ============================================================================
@@ -281,6 +315,11 @@ SHOT_STATIC_ASSERT(offsetof(ShotImage, pixel_format) == 4);
 SHOT_STATIC_ASSERT(offsetof(ShotImage, data) == 8);
 SHOT_STATIC_ASSERT(offsetof(ShotImage, channels) == 28);
 
+SHOT_STATIC_ASSERT(sizeof(ShotEvent) == 32);
+SHOT_STATIC_ASSERT(offsetof(ShotEvent, name) == 8);
+SHOT_STATIC_ASSERT(offsetof(ShotEvent, data) == 16);
+SHOT_STATIC_ASSERT(offsetof(ShotEvent, data_len) == 24);
+
 SHOT_STATIC_ASSERT(sizeof(ShotPluginInfo) == 32);
 SHOT_STATIC_ASSERT(offsetof(ShotPluginInfo, id) == 8);
 
@@ -290,14 +329,18 @@ SHOT_STATIC_ASSERT(offsetof(ShotImageProcessorV1, process) == 8);
 SHOT_STATIC_ASSERT(sizeof(ShotLibProviderV1) == 24);
 SHOT_STATIC_ASSERT(offsetof(ShotLibProviderV1, get_library_version) == 16);
 
+SHOT_STATIC_ASSERT(sizeof(ShotUIProviderV1) == 32);
+SHOT_STATIC_ASSERT(offsetof(ShotUIProviderV1, post_to_plugin) == 24);
+
 SHOT_STATIC_ASSERT(sizeof(ShotConfigDesc) == 72);
 SHOT_STATIC_ASSERT(offsetof(ShotConfigDesc, min) == 40);
 
 SHOT_STATIC_ASSERT(sizeof(ShotConfigurableV1) == 40);
 SHOT_STATIC_ASSERT(offsetof(ShotConfigurableV1, set_config) == 32);
 
-SHOT_STATIC_ASSERT(sizeof(ShotHostServices) == 40);
+SHOT_STATIC_ASSERT(sizeof(ShotHostServices) == 48);
 SHOT_STATIC_ASSERT(offsetof(ShotHostServices, log) == 24);
+SHOT_STATIC_ASSERT(offsetof(ShotHostServices, post_to_host)==40);
 
 SHOT_STATIC_ASSERT(sizeof(ShotModule) == 64);
 SHOT_STATIC_ASSERT(offsetof(ShotModule, destroy) == 48);

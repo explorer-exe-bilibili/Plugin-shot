@@ -46,6 +46,7 @@
 | `shot.image_processor` | `ShotImageProcessorV1` | 1 | 处理一张 `ShotImage`，返回 0 = 成功 |
 | `shot.configurable` | `ShotConfigurableV1` | 1 | 声明并读写配置项（值一律字符串） |
 | `shot.lib_provider` | `ShotLibProviderV1` | 1 | 声明「我是运行库提供者」，报告库名与版本；宿主按 `PluginType::Lib` 登记 |
+| `shot.ui_provider` | `ShotUIProviderV1` | 1 | 创建并管理UI组件（窗口，托盘.....） |
 
 命名约定：全小写，`shot.` 前缀，多词用下划线分隔。第三方扩展用自己的前缀（例如 `acme.sharpen`）。
 
@@ -62,12 +63,14 @@
 | 结构体 | `sizeof` | 关键偏移 |
 | --- | --- | --- |
 | `ShotImage` | 32 | `data`=8, `channels`=28 |
+| `ShotEvent` | 32 | `name`=8, `data`=16, `data_len`=24 |
 | `ShotPluginInfo` | 32 | `id`=8 |
 | `ShotImageProcessorV1` | 16 | `process`=8 |
 | `ShotLibProviderV1` | 24 | `get_library_version`=16 |
 | `ShotConfigDesc` | 72 | `min`=40 |
 | `ShotConfigurableV1` | 40 | `set_config`=32 |
-| `ShotHostServices` | 40 | `log`=24 |
+| `ShotUIProviderV1` | 32 | `init`=8, `deinit`=16, `post_to_plugin`=24 |
+| `ShotHostServices` | 48 | `log`=24, `query_interface`=32, `post_to_host`=40 |
 | `ShotModule` | 64 | `destroy`=48, `query_interface`=56 |
 
 追加字段时你会被迫更新这张表与那几行 `static_assert` —— 这正是它们存在的意义：
