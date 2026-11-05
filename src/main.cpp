@@ -6,7 +6,9 @@
 #include "pluginManager.h"
 #include "PluginInstances/ImageProcessor.h"
 #include "PluginInstances/LibProvider.h"
+#include "PluginInstances/UIProvider.h"
 
+#include "hostServices.h"
 namespace {
 
 void printPixel(const char* tag, const ShotImage& image) {
@@ -121,5 +123,19 @@ int main() {
         }
     }
     printPixel("After processing: ", image);
+    auto uiProviders = manager.getPluginsByType<Plugin::UIProvider>(Plugin::PluginType::UIProvider);
+    std::cout << "Loaded " << uiProviders.size() << " ui provider plugins." << std::endl;
+    if (!uiProviders.empty()) {
+        const char payload[] = "{\"dark_mode\":true}";
+        ShotEvent ev{
+            .struct_size = sizeof(ShotEvent),
+            .name        = "setting.load",
+            .data        = payload,
+            .data_len    = sizeof(payload) - 1,
+            .flags       = 0,
+        };
+        uiProviders[0]->postToPlugin(ev);
+    }
+
     return 0;
 }
