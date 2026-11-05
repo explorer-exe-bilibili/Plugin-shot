@@ -10,10 +10,12 @@
 #    模块默认取 <SDK>/cmake/../include 当契约头目录，产物落 build/bin/plugins。
 # ============================================================================
 
+set(SHOT_PLUGIN_NAME example_processor)
+
 # 独立构建时才自成一个 CMake 项目；被宿主 add_subdirectory 时不重复声明。
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_minimum_required(VERSION 3.20)
-    project(example_processor LANGUAGES CXX)
+    project(${SHOT_PLUGIN_NAME} LANGUAGES CXX)
     set(CMAKE_CXX_STANDARD 23)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     set(CMAKE_CXX_EXTENSIONS OFF)
@@ -27,7 +29,7 @@ if(NOT COMMAND shot_add_plugin)
     include(ShotPlugin)
 endif()
 
-shot_add_plugin(example_processor
+shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
     SOURCES      src/plugin_entry.cpp
                  src/invert.cpp

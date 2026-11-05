@@ -12,7 +12,7 @@
 #include <iterator>
 #include <new>
 
-#include "example_processor/processors.hpp"
+#include "processors.hpp"
 #include "plugin_api.h"
 #include "shot_plugin_helpers.h"
 

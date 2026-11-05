@@ -9,10 +9,12 @@
 #    cmake -S . -B build -DCMAKE_MODULE_PATH=<SDK>/cmake
 # ============================================================================
 
+set(SHOT_PLUGIN_NAME opencv_provider)
+
 # 独立构建时才自成一个 CMake 项目；被宿主 add_subdirectory 时不重复声明。
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_minimum_required(VERSION 3.20)
-    project(opencv_provider LANGUAGES CXX)
+    project(${SHOT_PLUGIN_NAME} LANGUAGES CXX)
     set(CMAKE_CXX_STANDARD 23)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     set(CMAKE_CXX_EXTENSIONS OFF)
@@ -36,13 +38,13 @@ if(OpenCV_FOUND)
     list(APPEND _opencv_libs ${OpenCV_LIBS})
 endif()
 
-shot_add_plugin(opencv_provider
+shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA       metadata.json
     SOURCES        src/plugin_entry.cpp
     LINK_LIBRARIES ${_opencv_libs}
 )
 
 if(_opencv_include_dirs)
-    target_include_directories(opencv_provider PRIVATE ${_opencv_include_dirs})
-    target_compile_definitions(opencv_provider PRIVATE OPENCV_PROVIDER_HAS_OPENCV=1)
+    target_include_directories(${SHOT_PLUGIN_NAME} PRIVATE ${_opencv_include_dirs})
+    target_compile_definitions(${SHOT_PLUGIN_NAME} PRIVATE OPENCV_PROVIDER_HAS_OPENCV=1)
 endif()

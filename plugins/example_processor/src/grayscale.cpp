@@ -12,7 +12,7 @@
 #include <iterator>
 #include <new>
 
-#include "example_processor/processors.hpp"
+#include "processors.hpp"
 
 namespace example_processor {
 namespace {
