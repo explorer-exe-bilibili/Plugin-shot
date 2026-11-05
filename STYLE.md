@@ -1,0 +1,407 @@
+# STYLE.md —— plugin-shot 的代码风格与工程约定
+
+> 目标读者：接手这个仓库的**人**或 **AI**。这份文件不是"建议"，而是对**既有代码里已经稳定成立的做法**的整理。
+>
+> **权威顺序**：契约头与既有代码 > 本文 > 个人偏好。本文与代码冲突时以代码为准，并且欢迎顺手把本文改对。
+>
+> **现实前提**：本仓库**没有** `.clang-format`、`.editorconfig`、`.gitattributes`、CI、格式检查任务（已确认为零）。所以**风格只能靠约定和模仿**，这份文件就是那条约定。新写的代码请与周围文件保持一致；**宁可跟邻居一样丑，也不要局部好看**。
+
+---
+
+## 0. 30 秒速查
+
+| 项 | 约定 | 例 |
+| --- | --- | --- |
+| 语言标准 | C++23（`CMakeLists.txt:51`） | `set(CPP_STANDARD 23)` |
+| 编码 | UTF-8 **无 BOM**；新文件用 LF 且末尾有换行（13 个既有文件是 CRLF，编辑时保持原样，见 §2.3） | 源文件与文档 |
+| 缩进 | 4 空格，禁止 Tab | |
+| 花括号 | K&R：开括号跟在行尾 | `void f() {` / `if (x) {` |
+| 行宽 | 目标 ≤100 列，上限 120 | 超了换行并对齐参数 |
+| 注释语言 | **中文散文**，解释"为什么" | `// 插件分配的对象只能由插件自己释放，宿主绝不 delete。` |
+| 头文件 | 一律 `#pragma once`，不用 include guard | `include/plugin_api.h:1` |
+| 类型 | PascalCase | `PluginEntry` `GrayscaleState` `ShotModule` |
+| C 边界函数 / ABI 回调 | snake_case | `shot_module_entry` `create_instance` `grayscale_process` |
+| C++ 类方法 | lowerCamelCase | `getName()` `queryInterface()` `postToPlugin()` |
+| 类成员 | `m_` + camelCase | `m_ops` `m_instance` `m_impl` |
+| 常量 | `k` + PascalCase | `kModule` `kEntries` `kConfig` `kBlueWeight` |
+| 跨 TU 全局 | `g_` + camelCase | `g_hostServices` `g_eventQueue` |
+| 宏 | 全大写 + `SHOT_` / `SCREENSHOT_` 前缀 | `SHOT_IFACE_CONFIGURABLE` |
+| 返回值 | C 边界：`0` = 成功；内部 C++：`bool` | `return 0;` / `return false;` |
+| 异常 | **绝不跨越 DLL 边界**；边界内用返回码 | |
+
+---
+
+## 1. 先理解结构：两个世界，一条边界
+
+这个仓库不是"一个程序"，而是**宿主 + 插件契约**。写代码前先认清楚自己在改哪个世界：
+
+| 世界 | 位置 | 语言 | 规则 |
+| --- | --- | --- | --- |
+| **契约（跨边界）** | `include/plugin_api.h`、`plugin_api_export.h`、`shot_plugin_helpers.h` | 纯 C（不依赖 STL） | 只追加、定宽类型、`struct_size` + `SHOT_HAS_FIELD`、异常不过界 |
+| **宿主** | `src/`、`include/`（除契约头）、`include/PluginInstances/` | C++23 | 正常 C++，但**不得 delete 插件对象** |
+| **插件** | `plugins/<name>/` | C++23，但出口是纯 C | 一个 DLL = 一个包；`shot_module_entry` 是唯一导出符号 |
+
+**最重要的心智模型**：跨边界的一切都是"对方可能是别人（甚至老版本）编译的"。因此：
+
+- 读任何跨边界结构体的字段之前，先 `SHOT_HAS_FIELD`；
+- 跨边界结构体第一个字段永远是 `uint32_t struct_size`，由**构造方**填自己的 `sizeof`；
+- 插件不提供某个能力（函数指针为 `NULL`）是**正常情况**，不是错误。
+
+改契约之前必须读 `document/ABI_POLICY.md`，改元数据格式必须读 `document/METADATA.md`。
+
+---
+
+## 2. 文件与目录
+
+### 2.1 文件命名：按层选，别发明第四种
+
+| 层 | 规则 | 现状 |
+| --- | --- | --- |
+| 契约头（纯 C，跨 DLL） | snake_case | `plugin_api.h` `plugin_api_export.h` `shot_plugin_helpers.h` |
+| 契约相邻的共享头（C++） | snake_case | `plugin_meta.h` `shot_semver.h` |
+| 宿主内部头 | lowerCamelCase | `dllHandler.h` `hostServices.h` `pluginManager.h` |
+| 宿主包装类 | PascalCase，放 `include/PluginInstances/` | `ImageProcessor.h` `LibProvider.h` `UIProvider.h`（`base.h` 是唯一例外，保留） |
+| 插件目录 | snake_case，**目录名 = CMake 目标名 = DLL 名 = 命名空间名** | `plugins/example_processor/` → `example_processor.dll` → `namespace example_processor` |
+| 插件源文件 | snake_case，一个能力一个文件 | `src/plugin_entry.cpp` `src/grayscale.cpp` `src/invert.cpp` |
+| CMake 模块 | 新文件用 snake_case | `cmake/copy_runtime_deps.cmake` `cmake/ShotPlugin.cmake`（既有 PascalCase 保持不动） |
+
+> 文件命名就按上表的层来选，不要发明第四种拼法。`include/PluginInstances/base.h` 是唯一的小写文件名例外，保留不动。
+
+### 2.2 插件目录的标准骨架
+
+```
+plugins/my_plugin/
+├── CMakeLists.txt        # 固定样板，见 §7
+├── metadata.json         # 构建期贴到 DLL 尾部，见 document/METADATA.md
+├── README.md             # 中文，见 §9
+├── include/              # 只有当头文件被本插件的多个 .cpp 共享时才建
+│   └── processors.hpp
+└── src/
+    ├── plugin_entry.cpp  # 必须：唯一导出符号 + kEntries 索引目录
+    └── <capability>.cpp  # 一个能力一个文件：状态 + kConfig + 回调 + 函数表
+```
+
+### 2.3 编码与换行
+
+- **UTF-8 无 BOM**（注释、文档里有大量中文）；**LF**；文件末尾留一个换行。
+- CRLF 有 13 个固定成员：`.gitignore`、`.vscode/` 下 4 个 json、`CMakeLists.txt`、`CMakePresets.json`、`CMakeSettings.json`、`app.rc.in`、`cmake/kill_running.bat`、`document/README_SDK.md`、`include/PluginInstances/base.h`、`include/version.h.in`。其余文本文件是 LF。**编辑既有 CRLF 文件时保持 CRLF**；新文件一律 LF。
+- 不要用会改写编码的编辑器/工具保存中文文档。**提交前确认文件里没有 U+FFFD 替换字符**（历史上 `README.md` 就被写坏过一次「依赖驱动」），`git diff` 里出现 `�` 立刻修。
+
+---
+
+## 3. 命名
+
+### 3.1 分层命名法（这是本仓库最容易踩错的一条）
+
+同一个概念在不同层用不同拼法，是**故意的**，不是随手写的：
+
+| 层 | 风格 | 例子 |
+| --- | --- | --- |
+| 契约结构体字段（C 头） | snake_case，靠对齐留白 | `struct_size` `pixel_format` `get_library_name` `post_to_plugin` |
+| 插件侧自由函数 / ABI 回调 | snake_case | `create_instance` `destroy_instance` `module_init` `get_info` `state_of` `for_each_row` `grayscale_process` |
+| 宿主 C++ 类方法 | lowerCamelCase | `getName` `getType` `nativeHandle` `queryInterface` `postToPlugin` `getLibraryVersion` |
+| 插件 C++ 类方法 | lowerCamelCase | `SettingWindow::start/stop/post` |
+
+记忆法：**C 边界 snake，C++ 方法 camel**。类型名两边都 PascalCase。
+
+### 3.2 其余命名
+
+- **成员**：类成员 `m_` + camelCase（`m_ops` `m_instance` `m_dllHandle` `m_initialized` `m_impl`），**不加**尾下划线；纯数据 `struct` 的字段**不加** `m_`（`PluginEntry::id`、`ShotImage::width`）。
+- **常量**：`k` + PascalCase —— `kModule` `kEntries` `kEntryCount` `kIfaces` `kConfig` `kKeyMode` `kTailWindow` `kBlueWeight`。数值用 `constexpr`，字符串数组用 `const char kKeyXxx[]`。
+- **全局**：`g_` + camelCase —— `g_hostServices` `g_eventQueue` `g_broadcastQueue`。只在 `.cpp` 内可见的可变对象用 `static` + camelCase（`static std::mutex logMutex;`）。
+- **枚举**：宿主侧 `enum class` + PascalCase（`PluginType::ImageProcessor`）；**插件侧不定义枚举**，配置种类用契约宏 `SHOT_CONFIG_KIND_*`。
+- **宏**：全大写，契约宏一律 `SHOT_` 前缀；导出宏是 `SCREENSHOT_API`（**不是** `SHOT_PLUGIN_EXPORT`）。
+- **命名空间**：宿主 `Plugin` / `Host`（PascalCase）；插件 = 包名（snake_case，与目录同名）。不用 `a::b` 嵌套形式，匿名命名空间 `namespace { }` 收内部符号。
+
+### 3.3 格式骨架
+
+```cpp
+namespace example_processor {      // 插件：包名
+namespace {                        // 内部实现
+
+const char kKeyMode[] = "mode";    // k 前缀常量
+
+struct GrayscaleState {            // PascalCase 类型
+    bool use_luma = true;          // 纯数据成员不加 m_
+    int strength = 100;
+};
+
+std::int32_t grayscale_process(void* self, ShotImage* image) {  // 自由函数 snake_case
+    ...
+}
+
+}  // namespace
+}  // namespace example_processor
+```
+
+---
+
+## 4. 格式与排版
+
+- **4 空格**缩进，禁止 Tab（全仓源码目前无 Tab，保持）。
+- **K&R 花括号**：`namespace X {` / `struct Y {` / `void f() {` / `if (x) {`，闭括号独占一行。
+- **括号前有空格**：`if (` `for (` `while (` `switch (`。这是主流写法（实测 `if (` 205 处 vs `if(` 8 处）；那 8 处是历史遗留，**不要**扩散。
+- **行宽**：目标 100 列。全仓源码最长 131 列（`base.h` 的构造函数），绝大多数 ≤120。超长时优先**换行对齐参数**，而不是硬憋。
+- **闭括号注释**（2 个空格 + 注释）：
+  - `}  // namespace example_processor`
+  - `}  // namespace`（匿名）
+  - `}  // extern "C"`
+- **行尾不留空格**（现存 2 处，见 §11）；**不要**在文件中留下空行块（连续 3 个空行）。
+- **包含顺序**（每组之间空一行）：
+  1. 自身头文件（`setting_window.cpp` 的第一行是 `"setting_window.h"`）
+  2. 标准库 `<...>`，**字母序**
+  3. 项目头文件 `"..."`，**字母序**
+  - 契约头永远写 `"plugin_api.h"`（靠 target include 目录找到），不写相对路径。
+- **指定初始化器**（C++20，本仓高频用法）—— 一字段一行、`=` 对齐到同一列、按声明顺序、**末尾带逗号**：
+
+```cpp
+const ShotModule kModule = {
+    .struct_size     = sizeof(ShotModule),
+    .abi_major       = SHOT_ABI_MAJOR,
+    .abi_minor       = SHOT_ABI_MINOR,
+    .plugin_count    = kEntryCount,
+    ...
+};
+```
+
+> 能力函数表**不要手写** `struct_size`，用 `SHOT_OPS(...)` 宏（`include/shot_plugin_helpers.h:39-44`）。
+
+- **尾部注释**：代码与 `//` 之间**两个空格**，且注释要短：`pixels[i + 0] = 255;  // B`。
+
+---
+
+## 5. 注释：本仓库最鲜明的风格
+
+**这是最容易一眼认出"不是本仓库代码"的地方。**
+
+1. **用中文散文写注释**，标识符/API 名保持英文。实测 `include/plugin_api.h` 347 行里 120 行含中文（35%），`document/ABI_POLICY.md` 88 行里 54 行含中文。
+2. **解释"为什么"，不解释"是什么"**。反例：`// 遍历行`。正例（本仓真实写法）：
+   - `// 插件分配的对象只能由插件自己释放，宿主绝不 delete。`
+   - `// 顺序有讲究：先让插件实例走完自己的 destroy，再 shutdown 模块，最后才放手 DLL。`
+   - `// stride 以字节计，可以为负（自底向上存储），也可以大于 width*channels（行尾填充），`
+     `// 所以只能按行寻址；把 data 当连续块是这类插件最常见的越界来源。`
+3. **记录踩过的坑与实测结论**——这是本仓注释的灵魂：
+   - `// 放在各自定义前面会在第一次使用处报 "缺少类型说明符"（实测 MSVC C4430 + C2143）。`
+   - `// 不能叫 requires：那是 C++20 关键字`
+   - `// 插件没提供 init 时按"没有要做的初始化"处理，不算失败。`
+4. **文件头放一段块注释**，说明这个文件解决什么问题、契约要点、算法公式。`plugins/example_processor/src/grayscale.cpp:1-7` 是范本：
+
+```cpp
+// 灰度：mode 选算法，strength 控制混合强度。
+//
+//   mode = luma    : Y = 0.299R + 0.587G + 0.114B（BT.601，×256 定点）
+//   mode = average : (B + G + R) / 3
+//   strength 0..100: 0 = 原图，100 = 完全灰度
+```
+
+5. **分隔 banner 有两种，按文件类型选**：
+   - **头文件（契约类）**：两条 `=` 横线（76 列宽）夹住若干行说明：
+
+     ```cpp
+     // ============================================================================
+     //  版本
+     //
+     //  abi_major：布局或语义不兼容时递增，宿主只接受 major 相同的插件。
+     // ============================================================================
+     ```
+   - **`.cpp` 内部**：单行 `----` 短 banner，或阶段标记：
+     `// ---- 阶段 3：拓扑排序（提供者先于依赖者）；无元数据的包排在最后 ----`
+6. **不用 Doxygen**：全仓 `/** */`、`///`、`@param` 均为 0 处。不要引入。
+7. **不写 license/SPDX 头**（仓库尚未指定 license）。
+8. **没有 `TODO` / `FIXME` / `XXX` 习惯**（全仓 0 处）。未做完的事写在 README 的「当前状态 / 路线图」表里，而不是撒在代码里。
+
+---
+
+## 6. 代码写法
+
+### 6.1 函数与参数
+
+- **const 正确性**：只在确实需要改的对象上加非 const。边界上 `const ShotHostServices*`、`const ShotPluginInfo*`，图像是 `ShotImage*`（原地处理，故意非 const）。
+- **引用只用于内部、且确定非空**（`const ShotImage&`）；边界一律用指针（`ShotImage*`、`ShotConfigDesc* out`）。
+- **出参**：`T* out`，进入先查 `out != nullptr` 与 `out->struct_size` 够不够。
+- **未使用的参数**：命名注释掉 `void* /*ctx*/`，或函数体里 `(void)flags;`。**不用** `[[maybe_unused]]`（本仓未使用）。
+- **默认参数、虚函数、继承**：宿主包装类用 `virtual`（`PluginBase` 体系）；**插件侧不用**——插件只有 C 回调，没有类层次。
+- **函数要短**：普遍 5~30 行；长函数靠 `std::function` lambda 分阶段（`PluginManager::loadPlugins` 就是 5 个阶段 + 局部 lambda）。
+
+### 6.2 返回值与错误
+
+- **C 边界只有返回码**：`0` = 成功；`1` = 参数/索引/格式不对；`2` = 对方结构太短；配置键不认识返回**负数**。**不要发明新的码值**，现有语义见 `plugin_api.h` 各结构体注释。
+- **内部 C++ 用 `bool`**，边界处再映射：`return m_ops->process(m_instance, &image) == 0;`
+- **异常绝不跨越 DLL 边界**。边界内的 `try/catch` 只出现在必须兜底的地方（`PluginManager.cpp:215-223` 加载 DLL、`setting_window.cpp:201-205` 建线程），且 `catch (...)` 后就地转成返回码/`false`。
+- **失败不炸整个宿主**：加载失败 = 跳过一个插件并打日志（`document/METADATA.md:105-117` 的六步策略）。
+
+### 6.3 内存与资源
+
+- **谁分配谁释放**：插件分配的对象只能由插件的 `destroy` 释放，**宿主绝不 `delete`**（`base.h:34-40`、`PluginBase` 析构里走 `m_module->destroy`）。
+- 插件里分配：`new (std::nothrow)` + 判空，失败清理已分配部分（`plugin_entry.cpp:41-47`）。
+- 宿主持有插件：`std::shared_ptr<DllHandler>` 共享 DLL 生命周期 + 裸 `void*` 不透明实例；`std::unique_ptr` 用于 PIMPL（`setting_window.h:76-77`）。
+- `std::string` **只在同一个 DLL 内部用**；跨边界一律 `const char*` + 长度。
+- Win32 类型（`HWND` 等）**只允许出现在 PIMPL 内部**，宿主永远看不到。
+
+### 6.4 日志
+
+- **插件只能通过宿主日志**：`host->log(host->host_context, SHOT_LOG_INFO, msg, len)`，且调用前三重检查：
+  `host != nullptr && SHOT_HAS_FIELD(host, ShotHostServices, log) && host->log != nullptr`。
+- **宿主用 `std::cout` / `std::cerr`**（现状，`main.cpp` `/ HostServices.cpp`），前缀风格是「英文技术前缀 + 中文说明」：
+  `"Warning: 提供者 " << name << " 重复（" << a << " 与 " << b << "），用前者"`
+- 日志级别语义见 `plugin_api.h:241-244`（DEBUG/INFO/WARN/ERROR）。
+
+### 6.5 降级（degradation）是常态，不是可选项
+
+插件必须能在**较老的宿主**上跑，宿主必须能容忍**较新的插件**：
+
+```cpp
+// 本算法只对 BGRA8 有定义。宿主可能比本插件老、结构里还没有 pixel_format，
+// 那种情况按当年的约定当成 BGRA8 处理。
+if (SHOT_HAS_FIELD(image, ShotImage, pixel_format) &&
+    image->pixel_format != SHOT_PIXEL_FORMAT_BGRA8) {
+    return 1;
+}
+```
+
+读到不认识的配置 key、宿主没给某个服务、结构体没有某个字段——**安静降级**，不要报错、不要崩。
+
+---
+
+## 7. 新增一个插件：照抄这份骨架
+
+1. `plugins/my_plugin/` 目录，名字 snake_case。
+2. 复制 `plugins/example_processor/CMakeLists.txt` 的样板（三行核心，其余是独立构建的 guard）：
+
+```cmake
+set(SHOT_PLUGIN_NAME my_plugin)
+shot_add_plugin(my_plugin
+    METADATA     metadata.json
+    SOURCES      src/plugin_entry.cpp src/my_capability.cpp
+    INCLUDE_DIRS include
+)
+```
+
+3. 写 `metadata.json`（字段见 `document/METADATA.md`），`plugins[].id` 用 `作者.名字`，`interfaces` 与 `requires` 必须与代码一致。
+4. 复制 `plugins/example_processor/src/plugin_entry.cpp`，改三处：`kEntries[]` 内容、`module_init`、`kModule` 字段。
+5. 一个能力一个 `.cpp`：状态 `struct` + `kConfig[]` + 回调 + `SHOT_OPS` 函数表 + `kIfaces[]` + `const PluginEntry kXxx`。
+6. 写 `README.md`（§9）。
+
+**两条硬约束**：
+
+- `kEntries[]` 的顺序 == `metadata.json` 里 `plugins[]` 的顺序 == `create(index)` 的索引。这是唯一的硬顺序要求。
+- `void* self` 是 `PluginInstance*`，**不是**插件状态；回调里先 `state_of(self)`。直接把 `self` 当成状态指针是这类插件最典型的崩溃原因。
+
+> 从零写插件时，`plugins/example_processor` 是**最完整的模板**；`plugins/opencv_provider` 只演示"零能力的库提供者"，**不要**拿它当结构范本（它手写了 interface 查询、也没做 ABI 检查，见 §11）。
+
+---
+
+## 8. 构建系统约定
+
+- **加插件不用改根 `CMakeLists.txt`**：根目录 `file(GLOB plugins/*/CMakeLists.txt CONFIGURE_DEPENDS)`（`CMakeLists.txt:478-486`）自动收编。
+- **插件一律走 `shot_add_plugin()`**（`cmake/ShotPlugin.cmake:53`），不要手写 `add_library`：它统一了 `/MD`、`/utf-8`、隐藏符号、产物目录、元数据贴尾、产物剪枝。关键字参数是 `METADATA` / `SOURCES` / `INCLUDE_DIRS` / `LINK_LIBRARIES`。
+- **CMake 命名**：
+  - 开关：`ENABLE_*`（不是 `SHOT_*`）—— 目前只有 `ENABLE_KILL_RUNNING`
+  - 函数：小写 `shot_*` snake_case，内部临时变量 `_arg_*`
+  - 变量：`UPPER_SNAKE_CASE`（`PROJECT_VERSION_*` `APP_OUTPUT_DIR` `SHOT_PLUGINS_OUTPUT_DIR`）
+  - 传给插件的目录变量：`SHOT_*`（`SHOT_SDK_INCLUDE_DIR` 等）
+- **CMake 最低版本**：根文件 `cmake_minimum_required(VERSION 3.20)`，且必须是文件里**第一条** CMake 命令（`CMakeLists.txt:18`）；插件与 `cmake/*.cmake` 同为 3.20；`CMakePresets.json` 要求 3.21（preset schema `"version": 3` 本身的要求，别降低它）。
+- **SDK 说明只有一个源**：`document/README_SDK.md`；`export_sdk` 用 `configure_file(... COPYONLY)` 把它复制成 `sdk/README.md`。改 SDK 说明只改 document 那份，**不要**在 CMake 脚本里再硬编码一份（以前就是这么漂移的）。
+- **产物布局是硬约束**（`README.md:99-109`）：`bin/` 只有 exe 与运行时 DLL（禁 pdb）；`bin/plugins/` 只有插件自己的 DLL（禁基础依赖）；`build/<cfg>/pdb/` 放符号；`sdk/` 是导出产物、**不入库**。
+- **版本链**：`0.1.0` 来自 `CMakeLists.txt:32-34` → `version.h`（`include/version.h.in` 生成）→ `.rc`。`build_number.txt` 在**每次 configure 时自增并被写回**（`CMakeLists.txt:290-297`），所以它会一直脏，**不要**手工改它，也**不要**把它当成自己的改动提交（除非单独提交）。
+- **不要手改生成物**：`build/generated/version.h`、`sdk/` 全是产物。`sdk/include/plugin_api.h` 是**旧快照**（比 `include/` 少能力），永远以仓库里的 `include/` 为准。
+
+---
+
+## 9. 文档约定
+
+- **`README.md` 中文为母版**，`README.en.md` 是手工镜像（首行互链：`**中文** | [English](README.en.md)`）。改一边必须改另一边，**别让它漂移**（历史上就漂移过一次，见 §11 第 14 条）。
+- **`document/` 与插件 README 是纯中文**，不配英文版。
+- 结构惯例（`document/METADATA.md`、`ABI_POLICY.md` 是范本）：
+  1. `# 标题`
+  2. 开头 2~4 行说明"这份文档解决什么问题"，并声明**改动前必读**
+  3. `## 1. 小节` 编号小节，可再分 `### 4.1`
+  4. 大量**表格**：字段 / 含义 / 是否必填；规则 / 做法 / 要不要动版本
+  5. 专门一节写**「刻意不做的事」**并给理由（本仓特色，`METADATA.md:59-68`）
+  6. 结尾 **检查清单** `- [ ]`
+- 语气：**祈使、直接、给理由**。用 **加粗** 标不可违反的点（**绝不** / **必须** / **禁止**），关键数字与标识符用反引号。
+- 代码块**标语言**（`bash` `c` `cpp` `cmake` `json`）；只有目录树用裸围栏。
+- 状态用 ✅ / 📋 / 🚧 三档表格。
+- 不放图片/徽章/架构图（全仓零处），需要说明就用表格或目录树。
+
+---
+
+## 10. 提交与协作
+
+- 提交信息：**简短中文祈使句，无前缀、无 scope、无 issue 号、不写 body**。例：
+  `修正示例插件的依赖` / `增加库提供插件，分离宿主的opencv模块，完善metadata语义`
+- 一个提交只做一件事。分支只有 `main`，没有 tag/release 流程。
+- **提交前**：`git status` 确认没有把 `build/`、`sdk/`、`build_number.txt` 的自动变化混进本次改动。
+- 当前工作区是**重构进行中**（`setting_window` 未跟踪、`processors.hpp` 刚移位置、`plugin_api.h` 新增了能力）。接手第一件事：`git status --short`，先分清"哪些是未完成的重构"，不要把人家的半成品当成既定风格去模仿。
+
+---
+
+## 11. 历史问题（已修复，不要回退）
+
+> 2026-11-05 一次性修掉下表 17 条，并通过 `cmake --build build/Windows` 编译，
+> 以及运行 `build/Windows/bin/Plugin-shot.exe` 的端到端冒烟（3 个插件加载、abi 1.1、
+> 配置读写、UI 事件往返、干净退出）。**新代码不要重新引入这些写法。**
+
+| # | 位置 | 当时的错误 | 现在的正确写法 |
+| --- | --- | --- | --- |
+| 1 | `include/PluginInstances/base.h` | `postToPlugin` 空函数体、非 void 无返回 → MSVC **C4716**，整个工程编译不过 | 返回 `0`；子类用 `override` |
+| 2 | `include/PluginInstances/UIProvider.h` | 返回 `int32_t` 却 `return false;`（= 0 = 成功）；且漏 `const`，`override` 失配（C3668） | `0` = 已入队、`-1` = 失败；签名 `const override` 与基类一致 |
+| 3 | `include/hostServices.h`、`src/HostServices.cpp` | `boardcastEvent` / `g_boardcastQueue` 拼写错误 | `broadcastEvent` / `g_broadcastQueue` |
+| 4 | `include/PluginInstances/dllHandler.h`（原 `dllHander.h`） | 文件名拼写错；成员区 14 行多缩进 4 空格 | 已更名 `dllHandler.h`（含 `base.h` 与两份 README）；缩进已对齐 |
+| 5 | `pluginManager.h`、`plugin_meta.h`、`hostServices.h`、`base.h` | `namespace Plugin{` 缺空格、闭括号裸 `}` 或 `} //` | `namespace Plugin {` + `}  // namespace Plugin`（Host 同理） |
+| 6 | `include/shot_semver.h` | `Compare` 用 PascalCase、`to_string()const` 缺空格 | `compare()`、`to_string() const` |
+| 7 | `src/main.cpp` | 空 `while` 忙等 + Allman 花括号（半成品死代码） | 已删除；循环用 K&R |
+| 8 | `processors.hpp` vs `setting_window.h` | 两个同名 `copy_config_value` 语义相反：一个溢出返回 -1（违反契约），一个只报告长度 | 两份统一为契约语义：`>= 0` 是长度，**负数只表示 key 不认识** |
+| 9 | `plugins/opencv_provider/src/plugin_entry.cpp` | `g_module`；手写 interface 查询 + `const_cast`；`init` 不校验 `abi_major` | `kModule`；`shot_plugin_helpers.h` + `SHOT_OPS` + `kIfaces[]`；`init` 校验 `abi_major` |
+| 10 | `src/plugin_meta.cpp`、`include/pluginManager.h` | 行尾多余空格 | 已清 |
+| 11 | `README.md:35` | 中文被写坏成 `依���驱动` | 已修回「依赖驱动」；保存后确认无 U+FFFD |
+| 12 | `CMakeLists.txt:26,28`、`vcpkg.json:2`、`.vscode/launch.json:8,20`、`cmake/kill_running.*` | `my-project` / "My Company" 模板残留 | 改为 `Plugin-shot` + 真实描述 |
+| 13 | `CMakeLists.txt` | `ENABLE_UPGRADE` 指向不存在的 `upgrade/`，一打开就 configure 失败 | 该特性已整体删除；现有开关只剩 `ENABLE_KILL_RUNNING` |
+| 14 | `README.md:32` / `README.en.md:35` | 状态表说"宿主尚未读取元数据"，与代码矛盾 | 改为"宿主加载前读取：预筛 + 依赖拓扑排序"，中英同步 |
+| 15 | `document/README_SDK.md` ↔ `sdk/README.md` | 生成物硬编码且已漂移，还含假事实（"宿主链接 OpenCV"） | `document/README_SDK.md` 是唯一源，`export_sdk` 直接 COPYONLY 复制；假事实已删 |
+| 16 | `CMakeLists.txt`、`CMakePresets.json`、插件 `CMakeLists.txt` | 最低版本三个值（3.15 / 3.21 / 3.20） | 根与插件/模块统一 **3.20**，presets **3.21**（schema v3 要求），README 已同步 |
+| 17 | `src/main.cpp` | 跨边界结构体 `ShotEvent` 用位置初始化 | 一律用指定初始化器（`.struct_size = ...`） |
+
+**这类问题的共同点**：它们都不是"风格偏好"，而是**编译不过 / 语义反了 / 文档在撒谎**。
+修的时候顺手把 `git status` 看一遍，别把正在进行的重构半成品一起提交。
+
+## 12. 新代码自检清单
+
+- [ ] 我改的是"契约 / 宿主 / 插件"哪一侧？该侧的规则我看了吗？
+- [ ] 命名符合 §3 的分层规则？（C 边界 snake，C++ 方法 camel，常量 `k`，成员 `m_`，全局 `g_`）
+- [ ] 4 空格、K&R、`if (` 有空格、行宽 ≤120、行尾无空格、文件末尾有换行？
+- [ ] 头文件 `#pragma once`？包含顺序是 自身 → 标准库 → 项目头？
+- [ ] 跨边界结构体：第一个字段 `struct_size` 由我填了吗？读字段前 `SHOT_HAS_FIELD` 了吗？
+- [ ] 插件回调里 `void* self` 走的是 `state_of(self)` 吗？`ShotImage` 是按行寻址的吗？
+- [ ] 异常会不会跨出 `extern "C"`？失败路径是否都变成了返回码/`false`？
+- [ ] 谁分配谁释放：插件对象由插件 `destroy` 了吗？宿主有没有 `delete` 插件对象？
+- [ ] 中文注释解释的是"为什么"吗？有没有把踩坑结论写下来？
+- [ ] 改契约了吗？→ 改 `document/ABI_POLICY.md` 的登记表 + `static_assert` + 版本号。
+- [ ] 改 metadata 了吗？→ 顺序仍与 `kEntries[]` 一致吗？`cmake/ValidatePluginMeta.cmake` 会校验。
+- [ ] 改 README 了吗？英文镜像同步了吗？目录树同步了吗？
+- [ ] 我是不是不小心把 `build/`、`sdk/`、`build_number.txt` 的自动变化带进提交了？
+
+---
+
+## 13. 附录：接手者第一小时
+
+**读**（按顺序，约 40 分钟）：
+
+1. `README.md` 的「设计理念 / 当前状态 / 目录结构」——知道这东西现在能干什么。
+2. `document/ABI_POLICY.md`——只追加规则与 interface 登记表。
+3. `include/plugin_api.h` 开头的几段 banner（`:8-100`）——整个契约的三条纪律。
+4. `src/PluginManager.cpp` 的 `loadPlugins()`——五个阶段的加载流程。
+5. `plugins/example_processor/`（整个目录，尤其 `src/plugin_entry.cpp`）——最完整的插件模板。
+6. `document/METADATA.md`——元数据为什么只是"声明"。
+
+**跑**：
+
+```bash
+export VCPKG_ROOT=/path/to/vcpkg        # Windows: set VCPKG_ROOT=D:\vcpkg
+cmake -S . -B build/Windows -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/Windows
+cd build/Windows/bin && ./Plugin-shot.exe    # 必须在 bin/ 下启动（插件目录是相对路径 ./plugins）
+```
+
+**别信**：`sdk/`（旧快照）、`build/`（产物）、README 的目录树（可能滞后于重构）、工作区里的半成品（先看 `git status`）。
+**代码是唯一事实。**
