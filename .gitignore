@@ -75,3 +75,4 @@ build/
 .vs/
 sdk/
 *.db
+.dsh/
