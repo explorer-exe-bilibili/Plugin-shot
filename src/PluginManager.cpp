@@ -1,7 +1,9 @@
 #include "PluginManager.h"
 #include "PluginInstances/ImageProcessor.h"
 #include "PluginInstances/LibProvider.h"
+#include "PluginInstances/UIProvider.h"
 #include "plugin_meta.h"
+#include "hostServices.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -31,58 +33,23 @@ struct PluginManager::Node{
     std::string libName;
     std::string libVersion;
 };
-namespace {
 
-// ---------------------------------------------------------------------------
-// 宿主服务表
-//
-// 静态实例：它必须在插件实例的整个生命周期内有效，所以插件可以放心把指针存起来。
-// 将来新增服务就往后追加字段，插件的 SHOT_HAS_FIELD 检查会自动兼容。
-// ---------------------------------------------------------------------------
-void hostLog(void* /*ctx*/, int32_t level, const char* msg, int32_t len) {
-    if (msg == nullptr) {
-        return;
-    }
-    std::ostream& os = (level >= SHOT_LOG_WARN) ? std::cerr : std::cout;
-    os << "    [plugin] ";
-    if (len < 0) {
-        os << msg;
-    } else {
-        os.write(msg, static_cast<std::streamsize>(len));
-    }
-    os << '\n';
-}
-
-void* hostQueryInterface(void* /*ctx*/, const char* /*ifaceId*/, uint32_t /*version*/) {
-    return nullptr;  // 宿主暂时不对外提供服务
-}
-
-const ShotHostServices g_hostServices = {
-    .struct_size     = sizeof(ShotHostServices),
-    .abi_major       = SHOT_ABI_MAJOR,
-    .abi_minor       = SHOT_ABI_MINOR,
-    .reserved0       = 0,
-    .host_context    = nullptr,
-    .log             = &hostLog,
-    .query_interface = &hostQueryInterface,
-};
-
-// core（宿主自身）的版本：来自 CMake 生成的 version.h
-ShotVersion hostCoreVersion() {
-    return ShotVersion{VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH};
-}
-
-struct PreparedDll {
+struct PluginManager::PreparedDll {
     std::shared_ptr<DllHandler> dll;
     const ShotModule* module = nullptr;
     bool failed = false;
     std::string reason;
 };
 
-}
+
 
 std::string PluginManager::nodeLabel(const Node& node)  {
     return node.hasMeta ? node.meta.id : (node.dllPath + "#" + std::to_string(node.index));
+}
+
+// core（宿主自身）的版本：来自 CMake 生成的 version.h
+ShotVersion hostCoreVersion() {
+    return ShotVersion{VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH};
 }
 
 // 依赖检查：core 由宿主满足，其它名字由别的插件满足（它的 id，或它 provides 的名字）。
@@ -284,7 +251,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
                                   << "; newer capabilities will be unavailable." << std::endl;
                     }
                     if (module->init != nullptr) {
-                        const int32_t rc = module->init(&g_hostServices, 0);
+                        const int32_t rc = module->init(&Host::g_hostServices, 0);
                         if (rc != 0) {
                             entry.failed = true;
                             entry.reason = "init 拒绝了本宿主（" + std::to_string(rc) + "）";
@@ -310,7 +277,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
     // 创建第 index 个插件，按能力登记。成功时填 node.runtimeName。
     std::function<bool(Node&, PreparedDll&)> registerOne = [&](Node& node, PreparedDll& dll) -> bool {
         const ShotModule* module = dll.module;
-        void* instance = module->create(node.index, &g_hostServices);
+        void* instance = module->create(node.index, &Host::g_hostServices);
         if (instance == nullptr) {
             node.skipReason = "create 返回空";
             return false;
@@ -353,14 +320,14 @@ bool PluginManager::loadPlugins(const std::string& dir) {
 
         void* (*const query)(void*, const char*, std::uint32_t) = module->query_interface;
 
-        const auto* ops = (query == nullptr)
+        const auto* imageProcessorOps = (query == nullptr)
             ? nullptr
             : static_cast<const ShotImageProcessorV1*>(
                   query(instance, SHOT_IFACE_IMAGE_PROCESSOR, 1));
-        if (ops != nullptr && SHOT_HAS_FIELD(ops, ShotImageProcessorV1, process) &&
-            ops->process != nullptr) {
+        if (imageProcessorOps != nullptr && SHOT_HAS_FIELD(imageProcessorOps, ShotImageProcessorV1, process) &&
+            imageProcessorOps->process != nullptr) {
             m_plugins[PluginType::ImageProcessor].push_back(std::make_shared<ImageProcessorInstance>(
-                dll.dll, module, instance, ops, displayName));
+                dll.dll, module, instance, imageProcessorOps, displayName));
             node.runtimeName = displayName;
             return true;
         }
@@ -381,10 +348,25 @@ bool PluginManager::loadPlugins(const std::string& dir) {
                     }
                 }
                 m_plugins[PluginType::Lib].push_back(std::make_shared<LibProvider>(
-                    dll.dll, instance, module->destroy, displayName, libOps));
+                    dll.dll, module, instance, displayName, libOps));
                 node.runtimeName = displayName;
                 return true;
             }
+        }
+
+        const auto* uiOps = (query == nullptr)
+            ? nullptr
+            : static_cast<const ShotUIProviderV1*>(query(instance, SHOT_IFACE_UI_PROVIDER, 1));
+        if (uiOps != nullptr && SHOT_HAS_FIELD(uiOps, ShotUIProviderV1, post_to_plugin) &&
+            uiOps->post_to_plugin != nullptr) {
+            auto provider = std::make_shared<UIProvider>(dll.dll, module, instance, uiOps, displayName);
+            if (!provider->init(&Host::g_hostServices)) {
+                node.skipReason = "UIProvider::init 失败";
+                return false;          // 由 provider 析构触发 module->destroy
+            }
+            m_plugins[PluginType::UIProvider].push_back(provider);
+            node.runtimeName = displayName;
+            return true;
         }
 
         module->destroy(instance);
@@ -446,6 +428,14 @@ bool PluginManager::loadPlugins(const std::string& dir) {
 
 void PluginManager::unloadAll() {
     // 顺序有讲究：先让插件实例走完自己的 destroy，再 shutdown 模块，最后才放手 DLL。
+    if(auto it=m_plugins.find(PluginType::UIProvider); it != m_plugins.end()){
+        for(auto& plugin : it->second){
+            if(auto uiProvider = std::dynamic_pointer_cast<UIProvider>(plugin)){
+                uiProvider->postToPlugin(ShotEvent{sizeof(ShotEvent), "host.shutdown", nullptr, 0, 0});
+                uiProvider->deinit();  // 先 deinit，后析构
+            }
+        }
+    }
     m_plugins.clear();
     for (auto& entry : m_modules) {
         const ShotModule* module = entry.second;
