@@ -29,10 +29,10 @@
 | 能力查询 `query_interface("shot.image_processor", 1)` | ✅ 可用 |
 | 运行库提供者 `shot.lib_provider`（`PluginType::Lib`） | ✅ 可用（`plugins/opencv_provider` 把 OpenCV 带进进程） |
 | 插件配置 `shot.configurable`（插件声明、宿主渲染与存盘） | ✅ 契约与示例可用（宿主界面未做） |
-| 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主尚未读取，见路线图） |
+| 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主加载前读取：预筛 + 依赖拓扑排序） |
 | 元数据构建期校验（id 唯一 / interfaces 已注册 / abi 与头一致 / 依赖语法） | ✅ 可用（`cmake/ValidatePluginMeta.cmake`） |
 | 插件级依赖声明（`requires` / `provides`，带版本区间，`core` 为宿主） | ✅ 可用（`document/METADATA.md`） |
-| 依���驱动加载顺序（拓扑排序，不满足只跳过该插件） | ✅ 可用 |
+| 依赖驱动加载顺序（拓扑排序，不满足只跳过该插件） | ✅ 可用 |
 | 插件工程公共构建规则（`shot_add_plugin()`） | ✅ 可用（宿主与离线 SDK 共用） |
 | 离线插件 SDK 导出（`export_sdk` 目标） | ✅ 可用 |
 | `Window` / `Tray` 能力 | 📋 只需新增 interface id + 结构体，契约不用动 |
@@ -52,7 +52,7 @@
 │   ├── plugin_api.h          # ★ 宿主 ⇄ 插件的 ABI 契约（唯一的跨边界头，纯 C）
 │   ├── plugin_api_export.h   # 导出宏：插件默认 dllexport，宿主定义 SCREENSHOT_HOST_EXPORTS
 │   ├── shot_plugin_helpers.h # 插件侧小工具：能力目录 + shot_query_interface + SHOT_OPS
-│   ├── dllHander.h           # LoadLibrary / dlopen 封装（含不抛异常的 tryGetFunction）
+│   ├── dllHandler.h           # LoadLibrary / dlopen 封装（含不抛异常的 tryGetFunction）
 │   ├── pluginManager.h       # 插件扫描、长度/版本校验、按类型索引
 │   └── PluginInstances/      # 宿主侧插件对象包装（base / ImageProcessor / LibProvider …）
 ├── src/                      # 宿主实现与入口
@@ -73,7 +73,7 @@
 
 ## 构建
 
-前置：CMake ≥ 3.15、支持 C++23 的编译器（Windows 上为 MSVC）、[vcpkg](https://github.com/microsoft/vcpkg)。
+前置：CMake ≥ 3.20（直接用 `CMakePresets.json` 时需 ≥ 3.21）、支持 C++23 的编译器（Windows 上为 MSVC）、[vcpkg](https://github.com/microsoft/vcpkg)。
 
 ```bash
 # 工具链优先读 $VCPKG_ROOT / $VCPKG_INSTALLATION_ROOT，都没有则回落到 /opt/vcpkg
@@ -296,7 +296,7 @@ shot_add_plugin(acme_tools
 ## 平台
 
 Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。
-`CMakeLists.txt` 已含 macOS / Linux / WSL 分支，`dllHander.h` 也已支持 `dlopen`，但**未经验证**。
+`CMakeLists.txt` 已含 macOS / Linux / WSL 分支，`dllHandler.h` 也已支持 `dlopen`，但**未经验证**。
 
 ## 许可
 

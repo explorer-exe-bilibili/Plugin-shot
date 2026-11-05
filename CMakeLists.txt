@@ -9,10 +9,13 @@
 #     1. 修改 CONFIGURATION 区的项目名称和版本号
 #     2. 在 DEPENDENCIES 区域按需添加你的 find_package
 #     3. 在 [15. 查找并链接依赖库] 中同步更新 include/link
-#     4. 如果不需要 upgrade 子程序，保持 ENABLE_UPGRADE=OFF
-#     5. 检查 src/ include/ 目录结构是否匹配
+#     4. 检查 src/ include/ 目录结构是否匹配
 # ============================================================================
 
+# ============================================================================
+#  0. cmake 最小版本 —— 必须是第一条 CMake 命令（先于 project() 与所有依赖探测）
+# ============================================================================
+cmake_minimum_required(VERSION 3.20)
 
 # ============================================================================
 #  >>> START OF CONFIGURATION — 从这里开始定制你的项目 <<<
@@ -20,9 +23,9 @@
 
 # --- 项目标识 ------------------------------------------------
 set(PROJECT_NAME                  "Plugin-shot")            # 项目名称 = 可执行文件名
-set(PROJECT_DESCRIPTION           "A cross-platform C++ project")
+set(PROJECT_DESCRIPTION           "A plugin-based screenshot tool with a stable C plugin ABI")
 set(PROJECT_HOMEPAGE_URL          "https://alist.1class.top/")
-set(PROJECT_COMPANY               "My Company")           # 出现在 exe 属性的 CompanyName
+set(PROJECT_COMPANY               "Plugin-shot contributors")           # 出现在 exe 属性的 CompanyName
 set(PROJECT_COPYRIGHT             "Copyright (C) 2025")   # 出现在 LegalCopyright
 
 # --- 版本号 --------------------------------------------------
@@ -34,22 +37,15 @@ set(PROJECT_VERSION_BUILD         0)      # 构建号，会被 build_number.txt 
 # --- 目录结构 ------------------------------------------------
 set(SRC_DIR                       "src")
 set(INC_DIR                       "include")
-set(UPGRADE_DIR                   "upgrade")
 set(RESOURCE_DIR                  "files")
 set(VERSION_H_IN                  "${INC_DIR}/version.h.in")
 
 # --- 可选特性 ------------------------------------------------
-option(ENABLE_UPGRADE             "Build the auto-upgrade executable" OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Windows 图标与资源文件 -----------------------------------
 set(APP_ICON                      "${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.ico")
 set(APP_RC_IN                     "${CMAKE_CURRENT_SOURCE_DIR}/app.rc.in")
-set(UPGRADE_ICON                  "${CMAKE_CURRENT_SOURCE_DIR}/upgrade.ico")
-set(UPGRADE_RC_IN                 "${CMAKE_CURRENT_SOURCE_DIR}/upgrade.rc.in")
-
-# --- 升级程序的目标名称 --------------------------------------
-set(UPGRADE_TARGET                "upgrade")
 
 # --- C++ 标准 ------------------------------------------------
 set(CPP_STANDARD                  23)                     # 17 / 20 / 23
@@ -57,12 +53,6 @@ set(CPP_STANDARD                  23)                     # 17 / 20 / 23
 # ============================================================================
 # 在15处添加你的 find_package 调用，并在 15. 查找并链接依赖库 中同步更新 include/link
 # ===========================================================================
-
-
-# ============================================================================
-#  0. cmake 最小版本
-# ============================================================================
-cmake_minimum_required(VERSION 3.15)
 
 
 # ============================================================================
@@ -342,28 +332,8 @@ if(WIN32)
         @ONLY
     )
     set(RESOURCE_FILES "${CMAKE_BINARY_DIR}/generated/${PROJECT_NAME}.rc")
-
-    if(ENABLE_UPGRADE)
-        configure_file(
-            "${UPGRADE_RC_IN}"
-            "${CMAKE_BINARY_DIR}/generated/${UPGRADE_TARGET}.rc"
-            @ONLY
-        )
-        set(UPGRADE_RESOURCE_FILES "${CMAKE_BINARY_DIR}/generated/${UPGRADE_TARGET}.rc")
-
-        if(EXISTS "${UPGRADE_ICON}")
-            configure_file(
-                "${UPGRADE_ICON}"
-                "${CMAKE_BINARY_DIR}/generated/${UPGRADE_TARGET}.ico"
-                COPYONLY
-            )
-        else()
-            message(WARNING "Upgrade icon not found: ${UPGRADE_ICON}")
-        endif()
-    endif()
 else()
     set(RESOURCE_FILES "")
-    set(UPGRADE_RESOURCE_FILES "")
 endif()
 
 
@@ -394,10 +364,6 @@ set(PLUGINS_OUTPUT_DIR "${APP_OUTPUT_DIR}/plugins")
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "${SRC_DIR}/*.cpp" "${SRC_DIR}/*.c")
 file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS "${INC_DIR}/*.hpp" "${INC_DIR}/*.h")
 
-if(ENABLE_UPGRADE)
-    file(GLOB_RECURSE UPGRADE_SOURCES CONFIGURE_DEPENDS "${UPGRADE_DIR}/*.cpp" "${UPGRADE_DIR}/*.c")
-endif()
-
 
 # ============================================================================
 #  14. 创建可执行目标
@@ -422,13 +388,6 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     COMPILE_PDB_OUTPUT_DIRECTORY "${PROJECT_PDB_DIR}"
 )
 
-if(ENABLE_UPGRADE AND UPGRADE_SOURCES)
-    if(WIN32)
-        add_executable(${UPGRADE_TARGET} ${UPGRADE_SOURCES} ${UPGRADE_RESOURCE_FILES})
-    else()
-        add_executable(${UPGRADE_TARGET} ${UPGRADE_SOURCES})
-    endif()
-endif()
 
 # ============================================================================
 #  14.1 链接前杀掉正在运行的实例（防止 Windows 上 LNK1104 文件占用）
@@ -495,15 +454,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     nlohmann_json::nlohmann_json
 )
 
-# ---- upgrade 子程序（如启用） ----
-if(ENABLE_UPGRADE)
-    target_include_directories(${UPGRADE_TARGET} PRIVATE
-        ${CMAKE_BINARY_DIR}/generated
-    )
-    target_link_libraries(${UPGRADE_TARGET} PRIVATE
-        # 在这里添加 upgrade 的链接库
-    )
-endif()
 
 # ============================================================================
 #  15.1 插件工程 —— plugins/*/
@@ -549,17 +499,6 @@ if(WIN32)
         opengl32 gdi32 user32 kernel32 shell32 ole32 ws2_32 ntdll advapi32 bcrypt userenv
     )
 
-    if(ENABLE_UPGRADE)
-        target_link_libraries(${UPGRADE_TARGET} PRIVATE
-            kernel32 user32 wininet urlmon shell32
-        )
-        target_link_options(${UPGRADE_TARGET} PRIVATE
-            $<$<CONFIG:Release>:/SUBSYSTEM:WINDOWS>
-            $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>
-            $<$<CONFIG:Debug>:/SUBSYSTEM:CONSOLE>
-        )
-    endif()
-
     if(EXISTS "${APP_ICON}")
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -568,18 +507,7 @@ if(WIN32)
         )
     endif()
 
-    if(ENABLE_UPGRADE AND EXISTS "${UPGRADE_ICON}")
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${UPGRADE_ICON}" "${APP_OUTPUT_DIR}/${UPGRADE_TARGET}.ico"
-            COMMENT "Copying upgrade icon"
-        )
-    endif()
-
     target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
-    if(ENABLE_UPGRADE)
-        target_compile_options(${UPGRADE_TARGET} PRIVATE /utf-8)
-    endif()
 
 elseif(APPLE)
     # --- macOS 常用框架（按需取消注释） ---
@@ -642,11 +570,7 @@ endif()
 # ============================================================================
 #  18. 安装规则
 # ============================================================================
-if(ENABLE_UPGRADE)
-    install(TARGETS ${PROJECT_NAME} ${UPGRADE_TARGET} RUNTIME DESTINATION bin)
-else()
-    install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
-endif()
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
 
 
 # ============================================================================
@@ -710,7 +634,7 @@ if(WIN32)
 
     # ---- 产物剪枝（缺陷1 / 缺陷2 的根治）----
     # copy_dlls 是 ALL 目标，Ninja 可以把它排到链接之前（实测 [1/7]），那时宿主
-    # 的 my-project.pdb 还没生成，清理永远清不到。POST_BUILD 挂在目标自身的
+    # 的宿主 pdb 还没生成，清理永远清不到。POST_BUILD 挂在目标自身的
     # 链接边上，链接完成后才执行，所以一定能清到链接器刚产出的 pdb/ilk。
     set(PRUNE_OUTPUT_COMMAND
         ${CMAKE_COMMAND}

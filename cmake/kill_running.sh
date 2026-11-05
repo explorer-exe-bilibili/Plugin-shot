@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -u
 
-NAME="${1:-my-project}"
+NAME="${1:-Plugin-shot}"
 
 # 精确匹配进程名（comm 字段）。注意 Linux 的 comm 只有 15 字符，
 # 若项目名 > 15 字符，改用: pgrep -f "/bin/${NAME}$" / pkill -f "/bin/${NAME}$"

@@ -32,7 +32,7 @@ current main line; screen recording and friends will follow.
 | Capability query `query_interface("shot.image_processor", 1)` | ✅ working |
 | Runtime provider `shot.lib_provider` (`PluginType::Lib`) | ✅ working (`plugins/opencv_provider` brings OpenCV into the process) |
 | Plugin configuration `shot.configurable` (plugin declares, host renders and stores) | ✅ contract and sample working (host UI not built yet) |
-| Plugin metadata appended to the DLL tail (`metadata.json`, CMake only) | ✅ working (the host does not read it yet — see roadmap) |
+| Plugin metadata appended to the DLL tail (`metadata.json`, CMake only) | ✅ working (the host reads it before loading: prefilter + dependency topological sort) |
 | Build-time metadata validation (unique ids / registered interfaces / abi matches the header / dependency syntax) | ✅ working (`cmake/ValidatePluginMeta.cmake`) |
 | Plugin-level dependencies (`requires` / `provides` with version ranges, `core` = the host) | ✅ working (`document/METADATA.md`) |
 | Dependency-driven load order (topological sort; an unsatisfied plugin is skipped on its own) | ✅ working |
@@ -56,7 +56,7 @@ current main line; screen recording and friends will follow.
 │   ├── plugin_api.h          # ★ the host ⇄ plugin ABI contract (only cross-boundary header, plain C)
 │   ├── plugin_api_export.h   # export macro: dllexport for plugins, SCREENSHOT_HOST_EXPORTS for the host
 │   ├── shot_plugin_helpers.h # plugin-side helpers: capability list + shot_query_interface + SHOT_OPS
-│   ├── dllHander.h           # LoadLibrary / dlopen wrapper (with a non-throwing tryGetFunction)
+│   ├── dllHandler.h           # LoadLibrary / dlopen wrapper (with a non-throwing tryGetFunction)
 │   ├── pluginManager.h       # plugin scanning, length/version checks, type index
 │   └── PluginInstances/      # host-side wrappers (base / ImageProcessor / LibProvider …)
 ├── src/                      # host implementation and entry point
@@ -77,7 +77,7 @@ current main line; screen recording and friends will follow.
 
 ## Build
 
-Requirements: CMake ≥ 3.15, a C++23 compiler (MSVC on Windows), and [vcpkg](https://github.com/microsoft/vcpkg).
+Requirements: CMake ≥ 3.20 (≥ 3.21 when using `CMakePresets.json`), a C++23 compiler (MSVC on Windows), and [vcpkg](https://github.com/microsoft/vcpkg).
 
 ```bash
 # toolchain lookup order: $VCPKG_ROOT, then $VCPKG_INSTALLATION_ROOT, then /opt/vcpkg
@@ -308,7 +308,7 @@ the root `CMakeLists.txt` and drifted away from the docs.
 ## Platforms
 
 Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`).
-`CMakeLists.txt` already carries macOS / Linux / WSL branches and `dllHander.h` supports
+`CMakeLists.txt` already carries macOS / Linux / WSL branches and `dllHandler.h` supports
 `dlopen`, but **neither is verified**.
 
 ## License

@@ -1,7 +1,7 @@
 {
-  "name": "my-project",
+  "name": "plugin-shot",
   "version-string": "0.1.0",
-  "description": "A cross-platform C++ project",
+  "description": "Plugin-based screenshot tool with a stable C plugin ABI",
   "dependencies": [
     {
       "name": "opencv4",
