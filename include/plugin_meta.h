@@ -17,7 +17,7 @@
 #include "shot_semver.h"
 
 // 一条依赖声明：name[op version]，例如 "opencv>=4.12" / "core>=0.1.0" / "acme.shaper"。
-namespace Plugin{
+namespace Plugin {
 
 class PluginRequirement{
     bool m_isBroken=false;  // 语法坏的依赖当成"无法满足"，宁可跳过这个插件也不误加载
@@ -64,4 +64,4 @@ public:
     bool readFromFile(const std::string& dllPath, std::string& error);
 };
 
-} // namespace Plugin
+}  // namespace Plugin

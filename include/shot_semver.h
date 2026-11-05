@@ -24,7 +24,7 @@ class ShotVersion {
 public:
     ShotVersion() = default;
     ShotVersion(int major, int minor, int patch) : major(major), minor(minor), patch(patch) {}
-    int Compare(const ShotVersion& other) const {
+    int compare(const ShotVersion& other) const {
         if (major != other.major) return major < other.major ? -1 : 1;
         if (minor != other.minor) return minor < other.minor ? -1 : 1;
         if (patch != other.patch) return patch < other.patch ? -1 : 1;
@@ -35,15 +35,15 @@ public:
         switch (op){
             case Op::None: return true;
             case Op::Invalid: return false;
-            case Op::Gt: return Compare(other) > 0;
-            case Op::Gte: return Compare(other) >= 0;
-            case Op::Lt: return Compare(other) < 0;
-            case Op::Lte: return Compare(other) <= 0;
-            case Op::Eq: return Compare(other) == 0;
+            case Op::Gt: return compare(other) > 0;
+            case Op::Gte: return compare(other) >= 0;
+            case Op::Lt: return compare(other) < 0;
+            case Op::Lte: return compare(other) <= 0;
+            case Op::Eq: return compare(other) == 0;
         }
         return false;
     }
-    std::string to_string()const{
+    std::string to_string() const {
         return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
     }
     bool parse(const std::string& text) {

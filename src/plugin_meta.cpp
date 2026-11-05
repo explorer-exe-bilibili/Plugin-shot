@@ -89,7 +89,7 @@ PluginRequirement::PluginRequirement(const std::string& text) {
         m_isBroken = true;
         return;
     }
-    
+
 
     std::string opText;
     if (trimmed.compare(pos, 2, ">=") == 0 || trimmed.compare(pos, 2, "<=") == 0 ||

@@ -4,7 +4,7 @@
 // 宿主据此把它登记成 PluginType::Lib（LibProvider），而不是一个坏掉的图像处理器。
 //
 // 想再叠加能力（例如把 OpenCV 的某个接口开放给别的插件）时，做法是新增一个能力 id
-// 并在 query_interface 里多回答一个分支 —— 纯新增数据，不需要动 ABI 版本。
+// 并在 kIfaces 里加一项 —— 纯新增数据，不需要动 ABI 版本。
 
 #include <cstdint>
 #include <new>
@@ -15,6 +15,7 @@
 #endif
 
 #include "plugin_api.h"
+#include "shot_plugin_helpers.h"
 
 namespace {
 
@@ -32,9 +33,17 @@ std::string opencv_version() {
 #endif
 }
 
+// 模块级初始化：先做 ABI 协商，再说一句自己装好了。
+// 返回非 0 = "这个 DLL 无法在本宿主上工作"，宿主会直接卸载它。
 std::int32_t opencv_provider_init(const ShotHostServices* host, std::uint32_t flags) {
     (void)flags;
-    if (host != nullptr && SHOT_HAS_FIELD(host, ShotHostServices, log) && host->log != nullptr) {
+    if (host == nullptr) {
+        return 0;  // 老宿主没有服务表，仍然可以工作
+    }
+    if (SHOT_HAS_FIELD(host, ShotHostServices, abi_major) && host->abi_major != SHOT_ABI_MAJOR) {
+        return 1;
+    }
+    if (SHOT_HAS_FIELD(host, ShotHostServices, log) && host->log != nullptr) {
         const std::string text = "[OpenCVProvider] initialized, opencv " + opencv_version();
         host->log(host->host_context, SHOT_LOG_INFO, text.c_str(),
                   static_cast<std::int32_t>(text.size()));
@@ -63,20 +72,20 @@ const char* lib_get_version(void* /*self*/) {
     return version.c_str();
 }
 
+// SHOT_OPS 负责填 struct_size / version；字段顺序必须与结构体声明一致。
+const ShotLibProviderV1 kLibOps = SHOT_OPS(ShotLibProviderV1,
+                                           .get_library_name    = &lib_get_name,
+                                           .get_library_version = &lib_get_version);
+
+// 能力目录：以 { nullptr, 0, nullptr } 结尾，shot_query_interface 靠它停下。
+const ShotIfaceEntry kIfaces[] = {
+    {SHOT_IFACE_LIB_PROVIDER, 1, &kLibOps},
+    {nullptr, 0, nullptr},
+};
+
+// 没有的能力一律返回 NULL，宿主安静跳过。
 void* opencv_provider_query(void* /*instance*/, const char* iface_id, std::uint32_t version) {
-    if (iface_id == nullptr) {
-        return nullptr;
-    }
-    if (std::string(iface_id) == SHOT_IFACE_LIB_PROVIDER && version <= 1) {
-        static const ShotLibProviderV1 ops = {
-            .struct_size = sizeof(ShotLibProviderV1),
-            .version = 1,
-            .get_library_name = &lib_get_name,
-            .get_library_version = &lib_get_version,
-        };
-        return const_cast<ShotLibProviderV1*>(&ops);
-    }
-    return nullptr;  // 其它能力一律没有，宿主安静跳过
+    return shot_query_interface(kIfaces, iface_id, version);
 }
 
 std::int32_t opencv_provider_info(std::uint32_t index, ShotPluginInfo* out) {
@@ -93,7 +102,7 @@ std::int32_t opencv_provider_info(std::uint32_t index, ShotPluginInfo* out) {
     return 0;
 }
 
-const ShotModule g_module = {
+const ShotModule kModule = {
     .struct_size     = sizeof(ShotModule),
     .abi_major       = SHOT_ABI_MAJOR,
     .abi_minor       = SHOT_ABI_MINOR,
@@ -110,6 +119,6 @@ const ShotModule g_module = {
 
 extern "C" {
 
-SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &g_module; }
+SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 
 }  // extern "C"
