@@ -14,7 +14,8 @@
 #    · PREFIX "" —— 产物名就是目标名
 #    · CXX_VISIBILITY_PRESET hidden —— 只导出 SCREENSHOT_API 标注的符号
 #    · MSVC 运行库 /MD —— 与宿主一致，否则跨 DLL 释放会崩
-#    · dll 落插件输出目录，导入库落 build/lib，pdb 落 build/pdb/plugins
+#    · 动态库落插件输出目录（Windows .dll / macOS .dylib / Linux .so），
+#      导入库落 build/lib，pdb 落 build/pdb/plugins
 #    · 构建后先校验 metadata.json（id 唯一 / interfaces 已注册 / abi 与头一致），
 #      校验不过就不贴尾、直接构建失败
 #    · 构建后把 metadata.json 贴到 dll 尾部（纯 CMake，不需要 Python）
@@ -26,6 +27,8 @@
 #    SHOT_BUILD_LIB_DIR         插件导入库目录          默认 <build>/lib
 #    SHOT_PDB_DIR               插件 pdb 目录           默认 <build>/pdb/plugins
 #    SHOT_APP_OUTPUT_DIR        宿主产物目录（剪枝用）   未定义则跳过
+#    SHOT_DYN_EXT               动态库扩展名            默认按平台（.dll/.dylib/.so）
+#    SHOT_VCPKG_LIB_DIRS        vcpkg 运行库目录        非 Windows 作为 RPATH
 # ============================================================================
 
 if(NOT DEFINED SHOT_CONTRACT_INCLUDE_DIR)
@@ -41,12 +44,27 @@ endif()
 if(NOT DEFINED SHOT_PDB_DIR)
     set(SHOT_PDB_DIR "${CMAKE_BINARY_DIR}/pdb/plugins")
 endif()
+if(NOT DEFINED SHOT_DYN_EXT)
+    if(WIN32)
+        set(SHOT_DYN_EXT ".dll")
+    elseif(APPLE)
+        set(SHOT_DYN_EXT ".dylib")
+    else()
+        set(SHOT_DYN_EXT ".so")
+    endif()
+endif()
 # vcpkg 运行时 DLL 目录：用来把 applocal 拷进插件目录的基础依赖清掉。
 # 独立构建（没有 vcpkg 工具链）时保持为空，剪枝脚本会自动跳过这一步。
 if(NOT DEFINED SHOT_DEP_SCAN_DIRS AND VCPKG_TARGET_TRIPLET)
-    set(SHOT_DEP_SCAN_DIRS
-        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin"
-        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/bin")
+    if(WIN32)
+        set(SHOT_DEP_SCAN_DIRS
+            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin"
+            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/bin")
+    else()
+        set(SHOT_DEP_SCAN_DIRS
+            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib"
+            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/lib")
+    endif()
 endif()
 set(SHOT_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 
@@ -67,6 +85,14 @@ function(shot_add_plugin _target)
 
     add_library(${_target} SHARED ${_arg_SOURCES})
 
+    # Ninja：把插件的链接（连同挂在链接上的 POST_BUILD 剪枝）放进单并发池。
+    # 链接器会把 *.ilk 临时写到 dll 旁边，多个插件并行链接时，一个插件的剪枝会
+    # 扫到另一个插件"刚生成、还没被它自己的剪枝删掉"的 ilk，误报"清理后仍存在违规文件"。
+    # 池在根 CMakeLists.txt 的「12.1 Ninja 链接池」里定义（shot_link=1）。
+    if(CMAKE_GENERATOR MATCHES "Ninja")
+        set_property(TARGET ${_target} PROPERTY JOB_POOL_LINK shot_link)
+    endif()
+
     # 改 metadata.json 必须触发重新链接，否则 dll 里留的还是旧清单。
     # 把 json 塞进源文件列表没用（Ninja 不认非编译文件），要显式声明链接依赖。
     set_property(TARGET ${_target} APPEND PROPERTY LINK_DEPENDS "${_meta}")
@@ -84,6 +110,11 @@ function(shot_add_plugin _target)
     )
 
     target_include_directories(${_target} PRIVATE "${SHOT_CONTRACT_INCLUDE_DIR}")
+
+    # 非 Windows 的共享库不在 exe 旁边：插件被宿主 dlopen 时也要能找到 vcpkg 运行库。
+    if(UNIX AND SHOT_VCPKG_LIB_DIRS)
+        set_target_properties(${_target} PROPERTIES BUILD_RPATH "${SHOT_VCPKG_LIB_DIRS}")
+    endif()
     target_compile_definitions(${_target} PRIVATE NOMINMAX)
 
     if(_arg_INCLUDE_DIRS)
@@ -116,6 +147,7 @@ function(shot_add_plugin _target)
             "-DAPP_OUTPUT_DIR=${SHOT_APP_OUTPUT_DIR}"
             "-DPLUGINS_OUTPUT_DIR=${SHOT_PLUGINS_OUTPUT_DIR}"
             "-DDEP_SCAN_DIRS=${SHOT_DEP_SCAN_DIRS}"
+            "-DDYN_EXT=${SHOT_DYN_EXT}"
             -P "${SHOT_CMAKE_DIR}/prune_output_dir.cmake"
         COMMENT "插件 ${_target}：贴元数据 + 剪枝产物目录"
         VERBATIM

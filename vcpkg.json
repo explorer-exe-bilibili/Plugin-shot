@@ -3,6 +3,7 @@
   "version-string": "0.1.0",
   "description": "Plugin-based screenshot tool with a stable C plugin ABI",
   "dependencies": [
+    "nlohmann-json",
     {
       "name": "opencv4",
       "default-features": false,
@@ -13,6 +14,13 @@
         "webp"
       ]
     },
-    "nlohmann-json"
+    {
+      "name": "imgui",
+      "features": [
+        "win32-binding",
+        "opengl3-binding"
+      ]
+    },
+    "spdlog"
   ]
 }

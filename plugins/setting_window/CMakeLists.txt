@@ -15,6 +15,17 @@
 
 set(SHOT_PLUGIN_NAME setting_window)
 
+# 本插件是 Win32 窗口示例（windows.h / 消息循环）：非 Windows 平台直接跳过。
+# 被宿主 add_subdirectory 时用 PARENT_SCOPE 告诉根工程"这个插件被跳过了"，
+# 根工程据此只打一条 skip 日志，不会误以为它构建成功。
+if(NOT WIN32)
+    if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+        set(SHOT_PLUGIN_SKIPPED TRUE PARENT_SCOPE)
+    endif()
+    message(STATUS "setting_window：仅 Windows（Win32 窗口示例），当前平台跳过")
+    return()
+endif()
+
 # 独立构建时才自成一个 CMake 项目；被宿主 add_subdirectory 时不重复声明。
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_minimum_required(VERSION 3.20)

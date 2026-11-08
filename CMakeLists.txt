@@ -224,6 +224,30 @@ endif()
 
 
 # ============================================================================
+#  5.1 平台产物约定 —— 动态库扩展名 / vcpkg 运行库目录
+#
+#  Windows：插件是 *.dll，vcpkg 运行库在 <triplet>/bin 与 <triplet>/debug/bin；
+#  macOS  ：插件是 *.dylib，vcpkg 运行库在 <triplet>/lib 与 <triplet>/debug/lib；
+#  Linux  ：插件是 *.so，同上。
+#  剪枝（prune_output_dir）、产物白名单、RPATH 都按这两个变量工作。
+#
+#  TODO: macOS / Linux 分支还没在真机或 CI 上验证过构建与运行；验证通过后删掉这行。
+# ============================================================================
+if(WIN32)
+    set(SHOT_DYN_EXT ".dll")
+elseif(APPLE)
+    set(SHOT_DYN_EXT ".dylib")
+else()
+    set(SHOT_DYN_EXT ".so")
+endif()
+
+set(SHOT_VCPKG_TRIPLET_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
+set(SHOT_VCPKG_LIB_DIRS
+    "${SHOT_VCPKG_TRIPLET_DIR}/lib"
+    "${SHOT_VCPKG_TRIPLET_DIR}/debug/lib")
+
+
+# ============================================================================
 #  6. 编译器检测
 # ============================================================================
 if(MSVC)
@@ -346,6 +370,15 @@ set(CMAKE_CXX_EXTENSIONS        OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+# 12.1 Ninja 链接池 —— 插件目标的链接 + POST_BUILD 剪枝串行执行
+#
+# 链接器会把 *.ilk 临时写到 dll 旁边；多个插件并行链接时，一个插件的剪枝
+# （prune_output_dir.cmake）会扫到另一个插件刚生成、还没被删掉的 ilk，误报
+# "清理后仍存在违规文件"。池名与使用点见 cmake/ShotPlugin.cmake 的 JOB_POOL_LINK。
+if(CMAKE_GENERATOR MATCHES "Ninja")
+    set(CMAKE_JOB_POOLS shot_link=1)
+endif()
+
 if(CMAKE_CONFIGURATION_TYPES)
     set(APP_OUTPUT_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 else()
@@ -432,6 +465,7 @@ message(STATUS "Using vcpkg dependencies")
 #   find_package(nlohmann_json CONFIG REQUIRED)
 #   find_package(fmt CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED)          # 日志统一用 spdlog
 # ---- 编译定义 ----
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     NOMINMAX
@@ -452,6 +486,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     # 在这里添加你的链接库
     # glfw
     nlohmann_json::nlohmann_json
+    spdlog::spdlog
 )
 
 
@@ -484,7 +519,12 @@ if(SHOT_PLUGIN_PROJECTS)
         get_filename_component(_plugin_dir  "${_plugin_project}" DIRECTORY)
         get_filename_component(_plugin_name "${_plugin_dir}" NAME)
         add_subdirectory("${_plugin_dir}" "${CMAKE_BINARY_DIR}/plugins/${_plugin_name}")
-        message(STATUS "插件工程 ${_plugin_name} -> ${PLUGINS_OUTPUT_DIR}")
+        if(SHOT_PLUGIN_SKIPPED)
+            message(STATUS "插件工程 ${_plugin_name} 跳过（当前平台不支持）")
+            unset(SHOT_PLUGIN_SKIPPED)
+        else()
+            message(STATUS "插件工程 ${_plugin_name} -> ${PLUGINS_OUTPUT_DIR}")
+        endif()
     endforeach()
 else()
     message(STATUS "跳过插件工程：plugins/*/CMakeLists.txt 尚未创建")
@@ -520,6 +560,12 @@ elseif(APPLE)
         # ${COREVIDEO_LIBRARY}
     )
 
+    # 非 Windows 的共享库不在 exe 旁边：靠 RPATH 找 vcpkg 运行库。
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        BUILD_RPATH "${SHOT_VCPKG_LIB_DIRS}"
+        INSTALL_RPATH "@loader_path"
+    )
+
 elseif(UNIX)
     # --- Linux：如需 GUI，取消注释 ---
     # find_package(X11 QUIET)
@@ -536,6 +582,12 @@ elseif(UNIX)
     #         add_library(glfw ALIAS glfw3)
     #     endif()
     # endif()
+
+    # 非 Windows 的共享库不在 exe 旁边：靠 RPATH 找 vcpkg 运行库（$ORIGIN 支持可重定位）。
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        BUILD_RPATH "${SHOT_VCPKG_LIB_DIRS}"
+        INSTALL_RPATH "$ORIGIN"
+    )
 endif()
 
 
@@ -591,13 +643,21 @@ endif()
 #
 #  产物布局（硬约束）：
 #    bin/          只放运行依赖，禁止 *.pdb
-#    bin/plugins/  只放插件自身产物，禁止 OpenCV 等基础依赖（dll/pdb 都不许）
-#    sdk/          离线 SDK：include(契约头 + opencv4) / lib(仅 *.lib) / bin(仅 *.dll)
+#    bin/plugins/  只放插件自身产物，禁止 OpenCV 等基础依赖（动态库/调试符号都不许）
+#    sdk/          离线 SDK（仅 Windows）：include(契约头 + opencv4) / lib(仅 *.lib) / bin(仅 *.dll)
+#
+#  动态库扩展名随平台：Windows *.dll / macOS *.dylib / Linux *.so（SHOT_DYN_EXT）；
+#  非 Windows 不复制运行库，改由 RPATH 指向 vcpkg 的 lib 目录。
 #
 #  所有通配符清理都写在 cmake -P 脚本里，用 file(GLOB) + file(REMOVE) 展开。
 #  禁止再写 cmake -E remove -f "DIR/*.pdb"：cmake -E 不展开通配符，
 #  这条命令在历史上从未删掉过任何 pdb。
 # ============================================================================
+set(COPY_DEPS_SCRIPT  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_runtime_deps.cmake")
+set(EXPORT_SDK_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/export_sdk.cmake")
+set(PRUNE_SCRIPT      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/prune_output_dir.cmake")
+set(SDK_OUTPUT_DIR    "${CMAKE_SOURCE_DIR}/sdk")
+
 if(WIN32)
     set(VCPKG_TRIPLET_DIR   "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
     set(VCPKG_BIN_DIR       "${VCPKG_TRIPLET_DIR}/bin")          # release 运行时 DLL
@@ -612,11 +672,6 @@ if(WIN32)
     # 生成器（逐配置解析）都能得到正确路径。
     # 选错目录的后果：Debug 宿主找不到 opencv_core4d.dll，一调用 OpenCV 就启动失败。
     set(RUNTIME_BIN_DIR "${VCPKG_TRIPLET_DIR}/$<$<CONFIG:Debug>:debug/>bin")
-
-    set(COPY_DEPS_SCRIPT  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_runtime_deps.cmake")
-    set(EXPORT_SDK_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/export_sdk.cmake")
-    set(PRUNE_SCRIPT      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/prune_output_dir.cmake")
-    set(SDK_OUTPUT_DIR    "${CMAKE_SOURCE_DIR}/sdk")
 
     # ---- 运行时依赖：本配置的 vcpkg bin/*.dll -> bin/ ----
     # 泄漏检测同时对照 release 与 debug 两个 bin 目录（缺陷3-b）
@@ -640,6 +695,7 @@ if(WIN32)
         ${CMAKE_COMMAND}
         "-DAPP_OUTPUT_DIR=${APP_OUTPUT_DIR}"
         "-DPLUGINS_OUTPUT_DIR=${PLUGINS_OUTPUT_DIR}"
+        "-DDYN_EXT=${SHOT_DYN_EXT}"
         -P "${PRUNE_SCRIPT}"
     )
 
@@ -665,5 +721,20 @@ if(WIN32)
         VERBATIM
     )
 else()
-    add_custom_target(copy_dlls ALL COMMAND ${CMAKE_COMMAND} -E echo "Non-Windows platform")
+    # macOS / Linux：运行库不复制（RPATH 指向 vcpkg 的 lib 目录），只需按平台扩展名剪枝。
+    add_custom_target(copy_dlls ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "非 Windows：运行库靠 RPATH 指向 vcpkg/lib，不复制"
+        COMMENT "布局运行时依赖（RPATH 模式）"
+        VERBATIM
+    )
+
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            "-DAPP_OUTPUT_DIR=${APP_OUTPUT_DIR}"
+            "-DPLUGINS_OUTPUT_DIR=${PLUGINS_OUTPUT_DIR}"
+            "-DDYN_EXT=${SHOT_DYN_EXT}"
+            -P "${PRUNE_SCRIPT}"
+        COMMENT "剪枝产物目录（非 Windows：保留 ${SHOT_DYN_EXT}）"
+        VERBATIM
+    )
 endif()
