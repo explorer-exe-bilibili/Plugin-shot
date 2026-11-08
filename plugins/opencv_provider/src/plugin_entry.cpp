@@ -43,11 +43,8 @@ std::int32_t opencv_provider_init(const ShotHostServices* host, std::uint32_t fl
     if (SHOT_HAS_FIELD(host, ShotHostServices, abi_major) && host->abi_major != SHOT_ABI_MAJOR) {
         return 1;
     }
-    if (SHOT_HAS_FIELD(host, ShotHostServices, log) && host->log != nullptr) {
-        const std::string text = "[OpenCVProvider] initialized, opencv " + opencv_version();
-        host->log(host->host_context, SHOT_LOG_INFO, text.c_str(),
-                  static_cast<std::int32_t>(text.size()));
-    }
+    // shot::Logger 内部处理了老宿主没有 log 字段的情况，这里直接写日志即可。
+    shot::Logger(host).info("[OpenCVProvider] initialized, opencv " + opencv_version());
     return 0;
 }
 
@@ -119,6 +116,9 @@ const ShotModule kModule = {
 
 extern "C" {
 
+/**
+ * @brief 唯一导出符号，返回静态模块表。
+ */
 SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 
 }  // extern "C"

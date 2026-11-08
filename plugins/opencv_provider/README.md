@@ -25,7 +25,7 @@ plugins/opencv_provider/
 ```
     [plugin] [OpenCVProvider] initialized, opencv 4.12.0
   + OpenCV Environment Provider
-Successfully loaded module: ./plugins\opencv_provider.dll (1 plugins, abi 1.1)
+Successfully loaded module: ./plugins\opencv_provider.dll (1 plugins, abi 1.2)
 Loaded 2 image processor plugins.
 Loaded 1 lib provider plugins.
   ~ OpenCV Environment Provider 4.12.0

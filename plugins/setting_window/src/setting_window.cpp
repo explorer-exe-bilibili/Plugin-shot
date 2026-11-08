@@ -25,8 +25,8 @@ namespace {
 
 const char kKeyDarkMode[] = "dark_mode";
 
-// 配置项声明。窗口还没有渲染，暂时只有一项；等 shot.configurable 接上后
-// 宿主就能据此生成通用界面。
+// TODO: shot.configurable 还没接上：kConfig 目前没有任何引用，等把它注册进 kIfaces
+// 并实现 get_config/set_config 后，宿主才能据此生成通用界面。
 const ShotConfigDesc kConfig[] = {
     {
         .struct_size   = sizeof(ShotConfigDesc),
@@ -86,7 +86,9 @@ struct SettingWindow::Impl {
         if (msg == WM_NCCREATE) {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
             SetWindowLongPtrW(wnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-            return TRUE;
+            // 交给 DefWindowProc 处理：它会从 CREATESTRUCTW::lpszName 设置窗口标题。
+            // 直接 return TRUE 会让标题为空（实测），其余默认处理也一并交给它。
+            return DefWindowProcW(wnd, msg, wp, lp);
         }
         auto* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(wnd, GWLP_USERDATA));
         if (self == nullptr) {
@@ -125,14 +127,9 @@ void SettingWindow::Impl::drain() {
     }
     while (!local.empty()) {
         const auto& [name, payload] = local.front();
-        // 事件数据已经拷进 payload 了，这里可以放心用；host 可能比本插件老，
-        // 没有 log 字段，所以必须逐字段检查。
-        if (host != nullptr && SHOT_HAS_FIELD(host, ShotHostServices, log) &&
-            host->log != nullptr) {
-            const std::string line = "[setting_window] event=" + name + " data=" + payload;
-            host->log(host->host_context, SHOT_LOG_INFO, line.c_str(),
-                      static_cast<std::int32_t>(line.size()));
-        }
+        // 事件数据已经拷进 payload 了，这里可以放心用；shot::Logger 对老宿主
+        // 没有 log 字段的情况做了降级。
+        shot::Logger(host).info("[setting_window] event=" + name + " data=" + payload);
         if(name=="host.shutdown")
         {
             PostQuitMessage(0);

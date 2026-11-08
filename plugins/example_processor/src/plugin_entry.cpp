@@ -46,11 +46,9 @@ void* create_instance(std::uint32_t index, const ShotHostServices* host) {
         return nullptr;
     }
 
-    // 演示"插件向宿主请求服务"：用宿主给的 log 报一句自己的 id。
-    // 宿主可能比本插件老、没有 log 字段，所以必须逐字段检查。
-    if (host != nullptr && SHOT_HAS_FIELD(host, ShotHostServices, log) && host->log != nullptr) {
-        host->log(host->host_context, SHOT_LOG_INFO, entry->id, -1);
-    }
+    // 演示"插件向宿主请求服务"：用 shot::Logger 报一句自己的 id。
+    // 老宿主可能没有 log 字段，shot::Logger 内部已经做了降级，这里不用再手写判空。
+    shot::Logger(host).info(entry->id);
     return instance;
 }
 
@@ -119,6 +117,9 @@ const ShotModule kModule = {
 
 extern "C" {
 
+/**
+ * @brief 唯一导出符号，返回静态模块表。
+ */
 SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 
 }  // extern "C"
