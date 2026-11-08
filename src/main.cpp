@@ -1,141 +1,63 @@
-#include <cstdint>
-#include <iostream>
+#include <filesystem>
 #include <string>
-#include <vector>
+#include <system_error>
 
-#include "pluginManager.h"
-#include "PluginInstances/ImageProcessor.h"
-#include "PluginInstances/LibProvider.h"
-#include "PluginInstances/UIProvider.h"
+#include <spdlog/spdlog.h>
 
+#include "base.h"
+#include "config.h"
+#include "hostLogging.h"
+#include "hostRuntime.h"
 #include "hostServices.h"
-namespace {
-
-void printPixel(const char* tag, const ShotImage& image) {
-    const std::uint8_t* p = image.data;
-    std::cout << tag << " B=" << static_cast<int>(p[0])
-              << " G=" << static_cast<int>(p[1])
-              << " R=" << static_cast<int>(p[2])
-              << " A=" << static_cast<int>(p[3]) << std::endl;
-}
-
-// 把插件声明的配置项列出来。
-// 注意这里宿主完全没有硬编码任何配置项名字：它只是遍历插件给的 ShotConfigDesc。
-void listConfig(Plugin::ImageProcessorInstance& processor) {
-    const auto* cfg = static_cast<const ShotConfigurableV1*>(
-        processor.queryInterface(SHOT_IFACE_CONFIGURABLE, 1));
-    if (cfg == nullptr || !SHOT_HAS_FIELD(cfg, ShotConfigurableV1, get_config)) {
-        std::cout << "    (no shot.configurable)" << std::endl;
-        return;
-    }
-
-    void* self = processor.nativeHandle();
-    const std::uint32_t count = cfg->get_config_count ? cfg->get_config_count(self) : 0;
-    for (std::uint32_t i = 0; i < count; ++i) {
-        ShotConfigDesc desc{};
-        desc.struct_size = sizeof(ShotConfigDesc);
-        if (cfg->get_config_desc == nullptr || cfg->get_config_desc(self, i, &desc) != 0 ||
-            desc.key == nullptr) {
-            continue;
-        }
-        char value[128] = {};
-        const std::int32_t len = cfg->get_config(self, desc.key, value, sizeof(value));
-        std::cout << "    " << desc.key << " = " << (len >= 0 ? value : "<error>")
-                  << "    (label: " << (desc.label ? desc.label : "-")
-                  << ", default: " << (desc.default_value ? desc.default_value : "-")
-                  << ")" << std::endl;
-    }
-}
-
-// 演示宿主改一个配置项。不认识的 key 必须被插件安全忽略 —— 这里也顺带验证这一点。
-void setConfig(Plugin::ImageProcessorInstance& processor, const char* key, const char* value) {
-    const auto* cfg = static_cast<const ShotConfigurableV1*>(
-        processor.queryInterface(SHOT_IFACE_CONFIGURABLE, 1));
-    if (cfg == nullptr || !SHOT_HAS_FIELD(cfg, ShotConfigurableV1, set_config) ||
-        cfg->set_config == nullptr) {
-        return;
-    }
-    const std::int32_t rc = cfg->set_config(processor.nativeHandle(), key, value);
-    std::cout << "  set " << processor.getName() << ": " << key << "=" << value
-              << (rc == 0 ? "  (applied)" : "  (ignored: unknown key)") << std::endl;
-}
-
-}  // namespace
 
 int main() {
-    std::cout << "Starting plugin manager..." << std::endl;
-    Plugin::PluginManager manager;
+    // 路径要在一切之前定下来：日志、配置、插件目录都依赖它们。
+    core::getAppPath();
+    core::getDataPath();
+    std::error_code ec;
+    std::filesystem::create_directories(core::dataPath, ec);
 
-    const std::string pluginDir = "./plugins";
-    if (!manager.loadPlugins(pluginDir)) {
-        std::cerr << "Failed to load plugins from directory: " << pluginDir << std::endl;
-        return 1;
+    Host::Logging::init();
+    spdlog::info("Starting host application...");
+    if (ec) {
+        spdlog::warn("Cannot create data directory {}: {}", core::dataPath, ec.message());
     }
 
-    auto processors =
-        manager.getPluginsByType<Plugin::ImageProcessorInstance>(Plugin::PluginType::ImageProcessor);
-    std::cout << "Loaded " << processors.size() << " image processor plugins." << std::endl;
+    // 配置文件在插件加载之前读：插件加载阶段要读 plugins.disabled，配置目录
+    // 在 init 里还会把已存值灌回插件。
+    core::Config::getInstance().init(core::dataPath + "/config.json");
 
-    // 运行库提供者：不提供算法，只负责把某个库带进本进程（见 shot.lib_provider）。
-    auto libProviders = manager.getPluginsByType<Plugin::LibProvider>(Plugin::PluginType::Lib);
-    std::cout << "Loaded " << libProviders.size() << " lib provider plugins." << std::endl;
-    for (auto& lib : libProviders) {
-        const std::string version = lib->getLibraryVersion();
-        std::cout << "  ~ " << lib->getName()
-                  << (version.empty() ? "" : " " + version) << std::endl;
-    }
-
-    for (auto& processor : processors) {
-        std::cout << "  config of " << processor->getName() << std::endl;
-        listConfig(*processor);
-    }
-
-    // 改两个配置项：invert 不再保留 alpha；grayscale 只混 50% 的灰。
-    // 每个插件都会收到两个 key，不认识的那个应被安全忽略。
-    std::cout << "Applying config..." << std::endl;
-    for (auto& processor : processors) {
-        setConfig(*processor, "keep_alpha", "0");
-        setConfig(*processor, "strength", "50");
-    }
-
-    const int w = 2, h = 2;
-    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(w) * h * 4);
-    for (std::size_t i = 0; i < pixels.size(); i += 4) {
-        pixels[i + 0] = 255;  // B
-        pixels[i + 1] = 0;    // G
-        pixels[i + 2] = 0;    // R
-        pixels[i + 3] = 255;  // A
-    }
-
-    ShotImage image{};
-    image.struct_size = sizeof(ShotImage);
-    image.pixel_format = SHOT_PIXEL_FORMAT_BGRA8;
-    image.data = pixels.data();
-    image.width = w;
-    image.height = h;
-    image.stride = w * 4;
-    image.channels = 4;
-
-    printPixel("Before processing:", image);
-    for (auto& processor : processors) {
-        if (!processor->process(image)) {
-            std::cerr << "  " << processor->getName() << " reported failure" << std::endl;
+    int exitCode = 0;
+    {
+        Host::HostRuntime runtime;
+        if (!runtime.init("./plugins")) {
+            spdlog::critical("Failed to initialize host runtime from ./plugins");
+            exitCode = 1;
+        } else {
+            // 测试阶段宿主自己发布一次 settings.open，让设置窗口随程序启动打开。
+            // 没有订阅者时发布只是空操作，不影响启动。
+            // TODO: 等托盘/热键插件就位后改由它发布，宿主不再代发。
+            if (Host::HostServices::eventBusPublish(nullptr, "settings.open", nullptr, 0) == 0) {
+                spdlog::info("Published settings.open (temporary boot trigger)");
+            } else {
+                spdlog::warn("Failed to publish settings.open");
+            }
+            // TODO: 正式截图采集（全屏 / 区域 / 窗口）还没实现：宿主现在只加载插件。
+            bool quit = false;
+            // TODO: 目前没有"退出"事件来源，先空转轮询；等托盘/热键插件就位后改成
+            // "等事件 → 处理 → 检查退出标志"，并处理 app.quit 事件。
+            while (!quit) {
+                // 每轮先把事件总线里排队的消息分发给订阅者；回调跑在 main 线程上。
+                Host::HostServices::dispatchEvents();
+                // 然后执行异步的插件启停、把脏配置落盘：两者都只允许在 main 线程做。
+                runtime.tick();
+                while (!Host::g_eventQueue.empty()) {
+                    Host::g_eventQueue.pop();
+                }
+            }
         }
-    }
-    printPixel("After processing: ", image);
-    auto uiProviders = manager.getPluginsByType<Plugin::UIProvider>(Plugin::PluginType::UIProvider);
-    std::cout << "Loaded " << uiProviders.size() << " ui provider plugins." << std::endl;
-    if (!uiProviders.empty()) {
-        const char payload[] = "{\"dark_mode\":true}";
-        ShotEvent ev{
-            .struct_size = sizeof(ShotEvent),
-            .name        = "setting.load",
-            .data        = payload,
-            .data_len    = sizeof(payload) - 1,
-            .flags       = 0,
-        };
-        uiProviders[0]->postToPlugin(ev);
-    }
+    }  // 先卸载插件（deinit 里还会经宿主服务写日志），再关日志系统
 
-    return 0;
+    spdlog::shutdown();
+    return exitCode;
 }
