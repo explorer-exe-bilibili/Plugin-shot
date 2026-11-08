@@ -18,6 +18,10 @@
 | 花括号 | K&R：开括号跟在行尾 | `void f() {` / `if (x) {` |
 | 行宽 | 目标 ≤100 列，上限 120 | 超了换行并对齐参数 |
 | 注释语言 | **中文散文**，解释"为什么" | `// 插件分配的对象只能由插件自己释放，宿主绝不 delete。` |
+| 公共 API 注释 | 头文件里的类 / 结构 / 函数必写 Doxygen `/** ... */`（§5.1） | `@brief` + `@param` + `@return` |
+| 头文件粒度 | **一个类一个头文件**；唯一例外：一个基类 + 几个非常简单的子类（§6.8） | `settings_window.h` / `settings_panel.h` |
+| .cpp 粒度 | 一个文件一个关注点；模型 / 渲染 / 提交这类可命名分区要拆开（§6.8） | `settings_model.cpp` / `settings_form.cpp` |
+| 未完成项 | 写成 `// TODO: 中文说明` 放在代码处，**不写进文档**（§5.2） | `// TODO: 事件循环还是空转轮询` |
 | 头文件 | 一律 `#pragma once`，不用 include guard | `include/plugin_api.h:1` |
 | 类型 | PascalCase | `PluginEntry` `GrayscaleState` `ShotModule` |
 | C 边界函数 / ABI 回调 | snake_case | `shot_module_entry` `create_instance` `grayscale_process` |
@@ -28,6 +32,9 @@
 | 宏 | 全大写 + `SHOT_` / `SCREENSHOT_` 前缀 | `SHOT_IFACE_CONFIGURABLE` |
 | 返回值 | C 边界：`0` = 成功；内部 C++：`bool` | `return 0;` / `return false;` |
 | 异常 | **绝不跨越 DLL 边界**；边界内用返回码 | |
+| 职责归属 | 一个关注点一个类；新功能进自己的 `.h`/`.cpp`，不寄居在已有类里 | `HostServices` `Config` `PluginManager`（§6.6） |
+| 类接口 | 类的**所有**具名函数都在 `.h` 声明；`.cpp` 不写头文件里没有的函数 | `PluginManager` 的 `private static`（§6.7） |
+| 文档同步 | 改代码必须**同提交**改对应文档；中英 README 必须同步 | §9.1 的同步矩阵 |
 
 ---
 
@@ -37,7 +44,8 @@
 
 | 世界 | 位置 | 语言 | 规则 |
 | --- | --- | --- | --- |
-| **契约（跨边界）** | `include/plugin_api.h`、`plugin_api_export.h`、`shot_plugin_helpers.h` | 纯 C（不依赖 STL） | 只追加、定宽类型、`struct_size` + `SHOT_HAS_FIELD`、异常不过界 |
+| **契约（跨边界）** | `include/plugin_api.h`、`plugin_api_export.h` | 纯 C（不依赖 STL） | 只追加、定宽类型、`struct_size` + `SHOT_HAS_FIELD`、异常不过界 |
+| **插件侧辅助头（不走 ABI）** | `include/shot_plugin_helpers.h` + `include/shot_plugin_helpers/` | C++17，可用 STL | 只被插件源码包含；不跨边界、不参与宿主编译 |
 | **宿主** | `src/`、`include/`（除契约头）、`include/PluginInstances/` | C++23 | 正常 C++，但**不得 delete 插件对象** |
 | **插件** | `plugins/<name>/` | C++23，但出口是纯 C | 一个 DLL = 一个包；`shot_module_entry` 是唯一导出符号 |
 
@@ -57,19 +65,21 @@
 
 | 层 | 规则 | 现状 |
 | --- | --- | --- |
-| 契约头（纯 C，跨 DLL） | snake_case | `plugin_api.h` `plugin_api_export.h` `shot_plugin_helpers.h` |
-| 契约相邻的共享头（C++） | snake_case | `plugin_meta.h` `shot_semver.h` |
-| 宿主内部头 | lowerCamelCase | `dllHandler.h` `hostServices.h` `pluginManager.h` |
+| 契约头（纯 C，跨 DLL） | snake_case | `plugin_api.h` `plugin_api_export.h` |
+| 契约相邻的共享头（C++） | snake_case | `shot_plugin_helpers.h`（汇总头）、`shot_plugin_helpers/shot_logger.h` `shot_plugin_helpers/shot_config.h`（每类一个）、`plugin_meta.h` `plugin_requirement.h` `shot_semver.h` |
+| 宿主内部头 | lowerCamelCase | `dllHandler.h` `hostServices.h` `pluginManager.h` `configItem.h` `hostRuntime.h` `hostConfigCatalog.h` |
 | 宿主包装类 | PascalCase，放 `include/PluginInstances/` | `ImageProcessor.h` `LibProvider.h` `UIProvider.h`（`base.h` 是唯一例外，保留） |
 | 插件目录 | snake_case，**目录名 = CMake 目标名 = DLL 名 = 命名空间名** | `plugins/example_processor/` → `example_processor.dll` → `namespace example_processor` |
 | 插件源文件 | snake_case，一个能力一个文件 | `src/plugin_entry.cpp` `src/grayscale.cpp` `src/invert.cpp` |
 | CMake 模块 | 新文件用 snake_case | `cmake/copy_runtime_deps.cmake` `cmake/ShotPlugin.cmake`（既有 PascalCase 保持不动） |
 
 > 文件命名就按上表的层来选，不要发明第四种拼法。`include/PluginInstances/base.h` 是唯一的小写文件名例外，保留不动。
+> 头文件粒度按 §6.8：**一个类一个头文件**；`shot_plugin_helpers.h` 这类汇总头自身不声明类，只 include
+> `shot_plugin_helpers/` 子目录里每类一个的头文件（避免 `include/` 根目录堆太多文件）。
 
 ### 2.2 插件目录的标准骨架
 
-```
+``` text
 plugins/my_plugin/
 ├── CMakeLists.txt        # 固定样板，见 §7
 ├── metadata.json         # 构建期贴到 DLL 尾部，见 document/METADATA.md
@@ -111,7 +121,7 @@ plugins/my_plugin/
 - **全局**：`g_` + camelCase —— `g_hostServices` `g_eventQueue` `g_broadcastQueue`。只在 `.cpp` 内可见的可变对象用 `static` + camelCase（`static std::mutex logMutex;`）。
 - **枚举**：宿主侧 `enum class` + PascalCase（`PluginType::ImageProcessor`）；**插件侧不定义枚举**，配置种类用契约宏 `SHOT_CONFIG_KIND_*`。
 - **宏**：全大写，契约宏一律 `SHOT_` 前缀；导出宏是 `SCREENSHOT_API`（**不是** `SHOT_PLUGIN_EXPORT`）。
-- **命名空间**：宿主 `Plugin` / `Host`（PascalCase）；插件 = 包名（snake_case，与目录同名）。不用 `a::b` 嵌套形式，匿名命名空间 `namespace { }` 收内部符号。
+- **命名空间**：宿主插件域用 `Plugin` / `Host`（PascalCase），宿主基础设施用 `core`（全小写，如 `core::Config`）；插件 = 包名（snake_case，与目录同名）。不用 `a::b` 嵌套形式，匿名命名空间 `namespace { }` 收内部符号。
 
 ### 3.3 格式骨架
 
@@ -164,7 +174,7 @@ const ShotModule kModule = {
 };
 ```
 
-> 能力函数表**不要手写** `struct_size`，用 `SHOT_OPS(...)` 宏（`include/shot_plugin_helpers.h:39-44`）。
+> 能力函数表**不要手写** `struct_size`，用 `SHOT_OPS(...)` 宏（`include/shot_plugin_helpers.h`）。
 
 - **尾部注释**：代码与 `//` 之间**两个空格**，且注释要短：`pixels[i + 0] = 255;  // B`。
 
@@ -204,11 +214,62 @@ const ShotModule kModule = {
      //  abi_major：布局或语义不兼容时递增，宿主只接受 major 相同的插件。
      // ============================================================================
      ```
+
    - **`.cpp` 内部**：单行 `----` 短 banner，或阶段标记：
      `// ---- 阶段 3：拓扑排序（提供者先于依赖者）；无元数据的包排在最后 ----`
-6. **不用 Doxygen**：全仓 `/** */`、`///`、`@param` 均为 0 处。不要引入。
-7. **不写 license/SPDX 头**（仓库尚未指定 license）。
-8. **没有 `TODO` / `FIXME` / `XXX` 习惯**（全仓 0 处）。未做完的事写在 README 的「当前状态 / 路线图」表里，而不是撒在代码里。
+
+6. **公共 API 用 Doxygen 注释**：头文件里的类、结构体、枚举、公开/受保护函数、导出宏必须有
+   `/** ... */`（§5.1）。散文注释继续负责"为什么"，Doxygen 负责"调用者必须知道的契约"。
+
+7. **未完成的事用 `// TODO:` 写在代码里**：README 的路线图、"下一步"、📋/🚧 计划一律不进文档（§5.2）。
+
+8. **不写 license/SPDX 头**（仓库尚未指定 license）。
+
+### 5.1 Doxygen 注释（公共 API 必须写）
+
+**这是硬要求。** 以前本仓库不写 Doxygen，现在补上——但**不是**把散文改成八股：
+Doxygen 只写"调用者必须知道的东西"（约束、单位、返回码、线程安全、ABI 警告），
+"为什么这么实现"仍用普通中文注释写。
+
+- **必写**：头文件里的 `class` / `struct` / `enum class` / 公开与 protected 函数 / 公共常量 /
+  导出宏 / 契约头 `include/plugin_api.h` 里的每个跨边界结构体与 `extern "C"` 入口。
+- **不写**：`.cpp` 里的私有实现、局部 lambda——那里继续用普通注释。
+- 格式：`/** ... */` 块；首行 `@brief` 一句话（中文、动宾），需要时补 1~3 行正文，
+  再按需 `@param` / `@return` / `@note` / `@warning`。
+- 标签只用这几个：`@brief`、`@param[in]`、`@param[out]`、`@param[in,out]`、`@return`、`@note`、`@warning`。
+  不用 `\brief`、`@file`、`@defgroup` 等其它写法。
+- 结构体字段用行尾 `/**< ... */`；纯 C 头也照此写。
+- 参数说明写**约束/单位/能否为空**，不要复述类型：
+  `@param[in] stride 字节为单位，可为负（自底向上存储）`。
+- **保留原有 banner 的"为什么"**：能并进 Doxygen 正文就并进去，不要同一件事写两遍。
+
+```cpp
+/**
+ * @brief 从 DLL 尾部读出 metadata.json，解析成插件清单。
+ *
+ * 只读文件尾部 64 KiB：元数据贴着文件尾，没必要读整个 DLL。
+ *
+ * @param[in]  dllPath 插件文件路径。
+ * @param[out] error   失败时写入中文原因；成功时清空。
+ * @return true = 解析成功；false = 没有元数据或格式不合法。
+ * @note 只负责读取，语义校验在 cmake/ValidatePluginMeta.cmake。
+ */
+bool readFromFile(const std::string& dllPath, std::string& error);
+```
+
+### 5.2 TODO：未完成的事写在代码里
+
+**不要**把未完成项写进 README 的路线图、`document/*.md` 或"下一步"段落。
+文档只描述**现在是什么**；没做完的实现留在它将来要改的那段代码旁边。
+
+```cpp
+// TODO: 事件循环目前是空转轮询，也没有退出条件；等截图能力落地后改成阻塞等待 + 退出。
+```
+
+- 格式：`// TODO: 中文说明`，说明里写**缺什么、为什么先没做、怎样算做完**（至少含其一）。
+- 位置：离缺口最近的代码处（函数体内、成员声明上方、入口点），不要集中成一个清单。
+- 一个 TODO 只对应一件事；做完就**删掉那行 TODO**（代码就是进度表）。
+- 不用 `FIXME` / `XXX`，统一用 `TODO`。
 
 ---
 
@@ -240,11 +301,17 @@ const ShotModule kModule = {
 
 ### 6.4 日志
 
+- **统一用 spdlog**（vcpkg 依赖 `spdlog`，CMake 链接 `spdlog::spdlog`）：**不要**自己写日志框架、队列或文件轮转。
+  宿主用 `spdlog::info/warn/error("...{}...", args)`；启动时由 `Host::Logging::init()`
+  （`include/hostLogging.h` + `src/hostLogging.cpp`）初始化 `host` / `plugin` 两个异步 logger
+  （控制台 + `<dataPath>/logs/host.log`），运行期的控制台/文件开关用"过滤 sink"实现，退出时 `spdlog::shutdown()`。
 - **插件只能通过宿主日志**：`host->log(host->host_context, SHOT_LOG_INFO, msg, len)`，且调用前三重检查：
   `host != nullptr && SHOT_HAS_FIELD(host, ShotHostServices, log) && host->log != nullptr`。
-- **宿主用 `std::cout` / `std::cerr`**（现状，`main.cpp` `/ HostServices.cpp`），前缀风格是「英文技术前缀 + 中文说明」：
-  `"Warning: 提供者 " << name << " 重复（" << a << " 与 " << b << "），用前者"`
-- 日志级别语义见 `plugin_api.h:241-244`（DEBUG/INFO/WARN/ERROR）。
+  插件**不要**链接 spdlog：`HostServices::hostLog` 会把插件侧 `SHOT_LOG_*` 映射成 spdlog 等级并转到 `plugin` logger。
+- **插件侧用 `shot::Logger` / `shot::Config`**（`include/shot_plugin_helpers.h`）：前者包 `host->log`（含老宿主降级），
+  后者包宿主配置服务（`SHOT_HOST_IFACE_CONFIG` + fallback）。**不要**在每个调用点手写 `SHOT_HAS_FIELD` 判空或两次长度查询。
+- 日志格式由 spdlog pattern 统一（`[时间] [级别] [host|plugin] 消息`），**不要**在消息里手写级别/时间前缀。
+- 级别语义见 `include/plugin_api.h` 的 `SHOT_LOG_*`（DEBUG / INFO / WARN / ERROR）。
 
 ### 6.5 降级（degradation）是常态，不是可选项
 
@@ -260,6 +327,77 @@ if (SHOT_HAS_FIELD(image, ShotImage, pixel_format) &&
 ```
 
 读到不认识的配置 key、宿主没给某个服务、结构体没有某个字段——**安静降级**，不要报错、不要崩。
+
+### 6.6 职责归属：一个关注点一个类，新功能别寄居在已有类里
+
+**反例（本仓库真实踩过）**：宿主服务表、事件队列、日志转发曾经全塞在 `PluginManager` 里——
+它一边管扫描/依赖/加载，一边管日志和事件分发。结果是谁都不敢动：改日志要碰加载器，
+类越滚越大，职责边界消失。
+
+**正例（现在的拆法）**：
+
+- `include/hostServices.h` + `src/HostServices.cpp`：宿主服务表、事件队列、日志/配置回调的转发；
+- `include/config.h` + `src/config.cpp`、`src/configItem.cpp`：`core::Config` / `core::ConfigItem`，只管配置读写；
+- `include/hostRuntime.h` + `src/hostRuntime.cpp`：运行期装配与生命周期锁，只做"把谁和谁装到一起、每轮做什么"；
+- `include/hostConfigCatalog.h` / `hostConfigurable.h` / `hostPluginRegistry.h` / `hostLogging.h`：配置目录、宿主设置、插件注册表、日志各一组文件；
+- `include/PluginManager.h` + `src/PluginManager.cpp`：只剩本职——扫描、依赖解析、加载/卸载。
+
+**新代码放哪里的三问**：
+
+1. 这段逻辑是"谁的职责"？是现有类的本职 → 放进去；是**新职责** → 新建类 + 自己的 `.h`/`.cpp`。
+2. 把它删掉，原来的类还剩什么？如果剩下的东西和它没关系，说明它本来就不该待在那里。
+3. 名字能一句话说清吗？`HostServices`、`Config`、`PluginManager` 能；`PluginManager::postToHost` 不能。
+
+**落地规则**：
+
+- **一个类一组文件**：`X.h` 声明接口、`X.cpp` 写实现；新增功能默认走这条路。
+- 不允许"上帝类"：一个类同时承担 2 个以上互不相关的职责时，拆。
+- 公共小工具放独立头（如 `include/shot_plugin_helpers.h`），不要挂到某个业务类的 private 区。
+- 插件侧受 ABI 约束，但"一个能力一个 `.cpp`"（§7）是同一个思路。
+
+### 6.7 头文件是这个类的完整契约：类里有什么函数，`.h` 里就写什么
+
+- 类的**所有**具名函数都必须在 `.h` 里声明：`public` 接口、`protected`、`private` 辅助函数，
+  包括只在 `.cpp` 里调用的 `private static` 工具。
+- **尽量不在 `.cpp` 里写头文件没有声明的具名函数**：
+  - 只在类内部复用的逻辑 → 写成 `private static` 成员，并在 `.h` 声明；
+  - 确实与任何类无关、且只在本 TU 用的具名函数 → 放匿名命名空间，并注释说明为什么不属于任何类；
+  - 跨 TU 使用的具名函数 → 必须能在某个头文件里找到声明。
+- 判据：**接手的人只读 `.h` 就该知道这个类会做什么、用到哪些函数**；读 `.cpp` 时不该冒出
+  "这函数从哪来的"。
+- 反例（现存，待收口）：`src/PluginManager.cpp` 的 `ShotVersion hostCoreVersion()` 没有在
+  `include/pluginManager.h` 声明 → 应改为 `PluginManager` 的
+  `private static ShotVersion hostCoreVersion();`。
+- 合法例外（必须在注释里说明为什么）：
+  - 插件 DLL 的 ABI 回调（`create_instance` / `grayscale_process` …）签名由契约固定，只能是自由函数；
+  - 入口文件 `src/main.cpp` 的一次性装配/演示代码；
+  - lambda、模板与 `inline` 小工具（放头文件更合适，如 `include/shot_plugin_helpers.h`）。
+- 构造函数/析构函数在 `.h` 声明、`.cpp` 定义（`plugins/setting_window/include/setting_window.h` 的
+  PIMPL 是范本）。
+
+### 6.8 头文件与 .cpp 的拆分粒度：一个类一个头文件
+
+**一个类一个头文件**：`X.h` 声明 `X`，`X.cpp` 实现 `X`；两个不相关的类不要塞进同一个头文件。
+唯一例外：**一个基类 + 几个非常简单的子类**（子类只覆盖一两个虚函数、没有独立状态机）可以共用一个头文件。
+反例（真实踩过）：`settings_ui.h` 曾同时声明 `SettingsPanel` 与 `SettingsWindow`，两个类各有自己的
+线程/状态模型，结果是"改窗口代码要碰设置模型的头文件"，头文件不再是这个类的完整契约（违反 §6.7）。
+
+- 纯数据 `struct` 如果只服务于同一个类（如 `InstalledPlugin` 之于 `PluginManager`），可以留在该类头文件里：
+  它是"类的数据契约"，不是独立的类。纯 C 契约头 `plugin_api.h` 是结构体集合、没有类，不适用本条。
+- **汇总头只做 include**：像 `shot_plugin_helpers.h` 这种"一次包含全部小工具"的头文件，自身不再声明类，
+  只 `#include` 每个类各自的头文件；插件仍然可以只包含汇总头。这类**成组的小头文件放同一个子目录**
+  （如 `include/shot_plugin_helpers/`），不要在 `include/` 根目录平铺一堆文件。
+- **内部头也单独成文件**：类的私有实现结构（PIMPL 的 `Impl`）与只被多个 `.cpp` 共用的内部类型，
+  放进单独的内部头（如 `settings_panel_impl.h`，仍可放在 `include/` 下，但头文件开头要注明
+  "内部头，不属于对外接口"）；公共头只留稳定的公开接口。
+
+**.cpp 同样按职责拆**：一个 `.cpp` 只承担一个关注点（数据模型 / 渲染 / 提交与事件 / 窗口平台代码……）。
+判据是"能不能一句话说清这个文件负责什么"，而不是行数本身；经验上单文件超过约 500 行、或出现
+"模型、渲染、提交"这类可以命名的分区时就要拆。拆分时共享的声明与内部状态进内部头，不要靠
+`extern` 或重复定义跨文件传私有状态。
+
+反例（真实踩过）：`plugins/settings_ui/src/settings_panel.cpp` 曾同时做模型刷新、7 种控件的 ImGui
+渲染、应用/取消提交与事件处理（1100+ 行），后来按模型 / 表单 / 插件表 / 提交拆成多个 `.cpp`。
 
 ---
 
@@ -302,7 +440,7 @@ shot_add_plugin(my_plugin
   - 传给插件的目录变量：`SHOT_*`（`SHOT_SDK_INCLUDE_DIR` 等）
 - **CMake 最低版本**：根文件 `cmake_minimum_required(VERSION 3.20)`，且必须是文件里**第一条** CMake 命令（`CMakeLists.txt:18`）；插件与 `cmake/*.cmake` 同为 3.20；`CMakePresets.json` 要求 3.21（preset schema `"version": 3` 本身的要求，别降低它）。
 - **SDK 说明只有一个源**：`document/README_SDK.md`；`export_sdk` 用 `configure_file(... COPYONLY)` 把它复制成 `sdk/README.md`。改 SDK 说明只改 document 那份，**不要**在 CMake 脚本里再硬编码一份（以前就是这么漂移的）。
-- **产物布局是硬约束**（`README.md:99-109`）：`bin/` 只有 exe 与运行时 DLL（禁 pdb）；`bin/plugins/` 只有插件自己的 DLL（禁基础依赖）；`build/<cfg>/pdb/` 放符号；`sdk/` 是导出产物、**不入库**。
+- **产物布局是硬约束**（`README.md`「产物布局」）：`bin/` 只有 exe 与运行时库（Windows 禁 pdb）；`bin/plugins/` 只有插件自己的动态库（禁基础依赖）；`build/<cfg>/pdb/` 放符号；`sdk/` 是导出产物、**不入库**。动态库扩展名随平台（`.dll` / `.dylib` / `.so`，由 `SHOT_DYN_EXT` 统一），非 Windows 运行库靠 RPATH 指向 vcpkg `lib/`。
 - **版本链**：`0.1.0` 来自 `CMakeLists.txt:32-34` → `version.h`（`include/version.h.in` 生成）→ `.rc`。`build_number.txt` 在**每次 configure 时自增并被写回**（`CMakeLists.txt:290-297`），所以它会一直脏，**不要**手工改它，也**不要**把它当成自己的改动提交（除非单独提交）。
 - **不要手改生成物**：`build/generated/version.h`、`sdk/` 全是产物。`sdk/include/plugin_api.h` 是**旧快照**（比 `include/` 少能力），永远以仓库里的 `include/` 为准。
 
@@ -321,8 +459,29 @@ shot_add_plugin(my_plugin
   6. 结尾 **检查清单** `- [ ]`
 - 语气：**祈使、直接、给理由**。用 **加粗** 标不可违反的点（**绝不** / **必须** / **禁止**），关键数字与标识符用反引号。
 - 代码块**标语言**（`bash` `c` `cpp` `cmake` `json`）；只有目录树用裸围栏。
-- 状态用 ✅ / 📋 / 🚧 三档表格。
+- 状态只用 ✅ 标注「已可用」；**计划与未实现不进文档**——未完成项写成代码里的 `// TODO:`（§5.2）。
 - 不放图片/徽章/架构图（全仓零处），需要说明就用表格或目录树。
+
+### 9.1 改代码必须同步改文档
+
+**文档过期就是缺陷**：只要你的改动会让现有文档里任何一句话变成假话，就必须在**同一个提交**里改掉它。
+`README.md` 与 `README.en.md` 必须同步（母版 + 镜像），不允许只改一边。
+
+| 你改了什么 | 必须同步的文档 |
+| --- | --- |
+| 契约 `include/plugin_api.h`（能力 id / 结构体 / 布局 / `SHOT_ABI_*`） | `document/ABI_POLICY.md`（登记表 + 布局锚点表 + `static_assert`）、`README.md`/`README.en.md` 的「插件契约」段 |
+| `metadata.json` 的字段或语义 | `document/METADATA.md`、`cmake/ValidatePluginMeta.cmake`、相关插件的 `metadata.json` 与 `README.md` |
+| 插件新增/删除/行为变化 | 该插件 `README.md`、`README.md`/`README.en.md` 的「当前状态」表与目录树 |
+| 配置项、设置页、插件启停（热卸载）行为 | `document/SETTINGS.md`、相关插件 `README.md`、`README.md`/`README.en.md` 的状态表 |
+| 目录结构、文件改名、新增模块 | `README.md`/`README.en.md` 的目录树、本文 §2 |
+| 构建目标 / 产物布局 / CMake 开关 / 最低版本 | `README.md` 的「构建」「产物布局」、`CMakeLists.txt` 注释、本文 §8 |
+| SDK 导出内容 | `document/README_SDK.md`（唯一源；`export_sdk` 会复制成 `sdk/README.md`） |
+| 对外行为变了但接口没变 | `README.md`/`README.en.md` 的状态表（✅）与对应 `document/*.md` |
+| 约定本身变了 | 本文 `STYLE.md`（必要时补进 §11 历史问题） |
+
+- 拿不准要不要改文档时，问自己：**半年后的人按文档操作会不会失败？** 会 → 改。
+- 文档里尽量不写容易过期的数字（行号、行数、文件个数）；写了就必须同提交更新。
+- 提交前过一遍 §12 清单。
 
 ---
 
@@ -331,6 +490,8 @@ shot_add_plugin(my_plugin
 - 提交信息：**简短中文祈使句，无前缀、无 scope、无 issue 号、不写 body**。例：
   `修正示例插件的依赖` / `增加库提供插件，分离宿主的opencv模块，完善metadata语义`
 - 一个提交只做一件事。分支只有 `main`，没有 tag/release 流程。
+- **代码与文档同提交**：凡 §9.1 矩阵命中的文档，必须和代码在同一个提交里改完；
+  只有代码、没有文档的提交视为未完成。
 - **提交前**：`git status` 确认没有把 `build/`、`sdk/`、`build_number.txt` 的自动变化混进本次改动。
 - 当前工作区是**重构进行中**（`setting_window` 未跟踪、`processors.hpp` 刚移位置、`plugin_api.h` 新增了能力）。接手第一件事：`git status --short`，先分清"哪些是未完成的重构"，不要把人家的半成品当成既定风格去模仿。
 
@@ -341,6 +502,7 @@ shot_add_plugin(my_plugin
 > 2026-11-05 一次性修掉下表 17 条，并通过 `cmake --build build/Windows` 编译，
 > 以及运行 `build/Windows/bin/Plugin-shot.exe` 的端到端冒烟（3 个插件加载、abi 1.1、
 > 配置读写、UI 事件往返、干净退出）。**新代码不要重新引入这些写法。**
+> 之后新增的行按 #18 起继续追加。
 
 | # | 位置 | 当时的错误 | 现在的正确写法 |
 | --- | --- | --- | --- |
@@ -361,6 +523,7 @@ shot_add_plugin(my_plugin
 | 15 | `document/README_SDK.md` ↔ `sdk/README.md` | 生成物硬编码且已漂移，还含假事实（"宿主链接 OpenCV"） | `document/README_SDK.md` 是唯一源，`export_sdk` 直接 COPYONLY 复制；假事实已删 |
 | 16 | `CMakeLists.txt`、`CMakePresets.json`、插件 `CMakeLists.txt` | 最低版本三个值（3.15 / 3.21 / 3.20） | 根与插件/模块统一 **3.20**，presets **3.21**（schema v3 要求），README 已同步 |
 | 17 | `src/main.cpp` | 跨边界结构体 `ShotEvent` 用位置初始化 | 一律用指定初始化器（`.struct_size = ...`） |
+| 18 | `plugins/setting_window/src/setting_window.cpp` | `WM_NCCREATE` 里直接 `return TRUE`，`DefWindowProcW` 拿不到 `CREATESTRUCTW::lpszName`，窗口标题为空 | 注册完 `GWLP_USERDATA` 后 `return DefWindowProcW(wnd, msg, wp, lp);` |
 
 **这类问题的共同点**：它们都不是"风格偏好"，而是**编译不过 / 语义反了 / 文档在撒谎**。
 修的时候顺手把 `git status` 看一遍，别把正在进行的重构半成品一起提交。
@@ -379,6 +542,12 @@ shot_add_plugin(my_plugin
 - [ ] 改契约了吗？→ 改 `document/ABI_POLICY.md` 的登记表 + `static_assert` + 版本号。
 - [ ] 改 metadata 了吗？→ 顺序仍与 `kEntries[]` 一致吗？`cmake/ValidatePluginMeta.cmake` 会校验。
 - [ ] 改 README 了吗？英文镜像同步了吗？目录树同步了吗？
+- [ ] 我写的公共 API 有 Doxygen 注释吗？参数 / 返回值 / 约束写清楚了吗？（§5.1）
+- [ ] 没做完的事写成代码里的 `// TODO:` 了吗？没有写进 README/文档吧？（§5.2）
+- [ ] 这段逻辑进了它自己的类/文件吗？有没有硬塞进 `PluginManager` 之类的已有类？（§6.6）
+- [ ] 类的新函数都在 `.h` 声明了吗？`.cpp` 里没有头文件没声明的具名函数吧？（§6.7）
+- [ ] 一个头文件只声明一个类吗？`.cpp` 是不是同时干了几件事、该按 §6.8 拆开？
+- [ ] 代码改了，§9.1 矩阵里对应的文档是否已在同一提交同步？0
 - [ ] 我是不是不小心把 `build/`、`sdk/`、`build_number.txt` 的自动变化带进提交了？
 
 ---
@@ -391,8 +560,10 @@ shot_add_plugin(my_plugin
 2. `document/ABI_POLICY.md`——只追加规则与 interface 登记表。
 3. `include/plugin_api.h` 开头的几段 banner（`:8-100`）——整个契约的三条纪律。
 4. `src/PluginManager.cpp` 的 `loadPlugins()`——五个阶段的加载流程。
-5. `plugins/example_processor/`（整个目录，尤其 `src/plugin_entry.cpp`）——最完整的插件模板。
-6. `document/METADATA.md`——元数据为什么只是"声明"。
+5. `include/config.h`、`include/hostServices.h`、`include/hostRuntime.h`——宿主基础设施（配置 / 服务表 / 运行期装配），每件一个类或一组文件，是 §6.6 的范本；日志直接用 spdlog，初始化在 `Host::Logging`（`src/hostLogging.cpp`）。
+6. `plugins/example_processor/`（整个目录，尤其 `src/plugin_entry.cpp`）——最完整的插件模板。
+7. `document/METADATA.md`——元数据为什么只是"声明"。
+8. `document/SETTINGS.md`——设置页、配置目录与插件热卸载（宿主 + 设置插件两侧都涉及）。
 
 **跑**：
 
