@@ -87,16 +87,28 @@ else()
     message(WARNING "export_sdk: ${VCPKG_INC_DIR}/opencv4 不存在，SDK 将缺少 OpenCV 头")
 endif()
 
-# 契约头 + 插件侧工具头：plugin_api*.h / shot_plugin*.h
-# （shot_plugin_helpers.h 是插件侧的能力目录与 SHOT_OPS 宏，第三方必须一起拿到）
+# 契约头 + 插件侧工具头：plugin_api*.h / shot_*.h
+# （shot_plugin_helpers.h 是汇总头，其余 shot_* 是它包含的每类一个头文件；
+#   第三方必须一起拿到，所以按前缀整组复制）
 file(GLOB _contract_headers
     "${CONTRACT_INCLUDE_DIR}/plugin_api*.h"
-    "${CONTRACT_INCLUDE_DIR}/shot_plugin*.h"
+    "${CONTRACT_INCLUDE_DIR}/shot_*.h"
 )
 if(_contract_headers)
     _copy_files_flat("${SDK_OUTPUT_DIR}/include" ${_contract_headers})
 else()
     message(WARNING "export_sdk: 未找到契约头 plugin_api*.h（源码 include/ 可能尚未就绪）")
+endif()
+
+# 插件侧工具的实现头在 shot_plugin_helpers/ 子目录里：保留相对目录结构复制，
+# 汇总头 shot_plugin_helpers.h 里写的是 #include "shot_plugin_helpers/xxx.h"。
+file(GLOB _helper_headers "${CONTRACT_INCLUDE_DIR}/shot_plugin_helpers/*.h")
+if(_helper_headers)
+    _copy_files_tree("${CONTRACT_INCLUDE_DIR}" "${SDK_OUTPUT_DIR}/include" ${_helper_headers})
+    list(LENGTH _helper_headers _helper_count)
+    message(STATUS "export_sdk: ${_helper_count} 个插件侧工具头 -> sdk/include/shot_plugin_helpers")
+else()
+    message(WARNING "export_sdk: 未找到 shot_plugin_helpers/*.h（插件侧工具头）")
 endif()
 
 # ---------------------------------------------------------------------------

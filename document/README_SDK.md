@@ -1,12 +1,13 @@
 # 插件开发 SDK
 
 离线 SDK，供第三方插件在**不安装 OpenCV** 的机器上编译链接。
+当前只覆盖 Windows（MSVC / vcpkg `x64-windows`）。
 
 ## 目录
 
 | 目录 | 内容 | 用途 |
 | --- | --- | --- |
-| `include/` | `plugin_api.h`、`plugin_api_export.h`、`shot_plugin_helpers.h`、`opencv4/` | 契约头 + 插件侧小工具 + OpenCV 头 |
+| `include/` | `plugin_api.h`、`plugin_api_export.h`、`shot_plugin_helpers.h`（汇总头，只做 include）、`shot_plugin_helpers/`（每类一个头文件）、`opencv4/` | 契约头 + 插件侧小工具（能力目录 / `shot::Logger` / `shot::Config` / `shot::EventBus` / `shot::PluginConfig` / `shot::PluginRegistry`） + OpenCV 头 |
 | `lib/` | release 版 `*.lib` 导入库 | Release 构建链接期使用 |
 | `lib/debug/` | debug 版 `*.lib`（`opencv_*4d.lib` 等） | Debug 构建链接期使用 |
 | `bin/` | release 版 `*.dll` 运行时库 | **不要拷进插件目录**，见下 |
@@ -30,6 +31,12 @@ shot_add_plugin(my_plugin
 ```
 
 `shot_add_plugin()` 统一处理 /MD、隐藏符号、产物目录、元数据贴尾与产物剪枝。
+
+插件里访问宿主服务用 `shot_plugin_helpers.h` 的封装：`shot::Logger`（写宿主日志）、
+`shot::Config`（读写宿主配置）、`shot::EventBus`（主题发布/订阅）、`shot::PluginConfig`
+（配置目录：枚举宿主与所有可配置插件的配置项）、`shot::PluginRegistry`（插件启停）。
+汇总头本身只做 include，每个类各有一个头文件（在 `shot_plugin_helpers/` 子目录）；它们对老宿主自动降级，
+不需要逐处手写 `SHOT_HAS_FIELD` 判空。
 手工搭建时，等价的最小配置是：
 
 ```cmake
@@ -68,7 +75,10 @@ target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
 
 6. **能力用 interface id 查询**
    query_interface(instance, "shot.image_processor", 1) 返回函数表，
-   没有的能力返回 NULL。已注册：shot.image_processor、shot.configurable、shot.lib_provider。
+   没有的能力返回 NULL。已注册的插件能力：shot.image_processor、shot.configurable、
+   shot.lib_provider、shot.ui_provider。
+   宿主服务也走同一个入口（`shot.host.*`）：`shot.host.config`、`shot.host.board_msg`、
+   `shot.host.event_bus`、`shot.host.plugin_config`、`shot.host.plugin_registry`。
 
 7. **abi_major 必须与宿主一致**
    版本不匹配的插件会被宿主拒绝加载。升级 SDK 后请整体替换
