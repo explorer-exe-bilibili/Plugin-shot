@@ -47,6 +47,11 @@
 | `shot.configurable` | `ShotConfigurableV1` | 1 | 声明并读写配置项（值一律字符串） |
 | `shot.lib_provider` | `ShotLibProviderV1` | 1 | 声明「我是运行库提供者」，报告库名与版本；宿主按 `PluginType::Lib` 登记 |
 | `shot.ui_provider` | `ShotUIProviderV1` | 1 | 创建并管理UI组件（窗口，托盘.....） |
+| `shot.host.config` | `ShotHostConfigV1` | 1 | 宿主提供的配置读写接口 |
+| `shot.host.board_msg` | `ShotHostBoardEventV1` | 1 | 宿主提供的广播事件接口 |
+| `shot.host.event_bus` | `ShotHostEventBusV1` | 1 | 宿主提供的进程内主题发布/订阅（通配、深拷贝、main 线程分发），见 `document/EVENT_BUS.md` |
+| `shot.host.plugin_config` | `ShotHostPluginConfigV1` | 1 | 宿主提供的配置目录：枚举宿主（`core` 伪插件）+ 所有 `shot.configurable` 插件，读声明/读值/写值/落盘，见 `document/SETTINGS.md` |
+| `shot.host.plugin_registry` | `ShotHostPluginRegistryV1` | 1 | 宿主提供的插件注册表：已安装插件状态（已加载/禁用/失败）+ 异步启停（热卸载），见 `document/SETTINGS.md` |
 
 命名约定：全小写，`shot.` 前缀，多词用下划线分隔。第三方扩展用自己的前缀（例如 `acme.sharpen`）。
 
@@ -55,6 +60,9 @@
 - 每个插件内的 `key` 唯一，全小写 + 下划线（`keep_alpha`、`strength`）。
 - `key` 一旦发布不要改名（它是存盘的标识）；要换语义就换个新 key。
 - 插件遇到不认识的 key 必须返回负值并保持可用状态：宿主升级后可能多传未知项。
+- **持久化键是 `<plugin_id>/<key>`**（如 `example.invert/keep_alpha`、
+  `core/logging.level`）：插件只负责 get/set，落盘与启动回灌由宿主做
+  （见 `document/SETTINGS.md`）。`core` 是宿主自己的配置提供者 id，插件不要占用。
 
 ## 6. 布局锚点（改这里 = 改 ABI）
 
@@ -71,6 +79,10 @@
 | `ShotConfigurableV1` | 40 | `set_config`=32 |
 | `ShotUIProviderV1` | 32 | `init`=8, `deinit`=16, `post_to_plugin`=24 |
 | `ShotHostServices` | 48 | `log`=24, `query_interface`=32, `post_to_host`=40 |
+| `ShotHostEventBusV1` | 32 | `publish`=8, `subscribe`=16, `unsubscribe`=24 |
+| `ShotPluginStatus` | 56 | `id`=8, `state`=40, `reason`=48 |
+| `ShotHostPluginRegistryV1` | 40 | `installed_count`=8, `set_enabled`=32 |
+| `ShotHostPluginConfigV1` | 72 | `config_desc`=32, `save`=64 |
 | `ShotModule` | 64 | `destroy`=48, `query_interface`=56 |
 
 追加字段时你会被迫更新这张表与那几行 `static_assert` —— 这正是它们存在的意义：

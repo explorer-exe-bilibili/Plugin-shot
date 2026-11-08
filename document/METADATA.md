@@ -25,7 +25,7 @@
 ```json
 {
   "schema": 1,
-  "abi": { "major": 1, "minor": 1 },
+  "abi": { "major": 1, "minor": 3 },
   "plugins": [
     {
       "id": "example.invert",
