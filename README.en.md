@@ -18,9 +18,11 @@ The **host** (currently built as `Plugin-shot.exe`) is responsible for:
 - checking `struct_size` before touching any field, then comparing `abi_major` — mismatched plugins are rejected on the spot
 - asking for capabilities with `query_interface("shot.image_processor", 1)` and silently skipping the ones it does not know
 - wrapping instances into C++ objects and indexing them by `PluginType`; plugin objects are destroyed by the plugin itself, the host never `delete`s them
+- enabling/disabling plugins at run time: disabling is a **hot unload** (destroy instances → unsubscribe
+  from the event bus → `FreeLibrary`), enabling reloads the DLL and feeds the stored configuration back
 
 A **plugin** (a shared library) provides the actual capability. Screenshots are the
-current main line; screen recording and friends will follow.
+current main line.
 
 ## Status
 
@@ -30,17 +32,20 @@ current main line; screen recording and friends will follow.
 | Single entry point `shot_module_entry` + self-describing module table | ✅ working |
 | Multiple plugins per DLL (`plugin_count` + `create(index)` + `get_info`) | ✅ working |
 | Capability query `query_interface("shot.image_processor", 1)` | ✅ working |
+| Host event bus `shot.host.event_bus` (topic publish / subscribe) | ✅ working (`document/EVENT_BUS.md`) |
+| Host config catalog `shot.host.plugin_config` (host + every configurable plugin) | ✅ working (`document/SETTINGS.md`) |
+| Host plugin registry `shot.host.plugin_registry` (enable/disable, hot unload) | ✅ working (`document/SETTINGS.md`) |
 | Runtime provider `shot.lib_provider` (`PluginType::Lib`) | ✅ working (`plugins/opencv_provider` brings OpenCV into the process) |
-| Plugin configuration `shot.configurable` (plugin declares, host renders and stores) | ✅ contract and sample working (host UI not built yet) |
+| UI provider `shot.ui_provider` (windows/tray owned by the plugin itself) | ✅ working (`plugins/setting_window`, `plugins/settings_ui`) |
+| Plugin configuration `shot.configurable` (plugin declares; host enumerates, stores, feeds back) | ✅ working (`document/SETTINGS.md`) |
+| Settings window plugin `plugins/settings_ui` (ImGui + Win32 + OpenGL3, descriptor-driven) | ✅ working |
+| Host settings (`core` pseudo-plugin: log level / console / file log) | ✅ working |
 | Plugin metadata appended to the DLL tail (`metadata.json`, CMake only) | ✅ working (the host reads it before loading: prefilter + dependency topological sort) |
 | Build-time metadata validation (unique ids / registered interfaces / abi matches the header / dependency syntax) | ✅ working (`cmake/ValidatePluginMeta.cmake`) |
 | Plugin-level dependencies (`requires` / `provides` with version ranges, `core` = the host) | ✅ working (`document/METADATA.md`) |
 | Dependency-driven load order (topological sort; an unsatisfied plugin is skipped on its own) | ✅ working |
 | Shared plugin build rules (`shot_add_plugin()`) | ✅ working (host and offline SDK share one module) |
 | Offline plugin SDK export (`export_sdk` target) | ✅ working |
-| `Window` / `Tray` capabilities | 📋 only needs a new interface id plus a struct — the contract stays put |
-| Real screen capture pipeline | 🚧 not implemented (`main.cpp` smoke-tests with a 2×2 fake image) |
-| Screen recording and other capabilities | 📋 only needs a new interface id — the contract stays put |
 
 > The binary name comes from `PROJECT_NAME` in `CMakeLists.txt` (currently `Plugin-shot`):
 > the host is `Plugin-shot.exe` and plugins land in `bin/plugins/`. When the icon file is missing,
@@ -55,17 +60,26 @@ current main line; screen recording and friends will follow.
 ├── include/
 │   ├── plugin_api.h          # ★ the host ⇄ plugin ABI contract (only cross-boundary header, plain C)
 │   ├── plugin_api_export.h   # export macro: dllexport for plugins, SCREENSHOT_HOST_EXPORTS for the host
-│   ├── shot_plugin_helpers.h # plugin-side helpers: capability list + shot_query_interface + SHOT_OPS
+│   ├── shot_plugin_helpers.h # umbrella header only includes; one header per helper class
+│   └── shot_plugin_helpers/  # iface_entry / logger / config / event_bus /
+│                             # plugin_config / plugin_registry, one header each
 │   ├── dllHandler.h           # LoadLibrary / dlopen wrapper (with a non-throwing tryGetFunction)
-│   ├── pluginManager.h       # plugin scanning, length/version checks, type index
+│   ├── pluginManager.h       # plugin scanning, dependency order, loading and hot unload
+│   ├── hostServices.h        # host service tables: logging, config, event bus, config catalog, plugin registry
+│   ├── hostRuntime.h         # host wiring: PluginManager + config catalog + plugin registry
+│   ├── config.h              # core::Config: JSON configuration file
 │   └── PluginInstances/      # host-side wrappers (base / ImageProcessor / LibProvider …)
 ├── src/                      # host implementation and entry point
 ├── plugins/                  # every subdirectory is a standalone plugin project
 │   ├── example_processor/    # complete example: one DLL, two plugins, both configurable
-│   └── opencv_provider/      # a valid package with zero capabilities (brings OpenCV into the process)
+│   ├── opencv_provider/      # a valid package with zero capabilities (brings OpenCV into the process)
+│   ├── setting_window/       # Win32 window sample: plugin-owned thread and message loop
+│   └── settings_ui/          # settings window: ImGui + Win32 + OpenGL3
 ├── document/
 │   ├── README_SDK.md         # SDK layout and every build constraint (written in Chinese)
 │   ├── ABI_POLICY.md         # append-only rules and the interface id registry (Chinese)
+│   ├── SETTINGS.md           # settings window, config catalog, plugin enable/disable and hot unload (Chinese)
+│   ├── EVENT_BUS.md          # host event bus: topics, threading, lifetime (Chinese)
 │   └── METADATA.md           # metadata.json fields, authority rules, what stays out (Chinese)
 ├── cmake/
 │   ├── ShotPlugin.cmake        # shot_add_plugin(): shared plugin build rules
@@ -90,8 +104,9 @@ cmake --build build/Windows
 cmake --build build/Windows --target export_sdk
 ```
 
-The first configure installs OpenCV through the manifest (`opencv4` with
-jpeg/png/tiff/webp features), which takes a while.
+The first configure installs the manifest dependencies (`opencv4` with jpeg/png/tiff/webp
+features, `nlohmann-json`, `spdlog`, and `imgui` — a static library with `win32-binding`
+and `opengl3-binding` for the settings window), which takes a while.
 
 ### Run
 
@@ -100,6 +115,11 @@ cd build/Windows/bin && ./Plugin-shot.exe
 ```
 
 The plugin directory is resolved as the relative path `./plugins`, so **launch from `bin/`**.
+
+The host publishes `settings.open` on startup, so the settings window opens with the app.
+Logging goes through spdlog: console plus `%LOCALAPPDATA%\screen-shot\logs\host.log` (appended).
+Configuration lives in `%LOCALAPPDATA%\screen-shot\config.json` (host settings and plugin items,
+keyed as `<plugin_id>/<key>`).
 
 ### Output layout (hard constraints)
 
@@ -111,7 +131,9 @@ The plugin directory is resolved as the relative path `./plugins`, so **launch f
 | `sdk/` | offline SDK: `include/`, `lib/` (release), `lib/debug/`, `bin/`, `bin/debug/` |
 
 These rules are enforced at build time by `cmake/copy_runtime_deps.cmake` and
-`cmake/prune_output_dir.cmake`. See contract rule 3 below: a plugin that ships its
+`cmake/prune_output_dir.cmake`. Plugin artifacts use the platform extension
+(`.dll` / `.dylib` / `.so`); on non-Windows platforms runtime libraries are not copied —
+RPATH points into vcpkg's `lib/`. See contract rule 3 below: a plugin that ships its
 own OpenCV puts two instances into one process.
 
 ## Plugin contract
@@ -153,6 +175,10 @@ know the contents in advance, and `plugins[]` in `metadata.json` maps index for 
 | `shot.image_processor` | `ShotImageProcessorV1` | processes one image: `process(self, ShotImage*)`, 0 means success |
 | `shot.configurable` | `ShotConfigurableV1` | declares and reads/writes configuration items, see below |
 | `shot.lib_provider` | `ShotLibProviderV1` | says "I am a runtime provider" and reports library name/version; the host registers it as `PluginType::Lib` |
+| `shot.ui_provider` | `ShotUIProviderV1` | the plugin creates and owns its window/tray; the host only calls `init` / `deinit` / `post_to_plugin` |
+| `shot.host.event_bus` | `ShotHostEventBusV1` | **host service**: in-process topic publish/subscribe |
+| `shot.host.plugin_config` | `ShotHostPluginConfigV1` | **host service**: config catalog (host + configurable plugins) |
+| `shot.host.plugin_registry` | `ShotHostPluginRegistryV1` | **host service**: installed plugin states and asynchronous enable/disable |
 
 `ShotImage` describes an 8-bit pixel buffer:
 
@@ -181,7 +207,36 @@ typedef struct ShotConfigurableV1 {
 - A plugin must ignore unknown keys safely (return a negative value), so a newer host can send extra items to an older plugin.
 - `set_config` may be called at run time (a slider drag): either be thread-safe or document "takes effect on the next `process`".
 
-**Host-level settings do not belong in a plugin**: output format, save directory and hotkeys are the host's; a plugin only owns its own algorithm parameters.
+**Host settings use the same descriptors**: the host implements `shot.configurable` as a `core`
+pseudo-plugin (log level, console/file log switches), and the config catalog lists it alongside
+every plugin's items, so the settings window renders one set of code.
+
+- Storage keys are `<plugin_id>/<key>`; the **host** persists them to
+  `%LOCALAPPDATA%\screen-shot\config.json` — plugins only get/set values and never write config files.
+- On startup the host feeds stored values back into plugins (using `default_value` when nothing is
+  stored yet), so a plugin never has to read configuration itself.
+- After committing a batch of settings the host publishes `config.applied`: plugins that cache
+  derived state re-read the current values; there is **no separate reload call**.
+- Output/save settings do not belong to the host: whoever implements saving declares those items
+  in its own `kConfig[]`.
+
+The full pipeline (config catalog, settings plugin, plugin enable/disable and hot unload) is
+documented in [`document/SETTINGS.md`](document/SETTINGS.md) (Chinese).
+
+### Settings window and plugin enable/disable
+
+The settings window is a plugin too (`plugins/settings_ui`, implementing `shot.ui_provider`); the
+host has no main window:
+
+- it enumerates the config catalog through `shot.host.plugin_config` and renders the seven
+  control kinds (BOOL / INT / FLOAT / STRING / ENUM / COLOR / PATH) from descriptors;
+- it manages enable/disable through `shot.host.plugin_registry`. **Disabling is a hot unload**:
+  destroy the instances, send `host.shutdown` + `deinit` to UI plugins, unsubscribe from the event
+  bus, and `FreeLibrary` once the last instance of the package is gone; enabling reloads the DLL and
+  feeds the stored configuration back. A plugin that another loaded plugin `requires` cannot be
+  disabled on its own;
+- enable/disable requests are asynchronous: the settings window only registers them, and the host
+  main thread publishes `plugins.changed` after it has actually applied them.
 
 ### ABI rules you must follow
 
@@ -189,7 +244,7 @@ typedef struct ShotConfigurableV1 {
 2. **Match the host's Debug/Release configuration** — a Debug plugin only loads into a Debug host.
 3. **Never bundle base dependencies** (`opencv_*.dll` etc.). One copy already sits in `bin/` next to the host exe; a second copy in the plugin directory means two OpenCV instances in one process — split type info, global state and allocators.
 
-   > The host itself **does not link** OpenCV (`CMakeLists.txt` only links `nlohmann_json`).
+   > The host itself **does not link** OpenCV (`CMakeLists.txt` only links `nlohmann_json` and `spdlog`).
    > The `opencv_*.dll` files in `bin/` are placed there by `cmake/copy_runtime_deps.cmake`,
    > which copies the whole vcpkg runtime directory — they are not pulled in by linking.
    > A plugin that needs OpenCV calls `find_package(OpenCV QUIET)` in its **own**
@@ -292,24 +347,12 @@ shot_add_plugin(acme_tools
 redirection, metadata appending and output pruning — rules that used to be copy-pasted into
 the root `CMakeLists.txt` and drifted away from the docs.
 
-## Roadmap
-
-- [x] Plugin host skeleton: scanning, length/version checks, type index, lifecycle
-- [x] Single entry point `shot_module_entry` + self-describing module table + `query_interface`
-- [x] `shot.image_processor` and `shot.configurable` contracts, sample plugin, offline SDK export
-- [x] Metadata appended to the plugin binary (CMake only) and multiple plugins per DLL
-- [ ] Generic configuration UI on the host side (rendered from `ShotConfigDesc`) plus config storage
-- [x] Host reads the metadata (pre-filter + dependency topological sort + per-plugin skipping)
-- [x] Cross-check metadata against `get_info` (warn when id / name / version disagree; `get_info` wins)
-- [ ] Real screen capture (full screen / region / window) and the `Window` / `Tray` capabilities
-- [ ] Screen recording (a new interface id; the contract itself does not change)
-- [ ] Plugin hot reload and inter-plugin dependency declarations
-
 ## Platforms
 
 Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`).
-`CMakeLists.txt` already carries macOS / Linux / WSL branches and `dllHandler.h` supports
-`dlopen`, but **neither is verified**.
+macOS / Linux branches pick the artifact extension (`SHOT_DYN_EXT`), runtime library lookup
+(RPATH) and pruning rules per platform; GUI plugins (`plugins/setting_window`'s Win32 window and
+`plugins/settings_ui`'s ImGui settings window) are skipped automatically on non-Windows hosts.
 
 ## License
 

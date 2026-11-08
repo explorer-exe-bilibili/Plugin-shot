@@ -16,8 +16,10 @@
 - 先看 `struct_size` 再读字段、比对 `abi_major`，不兼容立刻拒绝加载
 - 用 `query_interface("shot.image_processor", 1)` 问能力，不认识的能力安静跳过
 - 把实例包装成 C++ 对象，按 `PluginType` 分类索引；插件对象由插件自己销毁，宿主绝不 `delete`
+- 支持运行期启用/禁用插件：禁用即**热卸载**（销毁实例 → 退订事件总线 → `FreeLibrary`），
+  重新启用则重新加载 DLL 并回灌已存配置
 
-**插件**（动态库）负责一切具体能力。当前主线是截图，之后扩展录屏等。
+**插件**（动态库）负责一切具体能力。当前主线是截图。
 
 ## 当前状态
 
@@ -27,17 +29,20 @@
 | 单入口 `shot_module_entry` + 自描述模块表（`struct_size` 约定） | ✅ 可用 |
 | 一 DLL 多插件（`plugin_count` + `create(index)` + `get_info`） | ✅ 可用 |
 | 能力查询 `query_interface("shot.image_processor", 1)` | ✅ 可用 |
+| 宿主事件总线 `shot.host.event_bus`（主题发布 / 订阅） | ✅ 可用（`document/EVENT_BUS.md`） |
+| 宿主配置目录 `shot.host.plugin_config`（宿主 + 所有可配置插件） | ✅ 可用（`document/SETTINGS.md`） |
+| 宿主插件注册表 `shot.host.plugin_registry`（启停 / 热卸载） | ✅ 可用（`document/SETTINGS.md`） |
 | 运行库提供者 `shot.lib_provider`（`PluginType::Lib`） | ✅ 可用（`plugins/opencv_provider` 把 OpenCV 带进进程） |
-| 插件配置 `shot.configurable`（插件声明、宿主渲染与存盘） | ✅ 契约与示例可用（宿主界面未做） |
+| UI 提供者 `shot.ui_provider`（窗口/托盘由插件自己创建） | ✅ 可用（`plugins/setting_window`、`plugins/settings_ui`） |
+| 插件配置 `shot.configurable`（插件声明，宿主枚举 / 存盘 / 回灌） | ✅ 可用（`document/SETTINGS.md`） |
+| 设置页插件 `plugins/settings_ui`（ImGui + Win32 + OpenGL3，描述符驱动表单） | ✅ 可用 |
+| 宿主自身设置（`core` 伪插件：日志级别 / 控制台 / 文件日志） | ✅ 可用 |
 | 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主加载前读取：预筛 + 依赖拓扑排序） |
 | 元数据构建期校验（id 唯一 / interfaces 已注册 / abi 与头一致 / 依赖语法） | ✅ 可用（`cmake/ValidatePluginMeta.cmake`） |
 | 插件级依赖声明（`requires` / `provides`，带版本区间，`core` 为宿主） | ✅ 可用（`document/METADATA.md`） |
 | 依赖驱动加载顺序（拓扑排序，不满足只跳过该插件） | ✅ 可用 |
 | 插件工程公共构建规则（`shot_add_plugin()`） | ✅ 可用（宿主与离线 SDK 共用） |
 | 离线插件 SDK 导出（`export_sdk` 目标） | ✅ 可用 |
-| `Window` / `Tray` 能力 | 📋 只需新增 interface id + 结构体，契约不用动 |
-| 正式截图采集流程 | 🚧 未实现（`main.cpp` 目前用 2×2 假图做冒烟验证） |
-| 录屏等新能力 | 📋 只需新增 interface id，契约不用动 |
 
 > 产物名取自 `CMakeLists.txt` 的 `PROJECT_NAME`（当前 `Plugin-shot`）：宿主叫 `Plugin-shot.exe`，
 > 插件落 `bin/plugins/`。应用图标缺失时 `.rc` 会自动降级成不含 ICON 行，所以改名不会把构建搞挂。
@@ -51,17 +56,26 @@
 ├── include/
 │   ├── plugin_api.h          # ★ 宿主 ⇄ 插件的 ABI 契约（唯一的跨边界头，纯 C）
 │   ├── plugin_api_export.h   # 导出宏：插件默认 dllexport，宿主定义 SCREENSHOT_HOST_EXPORTS
-│   ├── shot_plugin_helpers.h # 插件侧小工具：能力目录 + shot_query_interface + SHOT_OPS
+│   ├── shot_plugin_helpers.h # 插件侧工具汇总头（只 include，不声明类）
+│   └── shot_plugin_helpers/  # 每类一个头文件：iface_entry / logger / config /
+│                             # event_bus / plugin_config / plugin_registry
 │   ├── dllHandler.h           # LoadLibrary / dlopen 封装（含不抛异常的 tryGetFunction）
-│   ├── pluginManager.h       # 插件扫描、长度/版本校验、按类型索引
+│   ├── pluginManager.h       # 插件扫描、依赖排序、加载与热卸载
+│   ├── hostServices.h        # 宿主服务表：日志、配置、事件总线、配置目录、插件注册表
+│   ├── hostRuntime.h         # 宿主编排：PluginManager + 配置目录 + 插件注册表
+│   ├── config.h              # core::Config：JSON 配置文件读写
 │   └── PluginInstances/      # 宿主侧插件对象包装（base / ImageProcessor / LibProvider …）
 ├── src/                      # 宿主实现与入口
 ├── plugins/                  # 每个子目录都是一个独立插件工程
 │   ├── example_processor/    # 完整示例：一个 DLL 两个插件，都带配置项
-│   └── opencv_provider/      # 合法但零能力的插件包（把 OpenCV 带进进程）
+│   ├── opencv_provider/      # 合法但零能力的插件包（把 OpenCV 带进进程）
+│   ├── setting_window/       # Win32 窗口示例：插件自建线程与消息循环
+│   └── settings_ui/          # 设置页：ImGui + Win32 + OpenGL3
 ├── document/
 │   ├── README_SDK.md         # SDK 使用与完整编译约束
 │   ├── ABI_POLICY.md         # 只追加规则、interface id 登记表
+│   ├── SETTINGS.md           # 设置页、配置目录、插件启停与热卸载
+│   ├── EVENT_BUS.md          # 宿主事件总线：主题约定、线程模型、生命周期
 │   └── METADATA.md           # metadata.json 的字段定义、权威规则与不写什么
 ├── cmake/
 │   ├── ShotPlugin.cmake        # shot_add_plugin()：插件工程公共构建规则
@@ -86,7 +100,8 @@ cmake --build build/Windows
 cmake --build build/Windows --target export_sdk
 ```
 
-首次 configure 会以清单模式自动安装 OpenCV（`opencv4` + jpeg/png/tiff/webp 特性），耗时较长。
+首次 configure 会以清单模式自动安装 OpenCV（`opencv4` + jpeg/png/tiff/webp 特性）、`nlohmann-json`、`spdlog`
+与设置页插件用的 `imgui`（静态库，`win32-binding` + `opengl3-binding`），耗时较长。
 
 ### 运行
 
@@ -95,6 +110,10 @@ cd build/Windows/bin && ./Plugin-shot.exe
 ```
 
 插件目录按相对路径 `./plugins` 解析，因此**必须在 `bin/` 下启动**。
+
+启动后宿主发布 `settings.open`，设置窗口随程序打开。日志用 spdlog：控制台 +
+`%LOCALAPPDATA%\screen-shot\logs\host.log`（追加写）；配置写在
+`%LOCALAPPDATA%\screen-shot\config.json`（宿主设置与插件配置项都在这里，键是 `<plugin_id>/<key>`）。
 
 ### 产物布局（硬约束）
 
@@ -106,6 +125,8 @@ cd build/Windows/bin && ./Plugin-shot.exe
 | `sdk/` | 离线 SDK：`include/`、`lib/`(release)、`lib/debug/`、`bin/`、`bin/debug/` |
 
 这些约束由 `cmake/copy_runtime_deps.cmake` 与 `cmake/prune_output_dir.cmake` 在构建期强制。
+插件产物的扩展名随平台：Windows `.dll`、macOS `.dylib`、Linux `.so`；非 Windows 不复制运行库，
+由 RPATH 指向 vcpkg 的 `lib/`。
 理由见下文契约第 3 条：插件一旦自带 OpenCV，同一进程就会出现两份实例。
 
 ## 插件契约
@@ -147,6 +168,10 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void);
 | `shot.image_processor` | `ShotImageProcessorV1` | 处理一张图：`process(self, ShotImage*)`，返回 0 表示成功 |
 | `shot.configurable` | `ShotConfigurableV1` | 声明并读写配置项，见下 |
 | `shot.lib_provider` | `ShotLibProviderV1` | 声明"我是运行库提供者"，报告库名与版本；宿主按 `PluginType::Lib` 登记 |
+| `shot.ui_provider` | `ShotUIProviderV1` | 窗口/托盘由插件自己创建，宿主只调 `init` / `deinit` / `post_to_plugin` |
+| `shot.host.event_bus` | `ShotHostEventBusV1` | **宿主服务**：进程内主题发布/订阅 |
+| `shot.host.plugin_config` | `ShotHostPluginConfigV1` | **宿主服务**：配置目录（宿主 + 可配置插件） |
+| `shot.host.plugin_registry` | `ShotHostPluginRegistryV1` | **宿主服务**：已安装插件状态与异步启停 |
 
 `ShotImage` 描述一块 8 位像素缓冲：
 
@@ -176,7 +201,28 @@ typedef struct ShotConfigurableV1 {
 - 插件遇到不认识的 `key` 必须安全忽略（返回负值）——宿主升级后多传一项，老插件也不会出问题。
 - 约定：`set_config` 可能在运行中被调用（用户拖滑块），实现要么线程安全，要么声明"下次 `process` 生效"。
 
-**宿主级别的设置不要塞进插件**：输出格式、保存目录、截图热键属于宿主；插件只管自己的算法参数。
+**宿主的设置也走同一套描述符**：宿主内部以 `core` 伪插件实现 `shot.configurable`（日志级别、
+控制台/文件日志开关），配置目录把它和所有插件配置排在一起，设置页只写一套渲染逻辑。
+
+- 存盘键是 `<plugin_id>/<key>`，值由**宿主**落盘到 `%LOCALAPPDATA%\screen-shot\config.json`；
+  插件只负责 get/set，不需要自己写配置文件。
+- 启动时宿主把已存值灌回插件（没有已存值就用 `default_value`），插件不需要"读配置"这一步。
+- 应用一批设置后宿主发布 `config.applied`：缓存了派生状态的插件重读当前值即可，
+  **没有单独的 reload 调用**。
+- 输出/保存相关的设置不归宿主：谁实现保存能力，谁在自己的 `kConfig[]` 里声明这些项。
+
+完整链路（配置目录、设置页插件、插件启停与热卸载）见 [`document/SETTINGS.md`](document/SETTINGS.md)。
+
+### 设置页与插件启停
+
+设置窗口本身也是插件（`plugins/settings_ui`，实现 `shot.ui_provider`），宿主没有主窗口：
+
+- 设置页通过 `shot.host.plugin_config` 枚举配置目录，按描述符渲染 7 种控件
+  （BOOL / INT / FLOAT / STRING / ENUM / COLOR / PATH）；
+- 通过 `shot.host.plugin_registry` 管理插件启停。**禁用是热卸载**：销毁实例、UI 插件先
+  `host.shutdown` + `deinit`、退订事件总线，同包最后一个实例卸载后 `FreeLibrary`；
+  重新启用则重新加载 DLL 并回灌已存配置。被其他已加载插件 `requires` 的插件不允许单独禁用；
+- 启停请求是异步的：设置页只登记，宿主 main 线程执行完才发布 `plugins.changed`。
 
 ### 必须遵守的 ABI 约定
 
@@ -184,7 +230,7 @@ typedef struct ShotConfigurableV1 {
 2. **Debug/Release 必须与宿主一致**——Debug 插件只能加载进 Debug 宿主。
 3. **插件不得自带基础依赖**（`opencv_*.dll` 等）：宿主 exe 旁边的 `bin/` 里已经有一套，插件目录里再放一份会让同一进程出现两个 OpenCV，类型信息、全局状态与内存分配器全部割裂。
 
-   > 宿主本身**不链接** OpenCV（`CMakeLists.txt` 只链接 `nlohmann_json`）。`bin/` 里的
+   > 宿主本身**不链接** OpenCV（`CMakeLists.txt` 只链接 `nlohmann_json` 与 `spdlog`）。`bin/` 里的
    > `opencv_*.dll` 来自 `cmake/copy_runtime_deps.cmake` 对 vcpkg 运行时目录的整目录布置，
    > 不是链接拉进来的。需要 OpenCV 的插件在**自己的** `CMakeLists.txt` 里
    > `find_package(OpenCV QUIET)` 并链接（见 `plugins/opencv_provider`），
@@ -280,23 +326,12 @@ shot_add_plugin(acme_tools
 `shot_add_plugin()` 统一处理 `/MD`、`PREFIX ""`、隐藏符号、产物目录、pdb 重定向、
 贴元数据与产物剪枝——这些规则以前散落在根 `CMakeLists.txt` 里，容易和文档漂移。
 
-## 路线图
-
-- [x] 插件宿主骨架：扫描、长度/版本校验、按类型索引、生命周期
-- [x] 单入口 `shot_module_entry` + 自描述模块表 + 能力查询 `query_interface`
-- [x] `shot.image_processor` 与 `shot.configurable` 契约、示例插件、离线 SDK 导出
-- [x] 插件元数据贴尾（纯 CMake 追加 `metadata.json`）与一 DLL 多插件
-- [ ] 宿主侧通用配置界面（读 `ShotConfigDesc` 自动生成）与配置存盘
-- [x] 宿主读取元数据（加载前预筛 + 依赖拓扑排序 + 不满足的插件单独跳过）
-- [x] 元数据与 `get_info` 的交叉校验（id / name / version 不一致时告警，以 `get_info` 为准）
-- [ ] 正式截图采集（全屏 / 区域 / 窗口）与 `Window`、`Tray` 能力
-- [ ] 录屏能力（新增 interface id，契约本身不用改）
-- [ ] 插件热重载与插件间依赖声明
-
 ## 平台
 
 Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。
-`CMakeLists.txt` 已含 macOS / Linux / WSL 分支，`dllHandler.h` 也已支持 `dlopen`，但**未经验证**。
+macOS / Linux 分支按平台选择产物扩展名（`SHOT_DYN_EXT`）、运行库定位（RPATH）与剪枝规则；
+GUI 类插件（`plugins/setting_window` 的 Win32 窗口、`plugins/settings_ui` 的 ImGui 设置页）
+在非 Windows 上自动跳过。
 
 ## 许可
 
