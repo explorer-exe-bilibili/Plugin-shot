@@ -29,10 +29,11 @@
 #       本 workflow 的 Windows job 保留在矩阵里，非"必须绿"（Linux + macOS 是准入门槛）。
 #
 #  ⚠ 账号状态备注：写下这段时，仓库所属账号的 GitHub Actions 被 billing 锁定，
-#    job 在 0 秒内失败并提示 "The job was not started because your account is
-#    locked due to a billing issue."（不是 workflow 语法问题）。账号解锁后
-#    推一次 / workflow_dispatch 即可得到真实 CI 结果；Linux 的结论来自本地
-#    WSL 完整构建，步骤与下面 workflow 一一对应。
+#    job 无法启动（Windows/Linux 立即失败、macOS 排队数分钟后同样失败），注解为
+#    "The job was not started because your account is locked due to a billing
+#    issue."（不是 workflow 语法问题）。账号解锁后推一次 / workflow_dispatch
+#    即可得到真实 CI 结果；Linux 的结论来自本地 WSL 完整构建 + ext4 干净
+#    checkout 的 preset 流程模拟，步骤与下面 workflow 一一对应。
 #
 #  ── 构建约定 ────────────────────────────────────────────────────────────
 #   · 配置：`cmake --preset release`，产物目录 build/<hostSystemName>（Linux /
@@ -143,6 +144,16 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      - name: Ensure Ninja (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # preset 用 Ninja；Windows runner 通常自带，缺失时补装（Chocolatey 预装）。
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja -y
+          }
+          ninja --version
 
       # ---------------------------------------------------------------------
       #  2. vcpkg（清单模式的底层工具）：clone 到 $VCPKG_ROOT 并 bootstrap。
