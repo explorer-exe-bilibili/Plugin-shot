@@ -191,6 +191,10 @@ bool RegionWindow::Impl::createWindow() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);     // 铺满整块屏，不需要用户拉伸
     glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_TRUE);  // 显示时拿键盘焦点，Esc 才能生效
     glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+    // 覆盖层必须"透出桌面"：窗口是纯 OpenGL 渲染的，不声明透明帧缓冲就只能画一块
+    // 不透明背景，用户看到的是整屏黑（只剩十字线）。GLFW 在 Win32 上用 DWM 的
+    // blur-behind 让带 alpha 的帧缓冲参与合成（Windows 8+；XP/7 会被忽略而无害）。
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -384,8 +388,13 @@ bool RegionWindow::Impl::startSelection() {
     // 无边框窗口搬到目标显示器并铺满整块屏。位置/尺寸都是物理像素（PMv2 实测），
     // 150% 屏幕上就是 2560x1600，不是 1707x1067。整块显示器（不是工作区）——
     // 任务栏区域也在可框选范围内，与整屏截图的内容对齐。
-    glfwSetWindowMonitor(window, nullptr, monitor.x, monitor.y, monitor.width, monitor.height,
-                         GLFW_DONT_CARE);
+    //
+    // 刻意不用 glfwSetWindowMonitor(window, nullptr, ...)：它走的是"切成全屏/窗口模式"
+    // 的代码路径，Windows 上会触发窗口样式重建 + DWM 重新合成，用户看到的是类似切换
+    // 全屏（分辨率变化）的黑屏闪烁。这里窗口本来就是无边框置顶窗口，隐藏状态下直接
+    // setSize + setPos 即可，显示时不会再有模式切换。
+    glfwSetWindowSize(window, monitor.width, monitor.height);
+    glfwSetWindowPos(window, monitor.x, monitor.y);
     // content scale 只用来放大字号：坐标已经是物理像素，不能再乘它。
     applyMonitorScale(contentScale);
 
@@ -406,6 +415,13 @@ bool RegionWindow::Impl::startSelection() {
 
     if (crosshairCursor != nullptr) {
         glfwSetCursor(window, crosshairCursor);
+    }
+    // 先隐藏状态下渲染一帧再显示：否则 glfwShowWindow 后、第一帧 swap 之前，DWM 会把
+    // 窗口的初始（未渲染）内容合上去，用户看到一瞬间的黑/花屏——和"切换全屏"的黑闪
+    // 很像。渲染一帧后缓冲区里已经是"半透明遮罩 + 十字线"，显示时第一次合成就是对的。
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        renderFrame();
+        glfwPollEvents();
     }
     glfwShowWindow(window);
     glfwFocusWindow(window);

@@ -12,7 +12,8 @@
 //   Esc / 右键        → 取消：只隐藏窗口，不发布任何事件（v1 不定义 capture.cancelled）
 //
 // 绘制全部用 ImGui 的 background draw list，不创建 ImGui 窗口：覆盖层没有布局、
-// 没有控件，只是把整屏画暗、把选区高亮、画十字线和一个尺寸标签。
+// 没有控件，只是把整屏画暗、把选区挖空（窗口透明帧缓冲透出真实桌面）、画十字线
+// 和一个尺寸标签。
 //
 // 坐标：drag 里存的是窗口内容坐标（物理像素）。绘制用 framebuffer 坐标，两者在
 // Windows PMv2 下相等（实测 2560x1600 == 2560x1600）；这里仍按 ActualScale 换算一次，
@@ -33,8 +34,6 @@ namespace {
 
 /** @brief 遮罩：纯黑约 51% 不透明度，压暗但不至于看不清下面的内容。 */
 constexpr ImU32 kDimColor = IM_COL32(0, 0, 0, 130);
-/** @brief 选区内部的微亮填充：没有截屏背景可"挖空"时，用它表示"这块是选中的"。 */
-constexpr ImU32 kSelectionFillColor = IM_COL32(255, 255, 255, 26);
 /** @brief 选区边框：亮蓝色，和深色遮罩对比度足够。 */
 constexpr ImU32 kSelectionBorderColor = IM_COL32(90, 200, 250, 255);
 /** @brief 十字线：半透明白，不抢选区边框的视觉焦点。 */
@@ -154,8 +153,35 @@ void RegionWindow::Impl::drawOverlay() const {
     ImFont* font = ImGui::GetFont();
     const float fontSize = ImGui::GetFontSize();
 
-    // 1. 整屏暗色遮罩。
-    draw->AddRectFilled(origin, bottomRight, kDimColor);
+    // 1. 暗色遮罩：拖拽中只压暗"选区之外"的四块，选区本身保持完全透明——
+    //    窗口是透明帧缓冲，挖空的地方能直接看到真实桌面，所见即所截。
+    bool hasSelection = false;
+    ImVec2 selectionMin;
+    ImVec2 selectionMax;
+    int localWidth = 0;
+    int localHeight = 0;
+    if (drag.dragging) {
+        int localX = 0;
+        int localY = 0;
+        normalizeRect(drag.startX, drag.startY, drag.cursorX, drag.cursorY, localX, localY,
+                      localWidth, localHeight);
+        if (localWidth > 0 && localHeight > 0) {
+            hasSelection = true;
+            selectionMin = toOverlay(localX, localY);
+            selectionMax = toOverlay(localX + localWidth, localY + localHeight);
+        }
+    }
+    if (hasSelection) {
+        // 上 / 下 / 左 / 右 四块遮罩（顺序：先上下整行，再左右只盖选区高度）。
+        draw->AddRectFilled(origin, ImVec2(bottomRight.x, selectionMin.y), kDimColor);
+        draw->AddRectFilled(ImVec2(origin.x, selectionMax.y), bottomRight, kDimColor);
+        draw->AddRectFilled(ImVec2(origin.x, selectionMin.y),
+                            ImVec2(selectionMin.x, selectionMax.y), kDimColor);
+        draw->AddRectFilled(ImVec2(selectionMax.x, selectionMin.y),
+                            ImVec2(bottomRight.x, selectionMax.y), kDimColor);
+    } else {
+        draw->AddRectFilled(origin, bottomRight, kDimColor);
+    }
 
     // 2. 十字线：贯穿整屏，方便对齐边缘。
     const ImVec2 cursor = toOverlay(drag.cursorX, drag.cursorY);
@@ -164,19 +190,8 @@ void RegionWindow::Impl::drawOverlay() const {
     draw->AddLine(ImVec2(cursor.x, origin.y), ImVec2(cursor.x, bottomRight.y), kCrosshairColor,
                   1.0f);
 
-    // 3. 选区高亮 + 边框 + 尺寸标签（只在拖拽中画；没拖的时候只有遮罩和十字线）。
-    if (drag.dragging) {
-        int localX = 0;
-        int localY = 0;
-        int localWidth = 0;
-        int localHeight = 0;
-        normalizeRect(drag.startX, drag.startY, drag.cursorX, drag.cursorY, localX, localY,
-                      localWidth, localHeight);
-        const ImVec2 selectionMin = toOverlay(localX, localY);
-        const ImVec2 selectionMax = toOverlay(localX + localWidth, localY + localHeight);
-
-        // 选中区域内部提亮一点：没有截图作背景时，"挖空"无法真实呈现，用高亮表示。
-        draw->AddRectFilled(selectionMin, selectionMax, kSelectionFillColor);
+    // 3. 选区边框 + 尺寸标签（选区内部不填充：透明窗口已经能透出真实桌面）。
+    if (hasSelection) {
         draw->AddRect(selectionMin, selectionMax, kSelectionBorderColor, 0.0f, 0,
                       kBorderThickness);
 

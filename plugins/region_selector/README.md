@@ -1,7 +1,12 @@
 # region_selector —— 区域选择覆盖层插件（`shot.ui_provider`）
 
-在**鼠标所在显示器**上弹出一个无边框、置顶、整屏的覆盖层，让用户拖拽框出一块矩形；
+在**鼠标所在显示器**上弹出一个无边框、置顶、**半透明**、整屏的覆盖层，让用户拖拽框出一块矩形；
 确认后先隐藏覆盖层、等遮罩从屏幕上消失，再发布带 `region` 的 `capture.request`。
+
+覆盖层是 **GLFW 透明帧缓冲窗口**（`GLFW_TRANSPARENT_FRAMEBUFFER`）：窗口先隐藏、
+`glfwSetWindowSize/SetWindowPos` 铺满整块显示器、**隐藏状态下先渲染两帧**再 `glfwShowWindow`。
+刻意**不用** `glfwSetWindowMonitor`：那条路径会触发窗口模式切换与 DWM 重新合成，用户看到
+的是类似切全屏的黑屏闪烁。透明帧缓冲让桌面透出来，选区内部是真正的"挖空"，所见即所截。
 宿主流水线收到后按区域裁剪并落盘（坐标语义见 §4）。取消（Esc / 右键 / 选区过小）
 不发布任何事件。
 
@@ -90,6 +95,10 @@ ImGui 调用都在插件的 UI 线程上执行（GLFW 和 ImGui 都不是线程�
 | 5 | UI 线程 | 确认后先 `glfwHideWindow` + `glfwPollEvents`，再 `sleep 100ms`（`kHideSettleDelayMs`） |
 | 6 | UI 线程 | 发布 `capture.request`：`{"mode":"region","region":{"x","y","width","height"}}` |
 | 7 | 宿主 worker | 抓整屏 → 按 `region` 裁剪 → 处理 → 保存，发 `capture.done` |
+
+**覆盖层整屏全黑、只剩十字线**：窗口没声明透明帧缓冲时，OpenGL 的默认清屏是不透明黑，
+遮罩画在黑底上就是整屏黑。必须 `GLFW_TRANSPARENT_FRAMEBUFFER` + `glClearColor(..., 0)`，
+并且把遮罩画成"选区外四块"，选区内部留空（透明）。
 
 **为什么第 5 步要先隐藏再等 100ms**：DWM 合成是异步的，`glfwHideWindow` 返回时覆盖层
 可能还没从屏幕上消失；宿主 worker 收到事件就抓屏，中间没有任何同步点。宁可慢 100ms，
@@ -181,7 +190,7 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
 
 | 输入 | 行为 |
 | --- | --- |
-| 左键按下并拖动 | 画选区（半透明白色填充 + 亮蓝色 2px 边框 + 实时尺寸标签） |
+| 左键按下并拖动 | 画选区（选区内部**透明挖空**、四周压暗 + 亮蓝色 2px 边框 + 实时尺寸标签） |
 | 松开左键 | 确认；任一边 < 8 物理像素按取消处理 |
 | 右键 | 取消 |
 | Esc | 取消 |

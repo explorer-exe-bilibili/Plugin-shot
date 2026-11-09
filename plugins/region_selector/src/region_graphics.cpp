@@ -157,7 +157,9 @@ bool RegionWindow::Impl::renderFrame() {
     ImGui::Render();
 
     glViewport(0, 0, framebufferWidth, framebufferHeight);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    // alpha = 0 的清屏 + GLFW_TRANSPARENT_FRAMEBUFFER：窗口没画到的地方完全透明，
+    // DWM 把桌面合成到下面（画成不透明黑的话用户看到的就是整屏黑）。
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     glfwSwapBuffers(window);
