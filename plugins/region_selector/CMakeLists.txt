@@ -68,6 +68,7 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  src/region_window.cpp
                  src/region_overlay.cpp
                  src/region_graphics.cpp
+    src/region_background.cpp
                  src/region_geometry.cpp
     INCLUDE_DIRS include
     LINK_LIBRARIES

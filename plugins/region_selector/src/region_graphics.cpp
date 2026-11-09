@@ -131,6 +131,8 @@ void RegionWindow::Impl::applyMonitorScale(float scale) {
 }
 
 void RegionWindow::Impl::shutdownGraphics() {
+    // 先删自己的纹理：这一步需要当前 GL 上下文，必须在后端/上下文销毁之前做。
+    releaseBackgroundTexture();
     if (imguiInitialized) {
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
@@ -157,9 +159,9 @@ bool RegionWindow::Impl::renderFrame() {
     ImGui::Render();
 
     glViewport(0, 0, framebufferWidth, framebufferHeight);
-    // alpha = 0 的清屏 + GLFW_TRANSPARENT_FRAMEBUFFER：窗口没画到的地方完全透明，
-    // DWM 把桌面合成到下面（画成不透明黑的话用户看到的就是整屏黑）。
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    // 窗口是不透明的，背景由 drawOverlay 里的桌面快照纹理盖满；清屏色只在
+    // 快照缺失（截屏失败）时可见，所以用黑色而不是透明色。
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     glfwSwapBuffers(window);

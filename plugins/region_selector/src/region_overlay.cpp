@@ -12,8 +12,8 @@
 //   Esc / 右键        → 取消：只隐藏窗口，不发布任何事件（v1 不定义 capture.cancelled）
 //
 // 绘制全部用 ImGui 的 background draw list，不创建 ImGui 窗口：覆盖层没有布局、
-// 没有控件，只是把整屏画暗、把选区挖空（窗口透明帧缓冲透出真实桌面）、画十字线
-// 和一个尺寸标签。
+// 没有控件，只是把桌面快照当背景铺满、把选区外画暗、把选区挖空（露出背景快照）、
+// 画十字线和一个尺寸标签。
 //
 // 坐标：drag 里存的是窗口内容坐标（物理像素）。绘制用 framebuffer 坐标，两者在
 // Windows PMv2 下相等（实测 2560x1600 == 2560x1600）；这里仍按 ActualScale 换算一次，
@@ -152,6 +152,12 @@ void RegionWindow::Impl::drawOverlay() const {
     }
     ImFont* font = ImGui::GetFont();
     const float fontSize = ImGui::GetFontSize();
+
+    // 0. 背景：触发瞬间的桌面快照。窗口是不透明的，这张图就是用户看到的"桌面"，
+    //    遮罩与挖空都画在它上面（等价于透明覆盖层，但不依赖 DWM 合成）。
+    if (backgroundTexture != 0) {
+        draw->AddImage(static_cast<ImTextureID>(backgroundTexture), origin, bottomRight);
+    }
 
     // 1. 暗色遮罩：拖拽中只压暗"选区之外"的四块，选区本身保持完全透明——
     //    窗口是透明帧缓冲，挖空的地方能直接看到真实桌面，所见即所截。

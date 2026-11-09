@@ -12,6 +12,7 @@
 //                           触发负载解析 / 隐藏后发布（提交）
 //    region_overlay.cpp  —— 框选交互状态机 + ImGui 遮罩绘制
 //    region_graphics.cpp —— ImGui 后端、字体与 DPI 缩放、每帧渲染
+//    region_background.cpp —— 触发瞬间的桌面快照（Win32 GDI）+ 上传成 GL 纹理
 //    region_geometry.cpp —— 显示器矩形 / 光标 / 物理虚拟桌面坐标换算（Win32 平台层）
 // ============================================================================
 
@@ -114,6 +115,11 @@ struct RegionWindow::Impl {
     bool overlayVisible = false;  // 覆盖层是否正在显示
     DragState drag;               // 当前框选状态
     ScreenRect monitorRect;       // 当前覆盖的显示器矩形（绝对物理像素）
+    // 触发瞬间的桌面快照纹理：覆盖层窗口是不透明的，靠它当"背景画面"，
+    // 这样就不依赖透明窗口（透明帧缓冲在 hide/show 之后会丢 DWM 合成，导致黑屏）。
+    unsigned int backgroundTexture = 0;
+    int backgroundWidth = 0;
+    int backgroundHeight = 0;
 
     // ---- 生命周期与事件循环（region_window.cpp） ----
     void run();
@@ -145,6 +151,10 @@ struct RegionWindow::Impl {
     void loadFonts();
     void shutdownGraphics();
     bool renderFrame();
+
+    // ---- 桌面快照背景（region_background.cpp） ----
+    bool captureBackground();
+    void releaseBackgroundTexture();
 
     // ---- 平台几何：显示器与物理坐标（region_geometry.cpp） ----
     bool monitorUnderCursor(ScreenRect& out, float& contentScale) const;

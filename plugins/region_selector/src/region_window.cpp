@@ -191,10 +191,8 @@ bool RegionWindow::Impl::createWindow() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);     // 铺满整块屏，不需要用户拉伸
     glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_TRUE);  // 显示时拿键盘焦点，Esc 才能生效
     glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
-    // 覆盖层必须"透出桌面"：窗口是纯 OpenGL 渲染的，不声明透明帧缓冲就只能画一块
-    // 不透明背景，用户看到的是整屏黑（只剩十字线）。GLFW 在 Win32 上用 DWM 的
-    // blur-behind 让带 alpha 的帧缓冲参与合成（Windows 8+；XP/7 会被忽略而无害）。
-    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+    // 覆盖层是**不透明**窗口：背景靠 region_background.cpp 里"触发瞬间的桌面快照"
+    // 纹理画出来，不用透明帧缓冲（透明窗口在 hide→show 之后会丢 DWM 合成，变黑屏）。
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -416,9 +414,15 @@ bool RegionWindow::Impl::startSelection() {
     if (crosshairCursor != nullptr) {
         glfwSetCursor(window, crosshairCursor);
     }
+    // 截一张当前桌面的快照当覆盖层背景（窗口不透明，靠这张纹理"假装透明"）。
+    // 失败只 warn：退化成纯遮罩背景，框选功能不受影响。
+    if (!captureBackground()) {
+        shot::Logger(host).warn("region_selector：没有桌面快照背景，覆盖层只显示遮罩");
+    }
+
     // 先隐藏状态下渲染一帧再显示：否则 glfwShowWindow 后、第一帧 swap 之前，DWM 会把
-    // 窗口的初始（未渲染）内容合上去，用户看到一瞬间的黑/花屏——和"切换全屏"的黑闪
-    // 很像。渲染一帧后缓冲区里已经是"半透明遮罩 + 十字线"，显示时第一次合成就是对的。
+    // 窗口的初始（未渲染）内容合上去，用户看到一瞬间的黑/花屏。渲染一帧后缓冲区里
+    // 已经是"桌面快照 + 遮罩 + 十字线"，显示时第一次合成就是对的。
     for (int attempt = 0; attempt < 2; ++attempt) {
         renderFrame();
         glfwPollEvents();
