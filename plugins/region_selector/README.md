@@ -5,12 +5,8 @@
 
 覆盖层是**不透明窗口 + 触发瞬间的桌面快照**（`region_background.cpp`）：先 GDI 截一张该
 显示器的快照、上传成 GL 纹理，窗口用这张纹理铺满当背景，遮罩/挖空/十字线都画在它上面。
-**全程不 hide/show 窗口**：窗口只在第一次框选时 `glfwShowWindow` 一次，之后一直存在；
-"隐藏"是把它挪到屏幕外（`-32000,-32000`）并取消置顶，"显示"是挪回目标显示器并置顶。
-这样避开了 Windows 的 ShowWindow/HideWindow 过渡动画——那正是"一出现/一关闭就闪一下"的
-来源。另外创建窗口后立刻 `DwmSetWindowAttribute(DWMWA_TRANSITIONS_FORCEDISABLED)` 关掉
-DWM 对它的显隐过渡；刻意**不用** `glfwSetWindowMonitor`（会切窗口模式，表现为黑屏闪烁）。
-挪到屏幕外之前先把这一帧渲染好，挪回来时内容已经正确，不会出现"先旧内容再刷新"的一帧。
+窗口先隐藏、`glfwSetWindowSize/SetWindowPos` 铺满整块显示器、**隐藏状态下先渲染两帧**再
+`glfwShowWindow`；刻意**不用** `glfwSetWindowMonitor`（那条路径会切窗口模式，表现为黑屏闪烁）。
 
 > 为什么不用透明窗口：早期用 `GLFW_TRANSPARENT_FRAMEBUFFER` 让桌面透出来，第一次能显示，
 > 但窗口 `hide → show` 一轮之后 DWM 的 blur-behind 合成失效，覆盖层变回不透明黑屏且不再

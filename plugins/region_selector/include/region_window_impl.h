@@ -113,7 +113,6 @@ struct RegionWindow::Impl {
     bool imguiInitialized = false;
     bool metricsLogged = false;   // 显示器几何实测日志只打一次
     bool overlayVisible = false;  // 覆盖层是否正在显示
-    bool windowShown = false;     // 窗口是否已经 show 过（之后只做"挪出屏幕/挪回来"，不再 hide/show）
     DragState drag;               // 当前框选状态
     ScreenRect monitorRect;       // 当前覆盖的显示器矩形（绝对物理像素）
     // 触发瞬间的桌面快照纹理：覆盖层窗口是不透明的，靠它当"背景画面"，
@@ -138,7 +137,6 @@ struct RegionWindow::Impl {
     void cancelSelection();
     void finishSelection(int localX, int localY, int localWidth, int localHeight);
     void hideOverlay();
-    void parkOverlay();
     void publishRegion(const ScreenRect& region) const;
     static void onBusEvent(void* user, const char* topic, const void* data, std::uint32_t len);
     static void onGlfwError(int errorCode, const char* description);
@@ -161,9 +159,7 @@ struct RegionWindow::Impl {
     // ---- 平台几何：显示器与物理坐标（region_geometry.cpp） ----
     bool monitorUnderCursor(ScreenRect& out, float& contentScale) const;
     void virtualDesktopOrigin(int& x, int& y) const;
-    bool cursorScreenPosition(int& x, int& y) const;
     void logMonitorMetrics() const;
-    void configureOverlayWindowNative();
     static ScreenRect monitorRectOf(GLFWmonitor* monitor);
 };
 
