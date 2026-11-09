@@ -1,11 +1,13 @@
-// 托盘的两个开关配置：notify（保存成功后弹气泡）与 notify_on_error（失败时弹气泡）。
+// 托盘的配置项：icon（自定义图标路径）。
 //
-// 配置项声明、字符串值解析、当前值读写都在这个文件里；ABI 回调在
-// plugin_entry.cpp 只做参数转发。值一律按契约用字符串 "1" / "0" 表达，
-// 缺省都是开——托盘默认应该把"截屏成功/失败"告诉用户。
+// 配置项声明、字符串值读写都在这个文件里；ABI 回调在 plugin_entry.cpp 只做参数
+// 转发。值一律按契约用字符串表达：icon → UTF-8 路径，空串 = 用宿主应用图标。
 //
-// 线程模型：set_config 可能在宿主任意线程上被调用，托盘线程同时可能正在读，
-// 所以当前值用 std::atomic<bool>，读侧不加锁也不会读到撕裂的值。
+// 提示（成功/失败气泡）不归托盘管：那条职责已经整体交给独立的消息提示插件
+// plugins/notify，托盘只保留图标 + 右键菜单。
+//
+// 线程模型：set_config 可能在宿主任意线程上被调用（init 的 apply_stored、设置页
+// 应用），托盘线程同时可能正在读图标路径；所以路径用 mutex 保护，读侧拿副本。
 
 #include "tray_config.h"
 
@@ -16,49 +18,23 @@ namespace tray {
 namespace {
 
 // 配置键：全小写 + 下划线，发布后不能改名（它是存盘标识，见 ABI_POLICY.md §5）。
-const char kKeyNotify[] = "notify";
-const char kKeyNotifyOnError[] = "notify_on_error";
+const char kKeyIcon[] = "icon";
 
 const ShotConfigDesc kConfig[] = {
     {
         .struct_size   = sizeof(ShotConfigDesc),
-        .kind          = SHOT_CONFIG_KIND_BOOL,
-        .key           = kKeyNotify,
-        .label         = "截屏成功后通知",
-        .default_value = "1",
-        .options       = nullptr,
+        .kind          = SHOT_CONFIG_KIND_PATH,
+        .key           = kKeyIcon,
+        .label         = "托盘图标",
+        .default_value = "",
+        // PATH 的对话框类型：设置页据此弹"选择文件"，而不是按当前值猜目录/文件。
+        .options       = "file",
         .min           = 0.0,
-        .max           = 1.0,
-        .step          = 1.0,
-        .tooltip       = "保存完成后在托盘弹气泡；关掉后不再打扰",
-    },
-    {
-        .struct_size   = sizeof(ShotConfigDesc),
-        .kind          = SHOT_CONFIG_KIND_BOOL,
-        .key           = kKeyNotifyOnError,
-        .label         = "截屏失败时通知",
-        .default_value = "1",
-        .options       = nullptr,
-        .min           = 0.0,
-        .max           = 1.0,
-        .step          = 1.0,
-        .tooltip       = "采集/处理/保存失败时在托盘弹气泡显示原因",
+        .max           = 0.0,
+        .step          = 0.0,
+        .tooltip       = "选择 .ico 文件自定义托盘图标；留空使用宿主应用图标",
     },
 };
-
-/**
- * @brief 把配置里的布尔文本解析成 bool。
- *
- * 只把 "0" / "false" 当成关：宿主升级后可能传别的写法（"off" 之类），按
- * "不认识就当默认值（开）"处理，比把用户配置的开关意外关掉安全。
- *
- * @param[in] value 配置值文本，不能为空。
- * @return true = 开；false = 关（含 "0" / "false"）。
- * @note 无状态的纯解析函数，不属于 TrayConfig 的接口，所以放匿名命名空间（STYLE §6.7）。
- */
-bool parseBool(const char* value) {
-    return !(std::strcmp(value, "0") == 0 || std::strcmp(value, "false") == 0);
-}
 
 }  // namespace
 
@@ -79,11 +55,9 @@ std::int32_t TrayConfig::getValue(const char* key, char* buf, std::uint32_t bufS
     if (key == nullptr) {
         return -1;
     }
-    if (std::strcmp(key, kKeyNotify) == 0) {
-        return copyValue(m_notifyOnDone.load() ? "1" : "0", buf, bufSize);
-    }
-    if (std::strcmp(key, kKeyNotifyOnError) == 0) {
-        return copyValue(m_notifyOnError.load() ? "1" : "0", buf, bufSize);
+    if (std::strcmp(key, kKeyIcon) == 0) {
+        const std::string path = iconPath();  // 锁内拷一份，避免持有锁时做字符串操作
+        return copyValue(path.c_str(), buf, bufSize);
     }
     return -1;  // 不认识的 key：安全忽略（宿主升级后多传一项也不会踩这里）
 }
@@ -92,23 +66,17 @@ std::int32_t TrayConfig::setValue(const char* key, const char* value) {
     if (key == nullptr || value == nullptr) {
         return -1;
     }
-    if (std::strcmp(key, kKeyNotify) == 0) {
-        m_notifyOnDone.store(parseBool(value));
-        return 0;
-    }
-    if (std::strcmp(key, kKeyNotifyOnError) == 0) {
-        m_notifyOnError.store(parseBool(value));
+    if (std::strcmp(key, kKeyIcon) == 0) {
+        std::lock_guard<std::mutex> lock(m_iconMutex);
+        m_iconPath = value;
         return 0;
     }
     return -1;
 }
 
-bool TrayConfig::notifyOnCaptureDone() const noexcept {
-    return m_notifyOnDone.load();
-}
-
-bool TrayConfig::notifyOnCaptureError() const noexcept {
-    return m_notifyOnError.load();
+std::string TrayConfig::iconPath() const {
+    std::lock_guard<std::mutex> lock(m_iconMutex);
+    return m_iconPath;
 }
 
 std::int32_t TrayConfig::copyValue(const char* value, char* buf, std::uint32_t bufSize) {

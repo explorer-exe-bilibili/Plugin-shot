@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "hotkey.main",
+      "name": "Hotkey",
+      "version": "0.1.0",
+      "description": "Windows 全局热键：截屏 / 区域截屏 / 打开设置各绑定一个可配置热键，按热键只发布事件（capture.request / settings.open），不直接调用任何插件",
+      "interfaces": ["shot.ui_provider", "shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}

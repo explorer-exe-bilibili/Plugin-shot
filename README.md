@@ -15,7 +15,10 @@
 - 只解析**一个**导出符号 `shot_module_entry`，拿到自描述的模块表
 - 先看 `struct_size` 再读字段、比对 `abi_major`，不兼容立刻拒绝加载
 - 用 `query_interface("shot.image_processor", 1)` 问能力，不认识的能力安静跳过
-- 把实例包装成 C++ 对象，按 `PluginType` 分类索引；插件对象由插件自己销毁，宿主绝不 `delete`
+- 把实例包装成 C++ 对象，按 `PluginType` 分类索引：五种具名能力之外、但 metadata 声明过的
+  纯订阅/纯配置插件按 `Generic` 兜底加载；插件对象由插件自己销毁，宿主绝不 `delete`
+- 采集流水线在**独立工作线程**执行（有界队列，满即丢弃并 warn），抓屏/编码不再阻塞
+  事件分发；区域截图由宿主整屏抓取后按物理像素裁剪
 - 支持运行期启用/禁用插件：禁用即**热卸载**（销毁实例 → 退订事件总线 → `FreeLibrary`），
   重新启用则重新加载 DLL 并回灌已存配置
 - 把插件贡献的 UI 数据按 **list id** 聚成只读 JSON 快照（`shot.host.plugin_lists`），
@@ -27,23 +30,31 @@
 
 | 能力 | 状态 |
 | --- | --- |
-| 插件加载 / 长度与版本校验 / 按类型索引 | ✅ 可用 |
+| 插件加载 / 长度与版本校验 / 按类型索引（含 `PluginType::Generic` 兜底） | ✅ 可用 |
 | 单入口 `shot_module_entry` + 自描述模块表（`struct_size` 约定） | ✅ 可用 |
 | 一 DLL 多插件（`plugin_count` + `create(index)` + `get_info`） | ✅ 可用 |
 | 能力查询 `query_interface("shot.image_processor", 1)` | ✅ 可用 |
-| 屏幕采集 `shot.screen_capture`（`plugins/screen_capture`，GDI 抓虚拟桌面；仅 Windows） | ✅ 可用（`document/CAPTURE.md`） |
+| 屏幕采集 `shot.screen_capture`（`plugins/screen_capture`，GDI 抓虚拟桌面**物理像素**；混合 DPI 双屏实测 3584x1600；仅 Windows） | ✅ 可用（`document/CAPTURE.md`） |
 | 图像保存 `shot.image_saver`（`plugins/image_saver`，PNG / JPEG + 四个配置项） | ✅ 可用（`document/CAPTURE.md`） |
-| 采集 → 处理 → 保存流水线（`capture.request` / `capture.done` / `capture.failed`） | ✅ 可用（`document/CAPTURE.md`） |
+| 采集 → 处理 → 保存流水线（**工作线程 + 有界队列 4 + 整段持生命周期锁**；`capture.request` / `capture.done` / `capture.failed`） | ✅ 可用（`document/CAPTURE.md`） |
+| 区域截图（`capture.request` 带合法 `region`，宿主抓整屏后按物理虚拟桌面像素裁剪、越界夹取；`plugins/region_selector` 框选覆盖层；无 region 的框选触发请求由流水线忽略、不采集；仅 Windows） | ✅ 可用（`document/CAPTURE.md` §3.1） |
+| 通用插件类型 `PluginType::Generic`（只声明 `shot.configurable` + `create` 里订阅事件；有 metadata 才兜底加载） | ✅ 可用（`document/SETTINGS.md` §3.3） |
 | 宿主事件总线 `shot.host.event_bus`（主题发布 / 订阅） | ✅ 可用（`document/EVENT_BUS.md`） |
 | 通用列表服务 `shot.host.plugin_lists`（按 list id 返回 JSON 快照：`config_list` / `tray_command_list`） | ✅ 可用（`document/LISTS.md`） |
 | 列表事件协议 `lists.*`（`add` / `remove` / `update` / `commit` / `updated` / `changed`，事件驱动写值） | ✅ 可用（`document/LISTS.md`） |
 | 宿主插件注册表 `shot.host.plugin_registry`（启停 / 热卸载） | ✅ 可用（`document/SETTINGS.md`） |
 | 运行库提供者 `shot.lib_provider`（`PluginType::Lib`） | ✅ 可用（`plugins/opencv_provider` 把 OpenCV 带进进程） |
-| UI 提供者 `shot.ui_provider`（窗口/托盘由插件自己创建） | ✅ 可用（`plugins/settings_ui`、`plugins/tray`） |
+| UI 提供者 `shot.ui_provider`（窗口/托盘/热键/覆盖层由插件自己创建） | ✅ 可用（`plugins/settings_ui`、`plugins/tray`、`plugins/hotkey`、`plugins/region_selector`） |
 | 插件配置 `shot.configurable`（插件声明，宿主聚成 `config_list`、事件驱动写值 / 存盘 / 回灌） | ✅ 可用（`document/SETTINGS.md`） |
-| 设置页插件 `plugins/settings_ui`（读 `config_list`，ImGui + GLFW + OpenGL3，描述符驱动表单） | ✅ 可用（跨平台；Windows 已验证） |
-| 托盘入口 `plugins/tray`（菜单数据来自 `tray_command_list`；截屏 / 打开设置 / 退出；仅 Windows） | ✅ 可用 |
-| 命令行 `--capture` / `--settings` / `--help` | ✅ 可用 |
+| 设置页插件 `plugins/settings_ui`（读 `config_list`，ImGui + GLFW + OpenGL3，描述符驱动表单；双屏 150%+100% DPI 已验证） | ✅ 可用（跨平台；Windows 已验证） |
+| 托盘入口 `plugins/tray`（`tray_command_list` 数据驱动菜单：core 四项 + 插件贡献；图标默认宿主命名资源 `IDI_ICON1`，可用 `icon` 换 `.ico`；仅 Windows） | ✅ 可用 |
+| 通知插件 `plugins/notify`（截屏成功/失败气泡，隐藏占位图标；配置 enabled / show_on_success / show_on_error / sound；仅 Windows） | ✅ 可用 |
+| 剪贴板插件 `plugins/clipboard`（订阅 `capture.done` → CF_DIB / 可选 CF_HDROP；配置 enabled / also_file_drop；仅 Windows） | ✅ 可用 |
+| 全局热键插件 `plugins/hotkey`（默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`；非法热键 warn 跳过；仅 Windows） | ✅ 可用 |
+| 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
+| 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
+| 命令行 `--capture`（工作线程 + 退出前派发一轮事件）/ `--settings` / `--help` | ✅ 可用 |
+| GitHub Actions 跨平台 CI（Linux/macOS/Windows 矩阵 + vcpkg 缓存 + preset 构建 + `--help` 冒烟） | workflow 已就绪；Actions 因账号 billing 锁定暂无法启动（Linux 本地 WSL 实测通过，见「平台」） |
 | 宿主自身设置（`core` 伪插件：日志级别 / 控制台 / 文件日志） | ✅ 可用 |
 | 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主加载前读取：预筛 + 依赖拓扑排序） |
 | 元数据构建期校验（id 唯一 / interfaces 已注册 / abi 与头一致 / 依赖语法） | ✅ 可用（`cmake/ValidatePluginMeta.cmake`） |
@@ -60,7 +71,11 @@
 ```
 .
 ├── CMakeLists.txt          # 跨平台构建脚本（vcpkg 清单模式 + GLOB 自动发现插件）
+├── CMakePresets.json       # debug / release 两个 preset（CI 与跨平台构建用同一套）
 ├── vcpkg.json              # 依赖清单
+├── vcpkg-configuration.json# vcpkg builtin-baseline
+├── .github/
+│   └── workflows/cmake.yml # 跨平台 CI（Linux/macOS/Windows；当前受账号 billing 限制）
 ├── include/
 │   ├── plugin_api.h          # ★ 宿主 ⇄ 插件的 ABI 契约（唯一的跨边界头，纯 C）
 │   ├── plugin_api_export.h   # 导出宏：插件默认 dllexport，宿主定义 SCREENSHOT_HOST_EXPORTS
@@ -68,27 +83,31 @@
 │   ├── shot_plugin_helpers/  # 每类一个头文件：iface_entry / logger / config /
 │   │                         # event_bus / plugin_lists / plugin_registry
 │   ├── dllHandler.h           # LoadLibrary / dlopen 封装（含不抛异常的 tryGetFunction）
-│   ├── pluginManager.h       # 插件扫描、依赖排序、加载与热卸载
+│   ├── pluginManager.h       # 插件扫描、依赖排序、加载与热卸载（含 Generic 兜底）
 │   ├── hostServices.h        # 宿主服务表：日志、配置、事件总线、列表服务、插件注册表
 │   ├── hostListCatalog.h     # 通用列表目录：config_list 生成 + lists.* 事件协议
-│   ├── hostRuntime.h         # 宿主编排：PluginManager + 列表目录 + 插件注册表 + 采集流水线
-│   ├── capturePipeline.h     # 采集流水线：屏幕采集 → 图像处理 → 图像保存的宿主编排
+│   ├── hostRuntime.h         # 宿主编排：PluginManager + 列表目录 + 注册表 + 采集流水线 + 生命周期锁
+│   ├── capturePipeline.h     # 采集流水线：工作线程 + 有界队列 + 区域裁剪
 │   ├── config.h              # core::Config：JSON 配置文件读写
-│   └── PluginInstances/      # 宿主侧插件包装（base / ImageProcessor / LibProvider / ScreenCapture / ImageSaver …）
+│   └── PluginInstances/      # 宿主侧插件包装（base / ImageProcessor / LibProvider / ScreenCapture / ImageSaver；Generic 用 base）
 ├── src/                      # 宿主实现与入口
 ├── plugins/                  # 每个子目录都是一个独立插件工程
-│   ├── example_processor/    # 完整示例：一个 DLL 两个插件，都带配置项
+│   ├── example_processor/    # 完整示例：一个 DLL 两个插件，都带配置项（依赖 OpenCV）
 │   ├── opencv_provider/      # 合法但零能力的插件包（把 OpenCV 带进进程）
-│   ├── screen_capture/       # 屏幕采集：Windows GDI 抓虚拟桌面（非 Windows 跳过）
+│   ├── screen_capture/       # 屏幕采集：GDI 抓虚拟桌面物理像素（仅 Windows）
 │   ├── image_saver/          # 图像保存：PNG/JPEG，目录/格式/质量/文件名可配置
+│   ├── clipboard/            # 剪贴板：capture.done → CF_DIB / CF_HDROP（仅 Windows）
+│   ├── notify/               # 截屏结果通知：隐藏占位图标 + Shell 气泡（仅 Windows）
+│   ├── hotkey/               # 全局热键 → 事件（仅 Windows）
+│   ├── region_selector/      # 区域框选覆盖层：发布带 region 的 capture.request（仅 Windows）
 │   ├── settings_ui/          # 设置页：ImGui + GLFW + OpenGL3（跨平台，Windows 已验证）
-│   └── tray/                 # 托盘入口：截屏 / 打开设置 / 退出（非 Windows 跳过）
+│   └── tray/                 # 托盘入口：数据驱动菜单 + 图标（仅 Windows）
 ├── document/
 │   ├── README_SDK.md         # SDK 使用与完整编译约束
 │   ├── ABI_POLICY.md         # 只追加规则、interface id 登记表
-│   ├── SETTINGS.md           # 设置页：config_list、事件驱动写值/提交、插件启停与热卸载
+│   ├── SETTINGS.md           # 设置页：config_list、事件驱动写值/提交、Generic、DPI、插件启停与热卸载
 │   ├── LISTS.md              # 通用列表与事件驱动：list id 登记、lists.* 协议与刷新时机
-│   ├── CAPTURE.md            # 采集流水线：capture.* 事件、失败语义与 --capture
+│   ├── CAPTURE.md            # 采集流水线：工作线程、区域截图、capture.* 事件与 --capture
 │   ├── EVENT_BUS.md          # 宿主事件总线：主题约定、线程模型、生命周期
 │   └── METADATA.md           # metadata.json 的字段定义、权威规则与不写什么
 ├── cmake/
@@ -112,13 +131,36 @@ cmake --build build/Windows
 
 # 导出离线 SDK（供第三方插件在不装 OpenCV 的机器上编译）
 cmake --build build/Windows --target export_sdk
+
+# 也可以用 CMake preset（CI 与跨平台构建走同一套；产物在 build/<platform>/）
+cmake --preset release -DVCPKG_TARGET_TRIPLET=x64-linux   # triplet 按平台填
+cmake --build --preset release
 ```
+
+可选开关 `-DSHOT_ENABLE_OPENCV=OFF` 跳过依赖 OpenCV 的插件（`opencv_provider` /
+`example_processor`），用于 CI 提速或没有 OpenCV 的环境；默认 `ON`。
 
 首次 configure 会以清单模式自动安装依赖（`opencv4` + jpeg/png/tiff/webp 特性、`nlohmann-json`、
 `spdlog`、`glfw3`、`nativefiledialog-extended`、`stb`，以及设置页插件用的 `imgui`——
 静态库，`glfw-binding` + `opengl3-binding`），耗时较长。设置页的运行期依赖 `glfw3.dll`、
 `nfd.dll` 与 OpenCV 一样由 `cmake/copy_runtime_deps.cmake` 从 vcpkg 运行时目录布置到 `bin/`，
 插件目录不含这些 DLL。通用列表协议不引入新依赖：列表快照就是 `nlohmann-json` 序列化的 JSON。
+新增插件也没有引入新的 vcpkg 依赖：`clipboard` 复用 `stb` / `nlohmann-json`，`notify` 只用
+`user32` / `shell32`，`hotkey` 只用 `user32`，`region_selector` 复用 `imgui` / `glfw3` /
+`nlohmann-json`。
+
+**CI**：`.github/workflows/cmake.yml` 已就绪（Linux / macOS / Windows 矩阵 + vcpkg 清单缓存 +
+CMake preset 构建 + `--help` 无头冒烟），但当前 GitHub 账号的 Actions 受 **billing 锁定**
+无法启动（0 秒失败）——workflow 待账号解封后验证。
+
+**跨平台可编译性现状**：Linux 已在 WSL2 实测（Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 /
+vcpkg `x64-linux` / CMake 3.28.3 / Ninja 1.11.1 / Release）：configure + build 通过
+（43s、**0 warning**），产出 `build/Linux/bin/Plugin-shot` 与
+`plugins/{settings_ui,image_saver,example_processor,opencv_provider}.so`，元数据校验与产物
+剪枝通过；`--help` 退出码 0，`--capture` 无头运行能 dlopen 全部 `.so`、初始化 OpenCV
+provider、在 WSLg 下建出 OpenGL 上下文并按设计失败（非 Windows 没有 `screen_capture`）
+后干净退出。`SHOT_ENABLE_OPENCV=OFF` 也实测通过。macOS **未在真机验证**（只做过代码审计）。
+Windows 是主要开发与验证平台。
 
 ### 运行
 
@@ -131,17 +173,38 @@ cd build/Windows/bin && ./Plugin-shot.exe --help     # 打印用法
 
 插件目录按相对路径 `./plugins` 解析，因此**必须在 `bin/` 下启动**。
 
-不带参数启动后宿主不会主动打开设置页（托盘正常时）：托盘菜单「截屏 / 打开设置 / 退出」分别
-发布 `capture.request` / `settings.open` / `app.quit`；若 `tray.main` 未加载（被禁用或加载
-失败），启动会自动发布 `settings.open` 兜底。截图默认保存到 `%USERPROFILE%\Pictures`，
-文件名模板 `shot_%Y%m%d_%H%M%S`、默认 PNG；目录/格式/质量/文件名都是 `plugins/image_saver`
-的配置项，可在设置页修改。`--capture` 成功时日志打印 `Capture saved: <path>`，失败返回非 0
-（退出码见 `document/CAPTURE.md` §6）。
+不带参数启动后宿主不会主动打开设置页（托盘正常时）：托盘菜单「截屏 / 区域截屏 / 打开设置 /
+退出」分别发布 `capture.request`（空负载）/ `capture.request`（负载
+`{"mode":"region"}`）/ `settings.open` / `app.quit`；「区域截屏」由
+`plugins/region_selector` 弹出框选覆盖层，用户确认后它再发一条带 `region` 的请求，宿主按
+物理虚拟桌面像素裁剪（见 `document/CAPTURE.md` §3.1）。框选触发请求本身**不会采集**
+（流水线直接忽略，不落盘，不会再额外存一张全屏图）。若 `tray.main` 未加载（被禁用或
+加载失败），启动会自动发布 `settings.open` 兜底。
+
+截图默认保存到 `%USERPROFILE%\Pictures`，文件名模板 `shot_%Y%m%d_%H%M%S`、默认 PNG；
+目录/格式/质量/文件名都是 `plugins/image_saver` 的配置项，可在设置页修改。截屏结果由
+`plugins/notify` 弹系统通知、`plugins/clipboard` 把图片写进系统剪贴板（两者都可在设置页
+开关）；`plugins/hotkey` 默认用 `Ctrl+Alt+S` / `Ctrl+Alt+A` / `Ctrl+Alt+O` 触发同样的
+截屏 / 区域截屏 / 打开设置，全部热键可在设置页改。
+
+`--capture` 成功时日志打印 `Capture saved: <path>`、退出码 `0`；失败（采集/保存/插件缺失/
+请求队列满）退出码 `1`，未知参数 `2`。一次性模式在退出前会**派发一轮事件**，所以剪贴板/
+通知这类订阅者同样能收到本次 `capture.done`（详见 `document/CAPTURE.md` §6）。
 
 日志用 spdlog：控制台 +
 `%LOCALAPPDATA%\screen-shot\logs\host.log`（追加写）；配置写在
 `%LOCALAPPDATA%\screen-shot\config.json`（宿主设置与插件配置项都在这里，键是 `<owner>/<id>`，
 与 `config_list` 条目的 `owner` / `id` 一一对应）。
+
+### 多显示器与 DPI
+
+| 项 | 现状 |
+| --- | --- |
+| 宿主 DPI 感知 | 启动最早阶段显式声明 **per-monitor v2**（`SetProcessDpiAwarenessContext`，逐级回退 `SetProcessDpiAwareness` / `SetProcessDPIAware`，全失败只 warn）；日志行 `DPI awareness: <模式>` |
+| 多显示器采集 | 虚拟桌面**物理像素**，本机混合 DPI 双屏（150% 2560x1600 + 100% 1024x768）实测 `3584x1600`；负 origin（副屏在左/上）**未实机验证** |
+| 采集线程 DPI | `plugins/screen_capture` 每次 `describe`/`capture` 临时提升调用线程到 PMv2、返回前恢复，不依赖宿主进程声明 |
+| 设置页 DPI | 双屏 150%+100% 已验证：跨屏拖动自动重缩放（不累积）、几何恢复按**目标显示器** DPI clamp（含标题栏/边框）；其它 DPI 组合（125% / 200%）、三屏及以上、负 origin **未验证** |
+| 区域坐标 | 物理虚拟桌面像素，原点 = 虚拟桌面左上角；越界夹取（详见 `document/CAPTURE.md` §3.1） |
 
 ### 产物布局（硬约束）
 
@@ -195,7 +258,7 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void);
 | interface id | 结构体 | 作用 |
 | --- | --- | --- |
 | `shot.image_processor` | `ShotImageProcessorV1` | 处理一张图：`process(self, ShotImage*)`，返回 0 表示成功 |
-| `shot.screen_capture` | `ShotScreenCaptureV1` | 屏幕采集：`describe` 报告虚拟桌面几何，`capture` 把 BGRA8 像素写进宿主分配的 `ShotImage`，见 `document/CAPTURE.md` |
+| `shot.screen_capture` | `ShotScreenCaptureV1` | 屏幕采集：`describe` 报告虚拟桌面几何（**物理像素**，多显示器合成），`capture` 把 BGRA8 像素写进宿主分配的 `ShotImage`；区域截图由宿主抓整屏后按 `region` 裁剪，见 `document/CAPTURE.md` |
 | `shot.image_saver` | `ShotImageSaverV1` | 图像保存：把 `ShotImage` 落盘并写回最终路径；格式/质量/目录来自插件配置项，见 `document/CAPTURE.md` |
 | `shot.configurable` | `ShotConfigurableV1` | 声明并读写配置项，见下 |
 | `shot.lib_provider` | `ShotLibProviderV1` | 声明"我是运行库提供者"，报告库名与版本；宿主按 `PluginType::Lib` 登记 |
@@ -210,6 +273,20 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void);
 改为通用列表服务 `shot.host.plugin_lists`（列表数据是 JSON 快照，注册/写值/提交全部走
 `lists.*` 事件）。删除已发布的服务属于破坏性变更，所以 major 涨到 2；
 **从 2.0 起，新增一种 UI/宿主数据不再改 ABI**：新 list id + JSON schema 即可。
+
+`shot.screen_capture` / `shot.image_processor` / `shot.image_saver` 的能力回调在采集流水线的
+**工作线程**上执行（一次一张、串行），`shot.configurable` 的 `set_config` 仍在 main 线程。
+插件如果让能力回调与配置共享状态，必须自己做同步（线程模型见 `document/CAPTURE.md` §7）。
+
+### 纯订阅者 / 纯配置项插件（Generic）
+
+插件也可以不实现任何宿主可调用的具名能力：只声明 `shot.configurable`，在
+`create(index, host)` 里订阅事件、在 `destroy` 里退订。只要 metadata 声明过它，宿主就按
+`PluginType::Generic` 用基类包装加载：注册表照常列 LOADED、可启停、`config_list` 照常
+枚举它的配置项；没有 metadata 又认不出任何具名能力的包会被跳过。完整写法和约束见
+[`document/README_SDK.md`](document/README_SDK.md)，现成例子是
+[`plugins/clipboard/README.md`](plugins/clipboard/README.md) 与
+[`plugins/notify/README.md`](plugins/notify/README.md)。
 
 `ShotImage` 描述一块 8 位像素缓冲：
 
@@ -264,14 +341,22 @@ schema**，运行期用 `lists.add` 注册、宿主用 `lists.changed` 通知；
 - 设置页通过 `shot.host.plugin_lists` 读 `config_list` JSON 快照，按条目 schema 渲染 7 种控件
   （BOOL / INT / FLOAT / STRING / ENUM / COLOR / PATH）；写值走 `lists.update`、落盘走
   `lists.commit`（带 `tag` 的事件往返，逐项结果回 `lists.updated` / `config.applied`）；
+  窗口的 DPI / 多屏行为见「多显示器与 DPI」与 `document/SETTINGS.md` §6.1；
 - 通过 `shot.host.plugin_registry` 管理插件启停。**禁用是热卸载**：销毁实例、UI 插件先
   `host.shutdown` + `deinit`、退订事件总线，同包最后一个实例卸载后 `FreeLibrary`；
   重新启用则重新加载 DLL 并回灌已存配置。被其他已加载插件 `requires` 的插件不允许单独禁用；
 - **启用会级联启用依赖**：启用一个插件时，宿主先递归启用它 `requires` 的提供者；提供者
   启用失败则整条启用失败，原因里写明是哪个依赖；
 - 托盘 `plugins/tray` 可以禁用/重新启用：右键菜单内容来自 `tray_command_list`（宿主预置
-  core 三项，插件用 `lists.add` 贡献），点击菜单项只发布条目声明的事件；`tray.main` 未加载
-  （被禁用或加载失败）时，常驻启动会自动发布 `settings.open`，以设置页作为入口兜底；
+  **core 四项**：截屏 / 区域截屏 / 打开设置 / 退出；插件用 `lists.add` 贡献），点击菜单项
+  只发布条目声明的事件；图标默认取宿主 exe 的**命名资源 `IDI_ICON1`**，可用 `icon` 配置换成
+  任意 `.ico`。托盘**不再弹任何气泡**：成功/失败提示全部由 `plugins/notify` 负责；
+  `tray.main` 未加载（被禁用或加载失败）时，常驻启动会自动发布 `settings.open`，以设置页作为
+  入口兜底；
+- 其它插件也走同一套生命周期与配置链路：`plugins/notify`（截屏结果通知）、
+  `plugins/clipboard`（写系统剪贴板）、`plugins/hotkey`（全局热键 → 事件）、
+  `plugins/region_selector`（框选后发布带 `region` 的 `capture.request`）——它们都只通过
+  事件/配置与宿主协作，不直接调用其它插件，设置页会按 `config_list` 自动出现它们的配置节；
 - 启停请求是异步的：设置页只登记，宿主 main 线程执行完才发布 `plugins.changed`；一次启用
   可能级联多个依赖，所以设置页可能连续收到多条 `plugins.changed`。
 
@@ -379,11 +464,27 @@ shot_add_plugin(acme_tools
 
 ## 平台
 
-Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。
-macOS / Linux 分支按平台选择产物扩展名（`SHOT_DYN_EXT`）、运行库定位（RPATH）与剪枝规则；
-`plugins/screen_capture` 与 `plugins/tray` 是平台相关插件（GDI 抓屏 / Win32 托盘），
-非 Windows 由 CMake 直接跳过；`plugins/settings_ui` 用 GLFW 实现跨平台窗口，目前只有
-Windows 经过验证，macOS / Linux 的未验证点见 `plugins/settings_ui/README.md`。
+Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。平台相关插件在非 Windows 上
+由各自 `CMakeLists.txt` **主动跳过**（不产出伪实现）：`screen_capture`（GDI 抓屏）、
+`tray`（Win32 托盘）、`clipboard`（Win32 剪贴板）、`hotkey`（RegisterHotKey）、
+`region_selector`（Win32 物理坐标 + 覆盖层）、`notify`（Shell 通知气泡）。
+跨平台可编译的是 `settings_ui`（GLFW）、`image_saver`、`example_processor`、
+`opencv_provider`。
+
+| 平台 | 状态 |
+| --- | --- |
+| Windows（MSVC x64） | ✅ 主要开发与验证平台（含双屏混合 DPI、插件启停、采集/保存/通知/剪贴板/热键/区域框选） |
+| Linux（WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`） | ✅ 已实测：configure + build（43s、0 warning），产出 `Plugin-shot` 与 `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` 四个 `.so`；`--help` 退出 0，`--capture` 无头运行可加载全部 `.so` 并干净退出（非 Windows 没有 `screen_capture`，按设计失败返回 1）；`SHOT_ENABLE_OPENCV=OFF` 也通过 |
+| macOS | **未在真机验证**（只做过代码审计：`base.cpp` 的 `_NSGetExecutablePath` / 空串 UB / HOME 兜底已修）；没有真实构建结论 |
+| GitHub Actions | workflow 已就绪；当前账号 billing 锁定导致 Actions 无法启动，待账号解封后验证 |
+
+Linux 构建的宿主侧系统依赖（Ubuntu 24.04 实测）：`build-essential ninja-build pkg-config`、
+`autoconf autoconf-archive automake libtool libltdl-dev`、`bison flex gperf`、
+`gettext autopoint python3-venv`、`nasm yasm`、`curl zip unzip`、
+`libgl1-mesa-dev libglu1-mesa-dev libegl1-mesa-dev`、X11/wayland 开发库
+（`libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+libxkbcommon-dev libwayland-dev`）、`libselinux1-dev libpam0g-dev`。`nativefiledialog-extended`
+在 Linux 走 vcpkg 的 `NFD_PORTAL=ON`，**不需要**系统 GTK3/dbus 开发包。
 
 ## 许可
 

@@ -32,6 +32,13 @@ shot_add_plugin(my_plugin
 
 `shot_add_plugin()` 统一处理 /MD、隐藏符号、产物目录、元数据贴尾与产物剪枝。
 
+**跨平台**：这份 SDK 的离线 **导出**目前只在 Windows 提供（`export_sdk` 是 `WIN32` 分支）；
+宿主本身可以在 Linux 构建——仓库根目录的 `CMakePresets.json` + `.github/workflows/cmake.yml`
+以 Linux / macOS / Windows 为目标，Linux 已在 WSL2 Ubuntu 24.04.5 / GCC 13.3.0 / x64-linux
+实测 configure + build 通过（0 warning，产物与冒烟结果见仓库 `README.md`「平台」段）；
+macOS 尚无真机构建结论。CI workflow 已就绪，但当前 GitHub 账号的 Actions 受 **billing 锁定**
+无法启动，待账号解封后验证。
+
 插件里访问宿主服务用 `shot_plugin_helpers.h` 的封装：`shot::Logger`（写宿主日志）、
 `shot::Config`（读写宿主配置）、`shot::EventBus`（主题发布/订阅）、`shot::PluginLists`
 （读取宿主聚合的列表 JSON 快照，如 `config_list` / `tray_command_list`）、`shot::PluginRegistry`
@@ -91,6 +98,30 @@ target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
    `PLUGIN_META_START_MARKER` / `PLUGIN_META_END_MARKER`）。文件尾的额外数据不影响
    装载，元数据跟着插件文件走，不会与 DLL 分家。
 
+## 纯订阅者 / 纯配置项插件（`PluginType::Generic`）
+
+插件也可以**不实现任何宿主可调用的具名能力**，只做两件事：
+
+- 声明 `shot.configurable`（让设置页出现自己的配置项）；
+- 在 `create(index, host)` 里用事件总线订阅它关心的主题（如 `capture.done`），在
+  `destroy` 里退订。
+
+这类插件宿主会按 `PluginType::Generic` 加载：注册表照常列 LOADED、可启停、`config_list`
+照常枚举它的配置项。**加载条件是 metadata 里声明过这个插件**；没有 metadata、又没有
+任何具名能力的 DLL 会被销毁并跳过（"来源解释不清的实例不挂进宿主"）。
+
+| 要点 | 规则 |
+| --- | --- |
+| 生命周期 | 没有 `init` / `deinit` / `post_to_plugin`；订阅在 `create(index, host)` 里建立（唯一拿到宿主服务表的时机），在 `destroy` 里退订 |
+| 后台线程 | 需要线程的（如通知插件）自己在 `create` 起、在 `destroy` 里停线程并 `join`；宿主卸载时先 `destroy` 再 `shutdown`/放 DLL |
+| 配置项 | 仍然实现 `shot.configurable`；`config_list` 与设置页不区分它是不是 Generic |
+| 能力目录 | `interfaces` 只写真实实现的 id（如只有 `shot.configurable`）；**不要**为了拿 `host.shutdown` 就假装 `shot.ui_provider`——UI provider 的语义是"宿主可以给你投 `post_to_plugin`" |
+| 事件回调 | 订阅回调仍然只在宿主 main 线程执行；回调里只做入队/唤醒，耗时工作转到自己的线程 |
+
+仓库里的两个完整例子：[`plugins/clipboard/README.md`](../plugins/clipboard/README.md)
+（订阅 `capture.done` 写剪贴板）与 [`plugins/notify/README.md`](../plugins/notify/README.md)
+（订阅 `capture.done` / `capture.failed`，隐藏占位托盘图标 + 通知线程）。
+
 ## 给 UI 提供数据：用列表 + 事件，不加 ABI
 
 插件想给宿主/设置页/托盘提供**一批数据**（菜单项、配置项、目标列表、热键动作……）时，
@@ -135,8 +166,14 @@ SDK 目录结构不变：采集/保存插件仍是普通插件（`shot_add_plugi
 
 | 能力 | 结构体 | 实现要点 |
 | --- | --- | --- |
-| `shot.screen_capture`（屏幕采集） | `ShotScreenCaptureV1` | `describe` 填虚拟桌面的 `width` / `height` / `origin_x` / `origin_y` / `pixel_format`；`capture` 只往宿主分配的 BGRA8 缓冲里写像素，**绝不自己分配图像内存**，必须按 `stride` 逐行寻址；返回码 `0` / `1` / `2` / `3`。平台相关实现（如 Windows GDI）在 CMake 里按平台跳过，不写未验证的伪实现。 |
+| `shot.screen_capture`（屏幕采集） | `ShotScreenCaptureV1` | `describe` 填虚拟桌面的 `width` / `height` / `origin_x` / `origin_y` / `pixel_format`，**几何与像素都是物理像素**（多显示器合成后的虚拟桌面；origin 可能为负）；`capture` 只往宿主分配的 BGRA8 缓冲里写像素，**绝不自己分配图像内存**，必须按 `stride` 逐行寻址；返回码 `0` / `1` / `2` / `3`。区域截图由宿主先整屏抓取再按 `region` 裁剪，采集插件不感知取景范围。平台相关实现（如 Windows GDI）在 CMake 里按平台跳过，不写未验证的伪实现。 |
 | `shot.image_saver`（图像保存） | `ShotImageSaverV1` | `save` 把 `ShotImage` 落盘并把最终绝对路径写回 `path`（缓冲不足返回 `2`）；`directory` / `basename` 为 `NULL` 时用插件自己的配置项；格式/质量/命名策略全在插件侧，宿主不硬编码。 |
+
+**能力回调的线程**：`screen_capture` / `image_processor` / `image_saver` 的虚函数在
+采集流水线的**工作线程**上被调用（一次一张、串行执行），而 `shot.configurable` 的
+`set_config` 在宿主 main 线程（启动回灌 / 设置页应用）。跨线程共享状态必须自己同步；
+不要在能力回调里直接操作 UI 或假设"永远在 main 线程"（流水线线程模型见
+`document/CAPTURE.md` §7）。
 
 ## debug 变体（重要）
 

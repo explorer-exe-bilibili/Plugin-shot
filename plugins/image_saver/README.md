@@ -12,7 +12,7 @@
 ```
 plugins/image_saver/
 ├── CMakeLists.txt              # shot_add_plugin + find_package(Stb)
-├── metadata.json               # 构建期贴到 DLL 尾部：id / abi 1.4 / interfaces
+├── metadata.json               # 构建期贴到 DLL 尾部：id / abi 2.0 / interfaces
 ├── include/                    # 头文件与 .cpp 一一对应，一个类一个头（STYLE §6.8）
 │   ├── plugin_entry.h          #   内部头：PluginEntry / PluginInstance / state_of
 │   ├── image_saver.h           #   ImageSaver：保存能力 + 配置能力的主体

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "notify.main",
+      "name": "Notify",
+      "version": "0.1.0",
+      "description": "截屏结果消息提示：订阅 capture.done / capture.failed，用系统通知气泡显示保存路径或失败原因",
+      "interfaces": ["shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}

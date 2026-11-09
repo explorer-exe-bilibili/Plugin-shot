@@ -26,11 +26,12 @@ const char kListsTopicPattern[] = "lists.*";
 namespace Host {
 
 HostRuntime::HostRuntime()
-    : m_listCatalog(m_lifecycleMutex), m_capturePipeline(m_manager) {}
+    : m_listCatalog(m_lifecycleMutex), m_capturePipeline(m_manager, m_lifecycleMutex) {}
 
 HostRuntime::~HostRuntime() {
     // 顺序有讲究，分四步：
-    //   1. 先停采集流水线：它的 capture.request 回调里有 this，不能在析构后再被调用；
+    //   1. 先停采集流水线（退订 capture.request + join worker）：它的回调与工作线程里
+    //      都有 this，不能在析构后再被调用；worker 正在跑的那张图会先走完再退出；
     //   2. 注销两个服务并退订 app.quit / lists.*，插件线程之后拿到的服务表调用只会安静失败；
     //   3. 放掉列表目录/注册表快照里持有的实例引用——它们比管理器更晚释放的话，实例
     //      会拖到 DLL 卸载之后才销毁，而且 module->shutdown 会早于 destroy，违反契约；

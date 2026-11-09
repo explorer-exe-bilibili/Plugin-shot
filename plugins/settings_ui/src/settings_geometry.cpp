@@ -8,9 +8,19 @@
 // "x,y,w,h" 字符串；clamp 时用 glfwGetWindowFrameSize 把标题栏/边框一起算进去，
 // 保证【外层矩形】完整落在工作区内（含底边与标题栏）。
 // 坐标空间：GLFW 的屏幕坐标（Windows 上进程被 GLFW 设为 per-monitor DPI aware，
-// 所以是物理像素，150% 缩放下标题栏 45px 即为物理值）；跨 DPI 多显示器未验证（见
-// clampToVisibleArea 末尾的多 DPI 说明）。旧版本（Win32 时代）存的可能是虚拟化的外层矩形，
-// 按内容区 + 当前 DPI 恢复会有少量偏移，但 clamp 保证它仍完整可见。
+// 所以是物理像素；150% 缩放下标题栏 45px、100% 缩放下 31px，都是物理值）。
+//
+// 多显示器不同 DPI（真机实测 主屏 150% + 副屏 100%）：
+//   · 保存的是内容区物理坐标，不保存"哪块显示器"——恢复时按坐标落在哪个显示器矩形
+//     里重新找目标显示器（换显示器/拔屏后仍安全）；
+//   · 边框尺寸随显示器 DPI 变化（150% → L11/T45/R11/B11，100% → L8/T31/R8/B8），
+//     所以恢复时必须先让（仍然隐藏的）窗口进入目标显示器，再读 glfwGetWindowFrameSize：
+//     实测 glfwSetWindowPos 返回时 GLFW 已同步更新 content scale 与 frame size，
+//     不需要等 poll；反过来"先取 frame 再搬窗口"会拿到创建显示器的边框，clamp 偏大。
+//   · 实测 GLFW 不按 WM_DPICHANGED 的建议矩形改窗口尺寸（内容区保持 760x620），
+//     只在 DPI 切换瞬间对位置有几十像素的微调；因此最后一步重新 setPos 即可稳定。
+// 旧版本（Win32 时代）存的可能是虚拟化的外层矩形，按内容区 + 当前 DPI 恢复会有少量
+// 偏移，但 clamp 保证它仍完整可见。
 
 #include <algorithm>
 #include <cstdio>
@@ -64,6 +74,37 @@ bool monitorWorkArea(GLFWmonitor* monitor, WindowGeometry& work) {
     return true;
 }
 
+/**
+ * @brief 找包含某个屏幕坐标点的显示器（按整块显示器矩形，不是工作区）。
+ *
+ * 用显示器矩形而不是工作区：保存的位置可能落在任务栏那条里（y > 工作区高度），
+ * 那仍然属于这块显示器，应该恢复/夹到它的工作区，而不是掉回主显示器。
+ *
+ * @param[in] x 屏幕坐标 x（物理像素）。
+ * @param[in] y 屏幕坐标 y（物理像素）。
+ * @return 命中显示器；没有（点在显示器之间的缝隙 / 显示器被拔掉）返回 nullptr。
+ * @note 只服务几何恢复/clamp，放匿名命名空间（STYLE.md §6.7）。
+ */
+GLFWmonitor* monitorAtPoint(int x, int y) {
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    for (int index = 0; index < count; ++index) {
+        GLFWmonitor* monitor = monitors[index];
+        int monitorX = 0;
+        int monitorY = 0;
+        glfwGetMonitorPos(monitor, &monitorX, &monitorY);
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+        if (mode == nullptr || mode->width <= 0 || mode->height <= 0) {
+            continue;
+        }
+        if (x >= monitorX && x < monitorX + mode->width && y >= monitorY &&
+            y < monitorY + mode->height) {
+            return monitor;
+        }
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 void SettingsWindow::Impl::saveGeometry() {
@@ -79,8 +120,8 @@ void SettingsWindow::Impl::saveGeometry() {
     if (width <= 0 || height <= 0) {
         return;
     }
-    // 用宿主配置服务（shot.host.config）持久化，不是插件配置目录：几何是"设置页自己"
-    // 的界面状态，不占用任何插件的配置节。
+    // 存内容区物理坐标：不存"第几块显示器"（索引会随插拔/启用禁用变化），恢复时按
+    // 坐标重新找目标显示器。跨 DPI 屏的边框差异在恢复侧按目标显示器重新取。
     shot::Config config(host);
     if (!config.available()) {
         return;  // 老宿主没有配置服务：只在本次会话里保留几何
@@ -107,20 +148,36 @@ void SettingsWindow::Impl::restoreGeometry() {
             hasSaved = true;
         }
     }
+
+    // 目标显示器：保存位置落在哪块屏就用哪块；第一次运行 / 显示器被拔掉时用主显示器。
+    GLFWmonitor* target = hasSaved ? monitorAtPoint(geometry.x, geometry.y) : nullptr;
+    if (target == nullptr) {
+        target = glfwGetPrimaryMonitor();
+    }
+    WindowGeometry work;
+    const bool hasWorkArea = monitorWorkArea(target, work);
     if (!hasSaved) {
-        // 第一次运行：在主显示器工作区里居中，别用 GLFW 的默认摆放位置。
-        WindowGeometry work;
-        if (monitorWorkArea(glfwGetPrimaryMonitor(), work)) {
-            geometry.width = kDefaultWindowWidth;
-            geometry.height = kDefaultWindowHeight;
+        // 第一次运行：在目标显示器工作区里居中，别用 GLFW 的默认摆放位置。
+        geometry.width = kDefaultWindowWidth;
+        geometry.height = kDefaultWindowHeight;
+        if (hasWorkArea) {
             geometry.x = work.x + (work.width - geometry.width) / 2;
             geometry.y = work.y + (work.height - geometry.height) / 2;
         }
     }
+
+    // 先把（仍隐藏的）窗口搬进目标显示器的工作区。跨 DPI 屏时这一步会触发
+    // WM_DPICHANGED，GLFW 同步更新 content scale 与 glfwGetWindowFrameSize（实测：
+    // setPos 返回时就是目标屏的边框），后面的 clamp 才能按目标屏的边框来夹。
+    if (hasWorkArea) {
+        glfwSetWindowPos(window, work.x + 100, work.y + 100);
+    }
+
     const WindowGeometry clamped = clampToVisibleArea(geometry);
-    // 先定位再定尺寸：只改尺寸会保留旧位置，两次调用顺序无所谓，但分开更好读。
-    glfwSetWindowPos(window, clamped.x, clamped.y);
+    // 先定尺寸再定位置：DPI 切换瞬间窗口管理器可能对位置做过微调，最后一次 setPos
+    // 把位置钉死；窗口已经在目标显示器上，这两步不会再触发 DPI 变化。
     glfwSetWindowSize(window, clamped.width, clamped.height);
+    glfwSetWindowPos(window, clamped.x, clamped.y);
 }
 
 bool SettingsWindow::Impl::parseGeometry(const std::string& text, WindowGeometry& out) {
@@ -144,39 +201,28 @@ bool SettingsWindow::Impl::parseGeometry(const std::string& text, WindowGeometry
 WindowGeometry SettingsWindow::Impl::clampToVisibleArea(const WindowGeometry& geometry) const {
     WindowGeometry result = geometry;
 
-    // 找到保存位置所在的工作区；找不到（比如显示器被拔掉）就用主显示器。
+    // 找保存位置所在显示器的工作区；找不到（比如显示器被拔掉）就用主显示器。
+    GLFWmonitor* target = monitorAtPoint(geometry.x, geometry.y);
+    if (target == nullptr) {
+        target = glfwGetPrimaryMonitor();
+    }
     WindowGeometry work;
-    bool hasWorkArea = false;
-    int monitorCount = 0;
-    GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
-    for (int index = 0; index < monitorCount; ++index) {
-        WindowGeometry candidate;
-        if (!monitorWorkArea(monitors[index], candidate)) {
-            continue;
-        }
-        const bool contains = geometry.x >= candidate.x && geometry.x < candidate.x + candidate.width &&
-                              geometry.y >= candidate.y && geometry.y < candidate.y + candidate.height;
-        if (contains) {
-            work = candidate;
-            hasWorkArea = true;
-            break;
-        }
-    }
-    if (!hasWorkArea) {
-        hasWorkArea = monitorWorkArea(glfwGetPrimaryMonitor(), work);
-    }
-    if (!hasWorkArea || work.width <= 0 || work.height <= 0) {
+    if (!monitorWorkArea(target, work) || work.width <= 0 || work.height <= 0) {
         return result;  // 拿不到工作区：保持原样，至少别崩
     }
 
     // 坐标语义（实测确认，别再猜）：GLFW 的窗口位置 / 尺寸 / 工作区 / 边框是同一个坐标
     // 空间。Windows 上 GLFW 把进程设为 per-monitor DPI aware，所以这里全是物理像素；
-    // 150% 缩放下一个 760x620 的内容区，外层是 782x676、标题栏 45px，都是物理像素。
-    // 因此下面可以直接整数加减。
+    // 150% 缩放下一个 760x620 的内容区外层是 782x676、标题栏 45px，100% 缩放下是
+    // 776x651、标题栏 31px（本机双屏实测）。
     //
     // 但保存的是【内容区】坐标，而"窗口完整可见"要求【外层矩形】也落在工作区内：
     //   外层左 = 内容区 x - frameLeft，外层右 = 内容区 x + width + frameRight（上/下同理）。
     // 只夹内容区会让标题栏顶出屏幕、或右边框/底边框被工作区裁掉（旧实现就漏了这一步）。
+    //
+    // 边框必须按【目标显示器】的 DPI 取：restoreGeometry 在调用本函数之前已经把隐藏
+    // 窗口搬进目标显示器，所以这里的 glfwGetWindowFrameSize 返回的是目标屏的边框
+    // （多 DPI 的关键，实测 setPos 后同步生效，不需要 poll）。
     int frameLeft = 0;
     int frameTop = 0;
     int frameRight = 0;
@@ -200,9 +246,6 @@ WindowGeometry SettingsWindow::Impl::clampToVisibleArea(const WindowGeometry& ge
     const int maxY = work.y + work.height - frameBottom - result.height;
     result.x = std::clamp(result.x, minX, std::max(minX, maxX));
     result.y = std::clamp(result.y, minY, std::max(minY, maxY));
-    // TODO: 单机只验证了主显示器 150% 这一种 DPI。多显示器且各屏 DPI 不同时，窗口边框
-    // 尺寸会随所在显示器变化（这里用的是窗口当前 DPI 的边框），跨屏情况等有双 DPI 屏
-    // 的环境再验证并按目标显示器重新取 frame size。
     return result;
 }
 

@@ -17,7 +17,12 @@ The **host** (currently built as `Plugin-shot.exe`) is responsible for:
 - resolving exactly **one** exported symbol, `shot_module_entry`, and reading the self-describing module table
 - checking `struct_size` before touching any field, then comparing `abi_major` — mismatched plugins are rejected on the spot
 - asking for capabilities with `query_interface("shot.image_processor", 1)` and silently skipping the ones it does not know
-- wrapping instances into C++ objects and indexing them by `PluginType`; plugin objects are destroyed by the plugin itself, the host never `delete`s them
+- wrapping instances into C++ objects and indexing them by `PluginType`: plugins that declare no
+  named capability but are present in metadata are loaded as `Generic`; plugin objects are
+  destroyed by the plugin itself, the host never `delete`s them
+- running the capture pipeline on a **dedicated worker thread** (bounded queue, drop + warn when
+  full) so grabbing/encoding never blocks event dispatch; region captures are cropped by the host
+  from the full-screen grab in physical pixels
 - enabling/disabling plugins at run time: disabling is a **hot unload** (destroy instances → unsubscribe
   from the event bus → `FreeLibrary`), enabling reloads the DLL and feeds the stored configuration back
 - aggregating UI data contributed by plugins into read-only JSON snapshots keyed by **list id**
@@ -31,23 +36,31 @@ current main line.
 
 | Capability | State |
 | --- | --- |
-| Plugin loading / length and version checks / type index | ✅ working |
+| Plugin loading / length and version checks / type index (incl. `PluginType::Generic` fallback) | ✅ working |
 | Single entry point `shot_module_entry` + self-describing module table | ✅ working |
 | Multiple plugins per DLL (`plugin_count` + `create(index)` + `get_info`) | ✅ working |
 | Capability query `query_interface("shot.image_processor", 1)` | ✅ working |
-| Screen capture `shot.screen_capture` (`plugins/screen_capture`, GDI over the virtual desktop; Windows only) | ✅ working (`document/CAPTURE.md`) |
+| Screen capture `shot.screen_capture` (`plugins/screen_capture`, GDI over the virtual desktop in **physical pixels**; mixed-DPI dual-screen 3584x1600 verified; Windows only) | ✅ working (`document/CAPTURE.md`) |
 | Image saving `shot.image_saver` (`plugins/image_saver`, PNG/JPEG plus four config items) | ✅ working (`document/CAPTURE.md`) |
-| Capture → process → save pipeline (`capture.request` / `capture.done` / `capture.failed`) | ✅ working (`document/CAPTURE.md`) |
+| Capture → process → save pipeline (**worker thread + bounded queue of 4 + lifecycle lock for the whole run**; `capture.request` / `capture.done` / `capture.failed`) | ✅ working (`document/CAPTURE.md`) |
+| Region capture (`capture.request` with a valid `region`: the host grabs the full screen and crops it in physical virtual-desktop pixels, clamped; `plugins/region_selector` selection overlay; the no-region selection-trigger request is ignored by the pipeline and never captured; Windows only) | ✅ working (`document/CAPTURE.md` §3.1) |
+| Generic plugin type `PluginType::Generic` (only `shot.configurable` + subscriptions in `create`; loaded only when metadata declares it) | ✅ working (`document/SETTINGS.md` §3.3) |
 | Host event bus `shot.host.event_bus` (topic publish / subscribe) | ✅ working (`document/EVENT_BUS.md`) |
 | Generic list service `shot.host.plugin_lists` (JSON snapshot per list id: `config_list` / `tray_command_list`) | ✅ working (`document/LISTS.md`) |
 | List event protocol `lists.*` (`add` / `remove` / `update` / `commit` / `updated` / `changed`, event-driven writes) | ✅ working (`document/LISTS.md`) |
 | Host plugin registry `shot.host.plugin_registry` (enable/disable, hot unload) | ✅ working (`document/SETTINGS.md`) |
 | Runtime provider `shot.lib_provider` (`PluginType::Lib`) | ✅ working (`plugins/opencv_provider` brings OpenCV into the process) |
-| UI provider `shot.ui_provider` (windows/tray owned by the plugin itself) | ✅ working (`plugins/settings_ui`, `plugins/tray`) |
+| UI provider `shot.ui_provider` (windows/tray/hotkeys/overlay owned by the plugin itself) | ✅ working (`plugins/settings_ui`, `plugins/tray`, `plugins/hotkey`, `plugins/region_selector`) |
 | Plugin configuration `shot.configurable` (plugin declares; the host aggregates into `config_list`, event-driven writes / persistence / feed-back) | ✅ working (`document/SETTINGS.md`) |
-| Settings window plugin `plugins/settings_ui` (reads `config_list`; ImGui + GLFW + OpenGL3, descriptor-driven) | ✅ working (cross-platform; verified on Windows) |
-| Tray entry `plugins/tray` (menu data from `tray_command_list`; capture / open settings / quit; Windows only) | ✅ working |
-| Command line `--capture` / `--settings` / `--help` | ✅ working |
+| Settings window plugin `plugins/settings_ui` (reads `config_list`; ImGui + GLFW + OpenGL3, descriptor-driven; dual-screen 150%+100% DPI verified) | ✅ working (cross-platform; verified on Windows) |
+| Tray entry `plugins/tray` (menu driven by `tray_command_list`: four core items + plugin contributions; icon defaults to the host's named resource `IDI_ICON1`, `icon` accepts a `.ico`; Windows only) | ✅ working |
+| Notification plugin `plugins/notify` (success/failure balloons via a hidden placeholder icon; config items `enabled` / `show_on_success` / `show_on_error` / `sound`; Windows only) | ✅ working |
+| Clipboard plugin `plugins/clipboard` (subscribes to `capture.done` → CF_DIB / optional CF_HDROP; config items `enabled` / `also_file_drop`; Windows only) | ✅ working |
+| Global hotkey plugin `plugins/hotkey` (defaults Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`; invalid hotkeys are warned and skipped; Windows only) | ✅ working |
+| Mixed-DPI multi-monitor capture (physical virtual desktop 3584x1600; per-call thread DPI context fallback; negative origin not verified on real hardware) | ✅ working (`document/CAPTURE.md` §2.1) |
+| Settings-window DPI (dual-screen 150%+100%: live rescale while dragging across monitors, geometry clamped to the target screen's DPI, non-accumulating; other DPI mixes / 3+ screens unverified) | ✅ working (`document/SETTINGS.md` §6.1) |
+| Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--help` | ✅ working |
+| GitHub Actions cross-platform CI (Linux/macOS/Windows matrix + vcpkg cache + presets + `--help` smoke) | workflow ready; Actions blocked by the account's GitHub billing lock (Linux verified locally under WSL, see Platform) |
 | Host settings (`core` pseudo-plugin: log level / console / file log) | ✅ working |
 | Plugin metadata appended to the DLL tail (`metadata.json`, CMake only) | ✅ working (the host reads it before loading: prefilter + dependency topological sort) |
 | Build-time metadata validation (unique ids / registered interfaces / abi matches the header / dependency syntax) | ✅ working (`cmake/ValidatePluginMeta.cmake`) |
@@ -65,7 +78,11 @@ current main line.
 ```
 .
 ├── CMakeLists.txt          # cross-platform build (vcpkg manifest mode; plugins auto-discovered by GLOB)
+├── CMakePresets.json       # debug / release presets (also used by CI and cross-platform builds)
 ├── vcpkg.json              # dependency manifest
+├── vcpkg-configuration.json# vcpkg builtin-baseline
+├── .github/
+│   └── workflows/cmake.yml # cross-platform CI (Linux/macOS/Windows; currently blocked by account billing)
 ├── include/
 │   ├── plugin_api.h          # ★ the host ⇄ plugin ABI contract (only cross-boundary header, plain C)
 │   ├── plugin_api_export.h   # export macro: dllexport for plugins, SCREENSHOT_HOST_EXPORTS for the host
@@ -73,27 +90,31 @@ current main line.
 │   ├── shot_plugin_helpers/  # iface_entry / logger / config / event_bus /
 │   │                         # plugin_lists / plugin_registry, one header each
 │   ├── dllHandler.h           # LoadLibrary / dlopen wrapper (with a non-throwing tryGetFunction)
-│   ├── pluginManager.h       # plugin scanning, dependency order, loading and hot unload
+│   ├── pluginManager.h       # plugin scanning, dependency order, loading and hot unload (incl. Generic fallback)
 │   ├── hostServices.h        # host service tables: logging, config, event bus, list service, plugin registry
 │   ├── hostListCatalog.h     # generic list catalog: generates config_list + implements the lists.* protocol
-│   ├── hostRuntime.h         # host wiring: PluginManager + list catalog + plugin registry + capture pipeline
-│   ├── capturePipeline.h     # capture pipeline: screen capture -> processing -> image save wiring
+│   ├── hostRuntime.h         # host wiring: PluginManager + list catalog + registry + capture pipeline + lifecycle lock
+│   ├── capturePipeline.h     # capture pipeline: worker thread + bounded queue + region cropping
 │   ├── config.h              # core::Config: JSON configuration file
-│   └── PluginInstances/      # host-side wrappers (base / ImageProcessor / LibProvider / ScreenCapture / ImageSaver …)
+│   └── PluginInstances/      # host-side wrappers (base / ImageProcessor / LibProvider / ScreenCapture / ImageSaver; Generic uses base)
 ├── src/                      # host implementation and entry point
 ├── plugins/                  # every subdirectory is a standalone plugin project
-│   ├── example_processor/    # complete example: one DLL, two plugins, both configurable
+│   ├── example_processor/    # complete example: one DLL, two plugins, both configurable (needs OpenCV)
 │   ├── opencv_provider/      # a valid package with zero capabilities (brings OpenCV into the process)
-│   ├── screen_capture/       # screen capture: Windows GDI over the virtual desktop (skipped off Windows)
+│   ├── screen_capture/       # screen capture: GDI over the virtual desktop in physical pixels (Windows only)
 │   ├── image_saver/          # image saving: PNG/JPEG with directory/format/quality/filename config
+│   ├── clipboard/            # clipboard: capture.done → CF_DIB / CF_HDROP (Windows only)
+│   ├── notify/               # capture result notifications: hidden placeholder icon + Shell balloons (Windows only)
+│   ├── hotkey/               # global hotkeys → events (Windows only)
+│   ├── region_selector/      # region selection overlay: publishes capture.request with region (Windows only)
 │   ├── settings_ui/          # settings window: ImGui + GLFW + OpenGL3 (cross-platform, Windows verified)
-│   └── tray/                 # tray entry: capture / open settings / quit (skipped off Windows)
+│   └── tray/                 # tray entry: data-driven menu + icon (Windows only)
 ├── document/
 │   ├── README_SDK.md         # SDK layout and every build constraint (written in Chinese)
 │   ├── ABI_POLICY.md         # append-only rules and the interface id registry (Chinese)
-│   ├── SETTINGS.md           # settings window: config_list, event-driven writes/commit, plugin enable/disable and hot unload (Chinese)
-│   ├── LISTS.md              # generic lists + event-driven design: login of list ids, lists.* protocol, refresh timing (Chinese)
-│   ├── CAPTURE.md            # capture pipeline: capture.* events, failure semantics and --capture (Chinese)
+│   ├── SETTINGS.md           # settings window: config_list, event-driven writes/commit, Generic, DPI, plugin enable/disable and hot unload (Chinese)
+│   ├── LISTS.md              # generic lists + event-driven design: list id registry, lists.* protocol, refresh timing (Chinese)
+│   ├── CAPTURE.md            # capture pipeline: worker thread, region capture, capture.* events and --capture (Chinese)
 │   ├── EVENT_BUS.md          # host event bus: topics, threading, lifetime (Chinese)
 │   └── METADATA.md           # metadata.json fields, authority rules, what stays out (Chinese)
 ├── cmake/
@@ -117,7 +138,14 @@ cmake --build build/Windows
 
 # export the offline SDK so third-party plugins build without a local OpenCV install
 cmake --build build/Windows --target export_sdk
+
+# or use the CMake presets (the same path CI and cross-platform builds use; output in build/<platform>/)
+cmake --preset release -DVCPKG_TARGET_TRIPLET=x64-linux   # triplet depends on the platform
+cmake --build --preset release
 ```
+
+Optional `-DSHOT_ENABLE_OPENCV=OFF` skips the plugins that depend on OpenCV
+(`opencv_provider` / `example_processor`) for faster CI or OpenCV-less environments; default `ON`.
 
 The first configure installs the manifest dependencies (`opencv4` with jpeg/png/tiff/webp
 features, `nlohmann-json`, `spdlog`, `glfw3`, `nativefiledialog-extended`, `stb`, and `imgui`
@@ -125,7 +153,24 @@ features, `nlohmann-json`, `spdlog`, `glfw3`, `nativefiledialog-extended`, `stb`
 takes a while. Like OpenCV, the settings window's runtime DLLs (`glfw3.dll`, `nfd.dll`) are
 laid out into `bin/` by `cmake/copy_runtime_deps.cmake`, not stored in the plugin directory.
 The generic list protocol adds no new dependency: a list snapshot is just JSON serialized with
-`nlohmann-json`.
+`nlohmann-json`. The new plugins add no new vcpkg dependency either: `clipboard` reuses `stb` /
+`nlohmann-json`, `notify` only needs `user32` / `shell32`, `hotkey` only `user32`, and
+`region_selector` reuses `imgui` / `glfw3` / `nlohmann-json`.
+
+**CI**: `.github/workflows/cmake.yml` is ready (Linux / macOS / Windows matrix + vcpkg manifest
+cache + CMake presets + headless `--help` smoke test), but Actions cannot start because the
+current GitHub account's Actions are **billing-locked** (immediate failure) — the workflow is
+pending verification once the account is unlocked.
+
+**Cross-platform status**: Linux has been verified locally under WSL2 (Ubuntu 24.04.5 LTS /
+GCC 13.3.0 / x86_64 / vcpkg `x64-linux` / CMake 3.28.3 / Ninja 1.11.1 / Release): configure +
+build passed (43s, **0 warnings**), producing `build/Linux/bin/Plugin-shot` and
+`plugins/{settings_ui,image_saver,example_processor,opencv_provider}.so` with metadata
+validation and output pruning passing; `--help` exits 0, and a headless `--capture` run can
+dlopen all `.so` files, initialise the OpenCV provider, create an OpenGL context under WSLg,
+and exits cleanly after failing by design (no `screen_capture` on non-Windows).
+`SHOT_ENABLE_OPENCV=OFF` was verified too. macOS is **not verified on real hardware**
+(code audit only). Windows is the primary development and verification platform.
 
 ### Run
 
@@ -139,16 +184,39 @@ cd build/Windows/bin && ./Plugin-shot.exe --help     # print usage
 The plugin directory is resolved as the relative path `./plugins`, so **launch from `bin/`**.
 
 Without arguments the host does not open the settings window on its own while the tray is loaded:
-the tray menu (capture / open settings / quit) publishes `capture.request` / `settings.open` /
-`app.quit`. If `tray.main` is not loaded (disabled or failed), startup publishes `settings.open`
-automatically as a fallback entry point.
+the tray menu (capture / region capture / open settings / quit) publishes `capture.request`
+(empty) / `capture.request` (payload `{"mode":"region"}`) / `settings.open` / `app.quit`;
+"region capture" opens the `plugins/region_selector` overlay, which then publishes a request
+with a `region`, and the host crops it in physical virtual-desktop pixels
+(see `document/CAPTURE.md` §3.1). The selection-trigger request itself is **not captured**
+(the pipeline ignores it: no grab, no file, no extra full-screen screenshot). If `tray.main`
+is not loaded (disabled or failed), startup publishes `settings.open` automatically as a
+fallback entry point.
+
 Screenshots go to `%USERPROFILE%\Pictures` by default, with the `shot_%Y%m%d_%H%M%S` filename
 template and PNG format; directory/format/quality/filename are `plugins/image_saver` config
-items editable in the settings window. `--capture` logs `Capture saved: <path>` on success and
-returns non-zero on failure (exit codes: `document/CAPTURE.md` §6).
+items editable in the settings window. Results are shown as system notifications by
+`plugins/notify` and copied to the clipboard by `plugins/clipboard` (both can be toggled in the
+settings window); `plugins/hotkey` triggers the same capture / region capture / open-settings
+actions with `Ctrl+Alt+S` / `Ctrl+Alt+A` / `Ctrl+Alt+O` by default (all configurable).
+
+`--capture` logs `Capture saved: <path>` and exits 0 on success; it exits 1 on failure
+(capture/save failure, missing plugin, full request queue) and 2 on unknown arguments. The
+one-shot mode dispatches one event round before exiting, so subscribers such as the clipboard
+and notification plugins also see the `capture.done` of this run (`document/CAPTURE.md` §6).
 Logging goes through spdlog: console plus `%LOCALAPPDATA%\screen-shot\logs\host.log` (appended).
 Configuration lives in `%LOCALAPPDATA%\screen-shot\config.json` (host settings and plugin items,
 keyed as `<owner>/<id>`, matching the `owner` / `id` of a `config_list` entry).
+
+### Multi-monitor and DPI
+
+| Item | Status |
+| --- | --- |
+| Host DPI awareness | Declared explicitly at the earliest startup stage as **per-monitor v2** (`SetProcessDpiAwarenessContext`, falling back to `SetProcessDpiAwareness` / `SetProcessDPIAware`; failure only warns); log line `DPI awareness: <mode>` |
+| Multi-monitor capture | Virtual desktop in **physical pixels**; mixed-DPI dual-screen (150% 2560x1600 + 100% 1024x768) measured as `3584x1600`; negative origin (secondary left/above) **not verified on real hardware** |
+| Capture-thread DPI | `plugins/screen_capture` raises the calling thread to PMv2 for each `describe`/`capture` call and restores it afterwards; does not depend on the host process declaration |
+| Settings-window DPI | Dual-screen 150%+100% verified: live rescale while dragging across monitors (non-accumulating), geometry restored and clamped to the **target** monitor's DPI (frame included); other DPI mixes (125% / 200%), 3+ screens and negative origin **unverified** |
+| Region coordinates | Physical virtual-desktop pixels, origin = top-left of the virtual desktop, clamped (see `document/CAPTURE.md` §3.1) |
 
 ### Output layout (hard constraints)
 
@@ -203,7 +271,7 @@ know the contents in advance, and `plugins[]` in `metadata.json` maps index for 
 | interface id | Struct | Purpose |
 | --- | --- | --- |
 | `shot.image_processor` | `ShotImageProcessorV1` | processes one image: `process(self, ShotImage*)`, 0 means success |
-| `shot.screen_capture` | `ShotScreenCaptureV1` | screen capture: `describe` reports the virtual-desktop geometry, `capture` writes BGRA8 pixels into the host-allocated `ShotImage`; see `document/CAPTURE.md` |
+| `shot.screen_capture` | `ShotScreenCaptureV1` | screen capture: `describe` reports the virtual-desktop geometry (**physical pixels**, multi-monitor combined), `capture` writes BGRA8 pixels into the host-allocated `ShotImage`; region captures are cropped by the host from the full-screen grab, see `document/CAPTURE.md` |
 | `shot.image_saver` | `ShotImageSaverV1` | image saving: writes a `ShotImage` to disk and returns the final path; format/quality/directory come from the plugin's config items; see `document/CAPTURE.md` |
 | `shot.configurable` | `ShotConfigurableV1` | declares and reads/writes configuration items, see below |
 | `shot.lib_provider` | `ShotLibProviderV1` | says "I am a runtime provider" and reports library name/version; the host registers it as `PluginType::Lib` |
@@ -219,6 +287,23 @@ catalog service and replaced it with the generic list service `shot.host.plugin_
 a JSON snapshot; registration, value writes and committing all go through `lists.*` events).
 Removing a published service is a breaking change, hence major 2;
 **since 2.0 a new kind of UI/host data no longer changes the ABI** — a new list id + JSON schema is enough.
+
+The capability callbacks of `shot.screen_capture` / `shot.image_processor` / `shot.image_saver`
+run on the capture pipeline's **worker thread** (one image at a time, serial), while
+`shot.configurable`'s `set_config` still runs on the main thread. A plugin that shares state
+between capability callbacks and configuration must synchronise it itself (see
+`document/CAPTURE.md` §7).
+
+### Pure subscriber / pure configuration plugins (Generic)
+
+A plugin does not have to implement any host-callable named capability: it can declare only
+`shot.configurable`, subscribe to events in `create(index, host)`, and unsubscribe in `destroy`.
+As long as `metadata.json` declares it, the host loads it as `PluginType::Generic` via the base
+class wrapper: the registry lists it as LOADED, it can be enabled/disabled, and `config_list`
+still enumerates its config items; a package without metadata and without any named capability
+is skipped. Full rules: [`document/README_SDK.md`](document/README_SDK.md); working examples:
+[`plugins/clipboard/README.md`](plugins/clipboard/README.md) and
+[`plugins/notify/README.md`](plugins/notify/README.md).
 
 `ShotImage` describes an 8-bit pixel buffer:
 
@@ -279,7 +364,8 @@ host has no main window:
 - it reads the `config_list` JSON snapshot through `shot.host.plugin_lists` and renders the seven
   control kinds (BOOL / INT / FLOAT / STRING / ENUM / COLOR / PATH) from the entry schema; value
   writes go through `lists.update` and persistence through `lists.commit` (tagged event round trips,
-  per-item results via `lists.updated` / `config.applied`);
+  per-item results via `lists.updated` / `config.applied`); window DPI / multi-monitor behaviour is
+  described in "Multi-monitor and DPI" and `document/SETTINGS.md` §6.1;
 - it manages enable/disable through `shot.host.plugin_registry`. **Disabling is a hot unload**:
   destroy the instances, send `host.shutdown` + `deinit` to UI plugins, unsubscribe from the event
   bus, and `FreeLibrary` once the last instance of the package is gone; enabling reloads the DLL and
@@ -289,10 +375,18 @@ host has no main window:
   provider it `requires`; if a provider fails to enable, the whole request fails with the offending
   dependency named in `reason`;
 - the tray (`plugins/tray`) can be disabled and re-enabled: its context menu is driven by
-  `tray_command_list` (the host pre-seeds the three core items, plugins contribute via `lists.add`)
-  and clicking an item only publishes the event declared by that item; when `tray.main` is not loaded
-  (disabled or failed), a resident startup publishes `settings.open` automatically so the settings
-  window serves as the fallback entry point;
+  `tray_command_list` (the host pre-seeds **four core items**: capture / region capture / open
+  settings / quit; plugins contribute via `lists.add`) and clicking an item only publishes the event
+  declared by that item; the icon defaults to the host exe's **named resource `IDI_ICON1`** and the
+  `icon` config item can replace it with a `.ico` file. The tray **no longer shows any balloons**:
+  success/failure notifications are entirely handled by `plugins/notify`; when `tray.main` is not
+  loaded (disabled or failed), a resident startup publishes `settings.open` automatically so the
+  settings window serves as the fallback entry point;
+- other plugins use the same lifecycle and configuration chain: `plugins/notify` (capture result
+  notifications), `plugins/clipboard` (system clipboard), `plugins/hotkey` (global hotkeys → events),
+  `plugins/region_selector` (selection overlay publishing a `capture.request` with `region`) — they
+  all cooperate only through events/configuration, never by calling other plugins directly, and the
+  settings window shows their sections automatically from `config_list`;
 - enable/disable requests are asynchronous: the settings window only registers them, and the host
   main thread publishes `plugins.changed` after applying them. One enable may cascade several
   dependencies, so the settings window can receive several `plugins.changed` events in a row.
@@ -409,11 +503,27 @@ the root `CMakeLists.txt` and drifted away from the docs.
 ## Platforms
 
 Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`).
-macOS / Linux branches pick the artifact extension (`SHOT_DYN_EXT`), runtime library lookup
-(RPATH) and pruning rules per platform; `plugins/screen_capture` and `plugins/tray` are
-platform-specific (GDI capture / Win32 tray) and are skipped by CMake on non-Windows hosts.
-`plugins/settings_ui` uses GLFW for a cross-platform window, but only Windows is verified so
-far; the unverified POSIX points are listed in `plugins/settings_ui/README.md`.
+Platform-specific plugins are **skipped by their own `CMakeLists.txt`** on non-Windows hosts
+(no fake implementations): `screen_capture` (GDI), `tray` (Win32 tray), `clipboard` (Win32
+clipboard), `hotkey` (RegisterHotKey), `region_selector` (Win32 physical coordinates +
+overlay), `notify` (Shell balloons). Cross-platform buildable: `settings_ui` (GLFW),
+`image_saver`, `example_processor`, `opencv_provider`.
+
+| Platform | Status |
+| --- | --- |
+| Windows (MSVC x64) | ✅ primary development and verification platform (incl. mixed-DPI dual screen, plugin enable/disable, capture/save/notify/clipboard/hotkey/region selection) |
+| Linux (WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`) | ✅ verified: configure + build (43s, 0 warnings), producing `Plugin-shot` and the `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` `.so` files; `--help` exits 0; a headless `--capture` run loads all `.so` files and exits cleanly (no `screen_capture` on non-Windows, so it fails by design with exit 1); `SHOT_ENABLE_OPENCV=OFF` also passes |
+| macOS | **not verified on real hardware** (code audit only: `base.cpp`'s `_NSGetExecutablePath` / empty-string UB / HOME fallback were fixed); no real build result |
+| GitHub Actions | workflow ready; Actions cannot start because the account is billing-locked, pending verification after unlocking |
+
+Linux host-side system dependencies (verified on Ubuntu 24.04): `build-essential ninja-build
+pkg-config`, `autoconf autoconf-archive automake libtool libltdl-dev`, `bison flex gperf`,
+`gettext autopoint python3-venv`, `nasm yasm`, `curl zip unzip`,
+`libgl1-mesa-dev libglu1-mesa-dev libegl1-mesa-dev`, X11/wayland development libraries
+(`libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+libxkbcommon-dev libwayland-dev`), `libselinux1-dev libpam0g-dev`. On Linux,
+`nativefiledialog-extended` uses vcpkg's `NFD_PORTAL=ON` and does **not** need system
+GTK3/dbus development packages.
 
 ## License
 

@@ -2,11 +2,15 @@
 // （glViewport + ImGui NewFrame/Render/RenderDrawData + glfwSwapBuffers）。
 //
 // GLFW 窗口与 GL 上下文在 settings_window.cpp 创建；这些函数只在插件的 UI 线程上执行。
+// DPI：启动时按窗口 content scale 放大一次 ImGui 样式与字号；运行中窗口在
+// 150%/100% 两块显示器之间拖动时，content scale 回调置脏标记，下一帧从保存的
+// 默认样式基线重新放大（见 applyContentScale / refreshDpiScale）。
 // 跨平台要点：
 //   · <GLFW/glfw3.h> 在非 Apple 平台会带 <GL/gl.h>（Windows 上 GLFW 自己定义 APIENTRY，
 //     所以不会为了几个 GL 1.1 函数把 <windows.h> 拖进来）；
 //   · 中文/日文字体按平台候选回退，全部缺失才退回 ImGui 内置字体。
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -24,6 +28,20 @@ namespace {
 
 // 逻辑字号；DPI 由 style.FontScaleMain 再放大（见 applyContentScale）。
 constexpr float kFontSizePixels = 16.0f;
+
+// content scale 变化小于这个阈值就当作没变：GLFW 的 content scale 是 float，
+// 同一显示器上抖动（例如 DPI 切换动画中间值）不应该触发重建。
+constexpr float kContentScaleEpsilon = 0.01f;
+
+/**
+ * @brief 把 content scale 格式化成两位小数的日志文本（`1.50` / `1.00`）。
+ * @note 只服务 refreshDpiScale 的日志，与任何类的状态无关，所以放匿名命名空间。
+ */
+std::string contentScaleText(float scale) {
+    char text[16] = {};
+    std::snprintf(text, sizeof(text), "%.2f", static_cast<double>(scale));
+    return text;
+}
 
 // 中文字体按"显示效果从好到差"回退；不同平台放的位置不一样。
 // TODO: POSIX（尤其 Linux）的字体路径未在真机验证，找不到就退回 ImGui 内置字体；
@@ -94,6 +112,9 @@ bool SettingsWindow::Impl::initImGui() {
     io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+    // 先记下未缩放的默认样式：applyContentScale 是乘法缩放，运行中跨屏换 DPI 时
+    // 必须从这份基线重新放大，否则 spacing/圆角/边框会按次数累积。
+    baseStyle = ImGui::GetStyle();
     applyContentScale();
     loadFonts();
 
@@ -138,29 +159,71 @@ void SettingsWindow::Impl::loadFonts() {
     shot::Logger(host).warn("settings_ui：系统中文字体都不可用，退回 ImGui 内置字体（中文会显示成方块）");
 }
 
-void SettingsWindow::Impl::applyContentScale() {
+/**
+ * @brief 读窗口当前所在显示器的 content scale；拿不到时退回主显示器，再不行按 1.0。
+ *
+ * GLFW 在窗口进入不同 DPI 的显示器时会更新这个值（Windows 上由 WM_DPICHANGED 驱动），
+ * 所以它同时是"初始缩放"和"运行中是否需要重缩放"的判据。
+ *
+ * @return 缩放因子（正常是 1.0 / 1.25 / 1.5 / 2.0 这类值）；永远 > 0。
+ */
+float SettingsWindow::Impl::queryContentScale() const {
     float xScale = 1.0f;
     float yScale = 1.0f;
+    if (window == nullptr) {
+        return 1.0f;
+    }
     glfwGetWindowContentScale(window, &xScale, &yScale);
     float scale = (xScale > 0.0f) ? xScale : yScale;
     if (scale <= 0.0f) {
-        // 窗口所在显示器拿不到时退回主显示器（GLFW 在窗口可见前可能给 0）。
+        // 窗口所在显示器还拿不到（隐藏窗口刚创建时可能出现）：退回主显示器。
         if (GLFWmonitor* primary = glfwGetPrimaryMonitor()) {
             glfwGetMonitorContentScale(primary, &xScale, &yScale);
             scale = (xScale > 0.0f) ? xScale : yScale;
         }
     }
-    if (scale <= 0.0f) {
-        scale = 1.0f;
-    }
+    return (scale > 0.0f) ? scale : 1.0f;
+}
+
+void SettingsWindow::Impl::applyContentScale() {
+    const float scale = queryContentScale();
     ImGuiStyle& style = ImGui::GetStyle();
+    // 从"未缩放的默认样式"重建，再按当前 DPI 放大一次。1.92 的 ScaleAllSizes 是
+    // 乘法（间距/圆角/边框都乘），在已缩放的 style 上再调会累积；所以必须先还原基线。
+    style = baseStyle;
     style.ScaleAllSizes(scale);
-    // ImGui 1.92 把 io.FontGlobalScale 移到了 style.FontScaleMain（旧字段 > 1 时会触发
-    // 断言），语义相同：只放大字号，不重复放大间距。
+    // 1.92 把 io.FontGlobalScale 移到了 style.FontScaleMain（旧字段 > 1 时会触发断言），
+    // 语义相同：只放大字号，不重复放大间距。字体按需动态烘焙，改完后下一次 NewFrame
+    // 会请求新字号并重建字形纹理（后端实现了 RendererHasTextures），不需要手动重建图集。
     style.FontScaleMain = scale;
-    // TODO: 只按窗口显示前的 content scale 缩放了这一份 style。运行中把窗口拖到另一个
-    // DPI 的显示器时不会重算——需要保存初始 style 再整体重建，等有双 DPI 显示器的
-    // 实测环境再补，避免现在凭猜测写一套没验证过的重建逻辑。
+    contentScale = scale;
+}
+
+void SettingsWindow::Impl::refreshDpiScale() {
+    dpiScaleDirty = false;
+    if (window == nullptr || !imguiInitialized) {
+        return;
+    }
+    const float scale = queryContentScale();
+    if (std::fabs(scale - contentScale) < kContentScaleEpsilon) {
+        return;
+    }
+    const float previous = contentScale;
+    applyContentScale();
+    shot::Logger(host).info("settings_ui：DPI 缩放 " + contentScaleText(previous) + " → " +
+                            contentScaleText(contentScale));
+}
+
+void SettingsWindow::Impl::onContentScale(GLFWwindow* glfwWindow, float /*xScale*/,
+                                          float /*yScale*/) {
+    auto* self = static_cast<Impl*>(glfwGetWindowUserPointer(glfwWindow));
+    if (self == nullptr) {
+        return;
+    }
+    // 回调可能在 glfwSetWindowPos 内部同步触发（真机实测），也可能在用户拖动窗口时
+    // 由 glfwWaitEvents 分发；这里只置标记，样式重建统一放到下一帧/下次显示的开头，
+    // 避免在 GLFW 回调里改 ImGui 状态。
+    self->dpiScaleDirty = true;
 }
 
 void SettingsWindow::Impl::shutdownGraphics() {
@@ -175,6 +238,11 @@ void SettingsWindow::Impl::shutdownGraphics() {
 bool SettingsWindow::Impl::renderFrame() {
     if (window == nullptr || !imguiInitialized) {
         return false;
+    }
+    // 上一帧之后窗口可能被拖到另一块 DPI 不同的显示器：在 ImGui::NewFrame 之前
+    // 重建样式（不能在帧中间改）。
+    if (dpiScaleDirty) {
+        refreshDpiScale();
     }
     int framebufferWidth = 0;
     int framebufferHeight = 0;

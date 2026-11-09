@@ -3,9 +3,12 @@
 // ============================================================================
 //  settings_window_impl.h —— 内部头：SettingsWindow 的 PIMPL 与窗口内部类型
 //
-//  **不是插件对外接口**：只有本插件的 .cpp 包含它。窗口层现在基于 GLFW，跨平台；
+//  **不是插件对外接口**：只有本插件的 .cpp 包含它。窗口层基于 GLFW，跨平台；
 //  GLFW 只以 `struct GLFWwindow;` 前置声明出现在这里，本头不拖 <GLFW/glfw3.h>，
 //  更不含任何平台头。公共头 settings_window.h 不包含任何平台类型。
+//
+//  ImGui 是跨平台库（不是平台头），这里为了保存"未缩放的默认样式" include 了
+//  imgui.h；它本来就通过 settings_panel_impl.h 进入本插件的内部头（同一依赖）。
 //
 //  定义按职责拆成三个 .cpp：
 //    settings_window.cpp   —— 生命周期 / 窗口线程 / GLFW 事件循环 / 事件队列
@@ -20,6 +23,8 @@
 #include <queue>
 #include <string>
 #include <thread>
+
+#include "imgui.h"
 
 #include "plugin_api.h"
 #include "settings_panel.h"
@@ -86,6 +91,14 @@ struct SettingsWindow::Impl {
     bool visible = false;
     bool escHideRequested = false;  // 键盘回调只置位，隐藏动作在事件循环里做
 
+    // ---- DPI 缩放（settings_graphics.cpp） ----
+    // 1.92 的 ScaleAllSizes 是乘法（还会乘间距/圆角/边框），所以必须保留一份
+    // "未缩放的默认样式"当基线：跨屏 DPI 变化时从基线重新放一次，不能在上一次
+    // 结果上继续放大。FontScaleMain 是 1.92 的全局字号缩放（字体按需动态烘焙）。
+    ImGuiStyle baseStyle;       // 未缩放的默认样式（CreateContext 之后、缩放之前）
+    float contentScale = 1.0f;  // 已经应用到 style 的 content scale
+    bool dpiScaleDirty = false; // content scale 回调置位；下一帧 / 下次显示时重建
+
     // ---- 生命周期与事件循环（settings_window.cpp） ----
     void run();
     void messageLoop();
@@ -101,11 +114,14 @@ struct SettingsWindow::Impl {
     static void onBusEvent(void* user, const char* topic, const void* data, std::uint32_t len);
     static void onGlfwError(int errorCode, const char* description);
     static void onKey(GLFWwindow* window, int key, int scancode, int action, int mods);
+    static void onContentScale(GLFWwindow* window, float xScale, float yScale);
 
     // ---- ImGui / 字体与 DPI / 每帧渲染（settings_graphics.cpp） ----
     bool initImGui();
     void loadFonts();
     void applyContentScale();
+    void refreshDpiScale();
+    float queryContentScale() const;
     void shutdownGraphics();
     bool renderFrame();
 

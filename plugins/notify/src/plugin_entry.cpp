@@ -1,0 +1,220 @@
+// 唯一的导出符号 + 索引目录 + ABI 胶水。
+//
+// 一个 DLL = 一个插件包：
+//   · kEntries 的顺序就是 create(index) 的索引，必须与 metadata.json 的
+//     plugins[] 顺序一一对应（本包只有 notify.main 一个条目）；
+//   · 消息提示"会什么"由它自己的能力目录回答：shot.configurable，宿主用
+//     query_interface 逐个询问，不需要知道有几种插件类型；
+//   · 宿主拿到的 instance 是一个不透明指针：插件自己分配、自己释放；
+//   · ABI 胶水（状态创建 + 配置回调 + 能力目录 + 插件身份证）放在这个文件，
+//     通知气泡与线程在 notify_toast*.cpp、配置项在 notify_config.cpp
+//     （STYLE.md §6.8）。
+//
+// 匿名命名空间里的函数都是 ABI 回调 / 模块表回调：签名由契约固定，只能是自由函数
+// （STYLE.md §6.7 的合法例外）。
+
+#include <cstdint>
+#include <iterator>
+#include <new>
+
+#include "notify_config.h"
+#include "notify_toast.h"
+#include "plugin_api.h"
+#include "plugin_entry.h"
+#include "shot_plugin_helpers.h"
+
+// ---------------------------------------------------------------------------
+// 插件状态与 shot.configurable 回调（放在 ABI 入口之前：create_instance 要用状态类型）
+// ---------------------------------------------------------------------------
+namespace notify {
+namespace {
+
+/** @brief 插件状态：一个消息提示器 + 四个配置项（生命周期覆盖整个插件实例）。 */
+struct NotifyState {
+    NotifyConfig config; /**< shot.configurable：enabled / show_on_success / show_on_error / sound。 */
+    NotifyToast toast;   /**< 通知线程 + 隐藏占位图标 + Shell 气泡。 */
+};
+
+void* create_state() {
+    return new (std::nothrow) NotifyState();
+}
+
+void destroy_state(void* self) {
+    auto* state = static_cast<NotifyState*>(self);
+    if (state != nullptr) {
+        // 返回前必须退订事件总线、停通知线程、删隐藏图标：宿主之后可能 FreeLibrary
+        // 本 DLL（EVENT_BUS.md §5 / SETTINGS.md §3.1 的生命周期要求）。
+        try {
+            state->toast.stop();
+        } catch (...) {
+            // 收尾路径也不能让异常越过 ABI 边界；继续释放内存。
+        }
+        delete state;
+    }
+}
+
+// ---- shot.configurable：四个开关由 NotifyConfig 拥有，ABI 层只做参数转发 ----
+
+std::uint32_t config_count(void* self) {
+    auto* state = static_cast<NotifyState*>(state_of(self));
+    return (state == nullptr) ? 0 : state->config.configCount();
+}
+
+std::int32_t config_desc(void* self, std::uint32_t index, ShotConfigDesc* out) {
+    auto* state = static_cast<NotifyState*>(state_of(self));
+    return (state == nullptr) ? 1 : state->config.configDesc(index, out);
+}
+
+std::int32_t config_get(void* self, const char* key, char* buf, std::uint32_t buf_size) {
+    auto* state = static_cast<NotifyState*>(state_of(self));
+    return (state == nullptr) ? -1 : state->config.getValue(key, buf, buf_size);
+}
+
+std::int32_t config_set(void* self, const char* key, const char* value) {
+    auto* state = static_cast<NotifyState*>(state_of(self));
+    return (state == nullptr) ? -1 : state->config.setValue(key, value);
+}
+
+const ShotConfigurableV1 kConfigOps = SHOT_OPS(ShotConfigurableV1,
+                                               .get_config_count = &config_count,
+                                               .get_config_desc  = &config_desc,
+                                               .get_config       = &config_get,
+                                               .set_config       = &config_set);
+
+const ShotIfaceEntry kIfaces[] = {
+    { SHOT_IFACE_CONFIGURABLE, 1, &kConfigOps },
+    { nullptr, 0, nullptr },
+};
+
+}  // namespace
+}  // namespace notify
+
+namespace {
+
+using notify::PluginEntry;
+
+const PluginEntry* const kEntries[] = {
+    &notify::kNotify,
+};
+
+constexpr std::uint32_t kEntryCount = static_cast<std::uint32_t>(std::size(kEntries));
+
+using notify::PluginInstance;
+using notify::state_of;
+
+void* create_instance(std::uint32_t index, const ShotHostServices* host) {
+    if (index >= kEntryCount) {
+        return nullptr;
+    }
+    const PluginEntry* entry = kEntries[index];
+    void* state = entry->create ? entry->create() : nullptr;
+    if (state == nullptr) {
+        return nullptr;
+    }
+    auto* instance = new (std::nothrow) PluginInstance{entry, state};
+    if (instance == nullptr) {
+        if (entry->destroy) {
+            entry->destroy(state);
+        }
+        return nullptr;
+    }
+
+    // 用 shot::Logger 报一句自己的 id。老宿主可能没有 log 字段，shot::Logger 内部
+    // 已经做了降级，这里不用再手写判空。
+    shot::Logger(host).info(entry->id);
+
+    // 本插件没有 ui_provider 的 init/deinit 生命周期：create(index, host) 是唯一能
+    // 拿到宿主服务表的时机，所以事件订阅 + 通知线程在实例创建路径里建立；
+    // 退订/停线程在 destroy_state（destroy 路径）里做。
+    if (entry == &notify::kNotify && instance->state != nullptr) {
+        try {
+            auto* notifyState = static_cast<notify::NotifyState*>(instance->state);
+            notifyState->toast.start(host, &notifyState->config);
+        } catch (...) {
+            // 初始化失败不影响插件存活：消息提示降级为不可用，宿主继续截屏。
+            shot::Logger(host).warn("[notify] 初始化通知线程时异常，消息提示不可用");
+        }
+    }
+    return instance;
+}
+
+void destroy_instance(void* handle) {
+    auto* instance = static_cast<PluginInstance*>(handle);
+    if (instance == nullptr) {
+        return;
+    }
+    if (instance->entry->destroy) {
+        instance->entry->destroy(instance->state);
+    }
+    delete instance;
+}
+
+void* query_instance(void* handle, const char* iface_id, std::uint32_t version) {
+    auto* instance = static_cast<PluginInstance*>(handle);
+    if (instance == nullptr) {
+        return nullptr;
+    }
+    return shot_query_interface(instance->entry->ifaces, iface_id, version);
+}
+
+std::int32_t get_info(std::uint32_t index, ShotPluginInfo* out) {
+    if (out == nullptr || index >= kEntryCount) {
+        return 1;
+    }
+    // 先看宿主给的这块内存够不够长，再决定能填到哪。
+    if (out->struct_size < SHOT_REQUIRES(ShotPluginInfo, version)) {
+        return 2;
+    }
+    const PluginEntry* entry = kEntries[index];
+    out->abi_minor = SHOT_ABI_MINOR;
+    out->id = entry->id;
+    out->name = entry->name;
+    out->version = entry->version;
+    return 0;
+}
+
+// 模块级初始化：拿宿主版本做一次协商。
+// 返回非 0 = "这个 DLL 无法在本宿主上工作"，宿主会直接卸载它。
+std::int32_t module_init(const ShotHostServices* host, std::uint32_t flags) {
+    (void)flags;
+    if (host == nullptr) {
+        return 0;  // 老宿主没有服务表，消息提示只是不订阅事件
+    }
+    if (SHOT_HAS_FIELD(host, ShotHostServices, abi_major) && host->abi_major != SHOT_ABI_MAJOR) {
+        return 1;
+    }
+    // 事件总线是 ABI 2.0 宿主的标准服务；没有总线时 start() 会 Warn 并降级，
+    // 不在这里拒绝加载（少一个服务不该让插件整个消失）。
+    return 0;
+}
+
+const ShotModule kModule = {
+    .struct_size     = sizeof(ShotModule),
+    .abi_major       = SHOT_ABI_MAJOR,
+    .abi_minor       = SHOT_ABI_MINOR,
+    .plugin_count    = kEntryCount,
+    .init            = &module_init,
+    .shutdown        = nullptr,  // 没有模块级资源要收
+    .get_info        = &get_info,
+    .create          = &create_instance,
+    .destroy         = &destroy_instance,
+    .query_interface = &query_instance,
+};
+}  // namespace
+
+extern "C" {
+
+/**
+ * @brief 唯一导出符号，返回静态模块表。
+ */
+SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
+
+}  // extern "C"
+
+namespace notify {
+
+const PluginEntry kNotify = {
+    "notify.main", "Notify", "0.1.0", &create_state, &destroy_state, kIfaces,
+};
+
+}  // namespace notify

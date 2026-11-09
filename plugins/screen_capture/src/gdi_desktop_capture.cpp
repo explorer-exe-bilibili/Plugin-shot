@@ -1,6 +1,7 @@
 // Windows GDI 平台层：只做系统调用，不判断契约返回码。
 //
 // 抓整个虚拟桌面的流水线：
+//   SetThreadDpiAwarenessContext  入口先把线程 DPI 上下文提到 PER_MONITOR_AWARE_V2
 //   GetDC(NULL)                    拿屏幕 DC（覆盖整个虚拟桌面）
 //   CreateCompatibleDC/Bitmap      建内存 DC + 与屏幕同格式的位图
 //   BitBlt(SRCCOPY|CAPTUREBLT)     把屏幕像素拷到位图，源坐标 = 虚拟桌面左上角
@@ -9,8 +10,13 @@
 //   按 dst->stride 逐行写           stride 可负 / 可大于 width*4，绝不假设连续
 //   逆序释放句柄                    DeleteObject / DeleteDC / ReleaseDC
 //
-// 进程若 DPI-unaware，GetSystemMetrics 与 BitBlt 都在同一套 DWM 虚拟化坐标里取，
-// 两者一致所以像素仍然对得上，只是内容是被放大过的逻辑像素。
+// DPI 保证：宿主未必在进程清单里声明 DPI aware（也可能是从别的入口被拉起的），
+// 所以本文件不信任宿主的 DPI 状态——queryGeometry / captureTo 每次进入都显式把
+// 调用线程的 DPI 上下文提到 PER_MONITOR_AWARE_V2，让 GetSystemMetrics 与 BitBlt
+// 落在同一套物理像素坐标系里；设置失败只记 warn、保持原上下文继续采集。
+// 实测（主屏 150% 2560x1600 @0,0 + 副屏 100% 1024x768 @2560,0）：DPI-unaware 线程
+// 看到的虚拟桌面是 3584x1067，提升后才是物理值 3584x1600。混合 DPI 下 DWM 会按
+// 每块屏各自的缩放虚拟化，宽度也不一定是物理值，这正是不能依赖宿主 DPI 状态的原因。
 
 #include "screen_capture_impl.h"
 
@@ -21,9 +27,81 @@
 #include <memory>
 #include <new>
 
-namespace screen_capture {
+// 老 SDK 的 winuser.h 里可能还没有 PER_MONITOR_AWARE_V2 这个上下文（Win10 1703 才有）：
+// 它的值固定是 -4，运行期由系统解释，这里补一个定义，别让 SDK 版本卡住编译。
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 \
+    reinterpret_cast<DPI_AWARENESS_CONTEXT>(static_cast<INT_PTR>(-4))
+#endif
 
-bool GdiDesktopCapture::queryGeometry(ShotCaptureInfo& info) {
+namespace screen_capture {
+namespace {
+
+// SetThreadDpiAwarenessContext 是 Win10 1607（1703 才有 PMv2 上下文）之后才有的导出
+// 函数。静态导入它会让插件在更老的系统上连 DLL 都加载不起来，所以运行期从 user32
+// 解析；指针为空就退化成"不改变线程 DPI 上下文"，采集继续（见下面的 RAII 注释）。
+using SetThreadDpiAwarenessContextFn = DPI_AWARENESS_CONTEXT(WINAPI*)(DPI_AWARENESS_CONTEXT);
+
+SetThreadDpiAwarenessContextFn setThreadDpiAwarenessContextFn() {
+    // user32 一定已经随本 DLL 的静态导入（GetDC/GetSystemMetrics）加载，不会碰磁盘。
+    static const auto fn = reinterpret_cast<SetThreadDpiAwarenessContextFn>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext"));
+    return fn;
+}
+
+// 采集期间的线程 DPI 上下文守卫：构造时提到 PMv2，析构时恢复成调用前的值。
+//
+// 为什么不能只设一次进程级：插件收到的是宿主线程，进程可能已经 DPI aware，也可能是
+// DPI-unaware（没有清单、被别的宿主加载、以后换入口）。只改线程上下文是插件唯一能
+// 自己保证的、不影响宿主的部分；用完必须恢复，否则宿主这个线程后续的 GetSystemMetrics
+// / 建窗口会突然按物理像素算，UI 布局会错位。
+//
+// 这个 RAII 小工具只服务于本文件的两段系统调用，属于实现细节，所以放匿名命名空间、
+// 不放进 screen_capture_impl.h：内部头只该暴露"抓屏"这个职责，不该带上 DPI 上下文类型。
+class ScopedThreadDpiAwareness {
+public:
+    explicit ScopedThreadDpiAwareness(shot::Logger log) : m_set(setThreadDpiAwarenessContextFn()) {
+        if (m_set == nullptr) {
+            // Win10 1607 之前没有这个函数：保持原上下文，采集按老坐标走（只 warn）。
+            log.warn("screen_capture: 当前系统没有 SetThreadDpiAwarenessContext"
+                     "（需要 Win10 1607+），按线程原有 DPI 上下文采集");
+            return;
+        }
+        const DPI_AWARENESS_CONTEXT previous =
+            m_set(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        if (previous == nullptr) {
+            // 1607 上 PMv2 这个值还不被接受：不改上下文，只把原因写进日志。
+            char message[160] = {};
+            std::snprintf(message, sizeof(message),
+                          "screen_capture: SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2) "
+                          "失败（GetLastError=%lu），按线程原有 DPI 上下文采集",
+                          static_cast<unsigned long>(GetLastError()));
+            log.warn(message);
+            return;
+        }
+        m_previous = previous;
+    }
+
+    ~ScopedThreadDpiAwareness() {
+        if (m_set != nullptr && m_previous != nullptr) {
+            m_set(m_previous);
+        }
+    }
+
+    ScopedThreadDpiAwareness(const ScopedThreadDpiAwareness&) = delete;
+    ScopedThreadDpiAwareness& operator=(const ScopedThreadDpiAwareness&) = delete;
+
+private:
+    SetThreadDpiAwarenessContextFn m_set = nullptr;
+    DPI_AWARENESS_CONTEXT m_previous = nullptr;
+};
+
+}  // namespace
+
+bool GdiDesktopCapture::queryGeometry(ShotCaptureInfo& info, shot::Logger log) {
+    // 必须在第一次 GetSystemMetrics 之前提升 DPI 上下文，否则 DPI-unaware 宿主线程
+    // 拿到的是 DWM 虚拟化后的逻辑尺寸（混合 DPI 时连宽高比都不对）。
+    const ScopedThreadDpiAwareness dpiAwareness(log);
     const int originX = GetSystemMetrics(SM_XVIRTUALSCREEN);
     const int originY = GetSystemMetrics(SM_YVIRTUALSCREEN);
     const int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -49,6 +127,9 @@ bool GdiDesktopCapture::captureTo(const ShotImage& dst, const ShotCaptureInfo& t
         return false;
     }
 
+    // 和 queryGeometry 一样：BitBlt 的源坐标/DIB 尺寸必须是同一套物理像素坐标系，
+    // 所以这里也显式提升线程 DPI 上下文（describe 与 capture 可能在不同线程上）。
+    const ScopedThreadDpiAwareness dpiAwareness(log);
     HDC screenDc = GetDC(nullptr);
     if (screenDc == nullptr) {
         logFailure(log, "GetDC(nullptr)", GetLastError());

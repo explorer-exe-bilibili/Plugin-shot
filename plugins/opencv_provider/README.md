@@ -20,12 +20,15 @@ plugins/opencv_provider/
 └── README.md
 ```
 
+构建说明：根工程默认构建本插件；configure 时加 `-DSHOT_ENABLE_OPENCV=OFF` 会跳过它
+（CI / 没有 OpenCV 的环境用这个开关；默认 `ON`）。
+
 ## 运行时行为
 
 ```
     [plugin] [OpenCVProvider] initialized, opencv 4.12.0
   + OpenCV Environment Provider
-Successfully loaded module: ./plugins\opencv_provider.dll (1 plugins, abi 1.2)
+Successfully loaded module: ./plugins\opencv_provider.dll (1 plugins, abi 2.0)
 Loaded 2 image processor plugins.
 Loaded 1 lib provider plugins.
   ~ OpenCV Environment Provider 4.12.0

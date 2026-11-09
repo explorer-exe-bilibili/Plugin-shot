@@ -214,6 +214,16 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
         {"order", 10},
         {"separator", false},
     };
+    nlohmann::json regionCapture = {
+        {"id", "region.capture"},
+        {"label", "区域截屏"},
+        {"event", "capture.request"},
+        // region 的具体坐标由以后交互选区填进负载；现在先发 mode=region，
+        // 采集流水线会把它当成"区域采集"的入口（缺 region 时退化为全屏并记日志）。
+        {"data", R"json({"mode":"region"})json"},
+        {"order", 15},
+        {"separator", false},
+    };
     nlohmann::json settings = {
         {"id", "settings.open"},
         {"label", "打开设置"},
@@ -232,6 +242,7 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     };
     ListState& tray = m_lists[kTrayCommandListId];
     tray.entries.push_back(Entry{kCoreOwner, "capture.request", 10, dumpJson(capture)});
+    tray.entries.push_back(Entry{kCoreOwner, "region.capture", 15, dumpJson(regionCapture)});
     tray.entries.push_back(Entry{kCoreOwner, "settings.open", 20, dumpJson(settings)});
     tray.entries.push_back(Entry{kCoreOwner, "app.quit", 100, dumpJson(quit)});
 

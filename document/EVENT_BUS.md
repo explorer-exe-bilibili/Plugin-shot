@@ -29,7 +29,8 @@
 任意插件线程 --publish--> [宿主队列] --宿主 main 循环 dispatchEvents()--> 订阅回调
 ```
 
-- **publish 任意线程可调**：只加锁入队，不做分发、不阻塞。
+- **publish 任意线程可调**：只加锁入队，不做分发、不阻塞。采集流水线的 `capture.done` /
+  `capture.failed` 就是由**工作线程**发布的，但订阅回调仍然只在 main 线程执行。
 - **回调只在宿主分发线程（main 线程）执行**：顺序确定、不需要再同步。
 - **回调里规则**：不要阻塞、不要做耗时任务；`publish` 会排到下一轮（不会重入）；
   `subscribe` / `unsubscribe` 安全（回调在锁外执行）。
@@ -43,8 +44,8 @@
 
 | 主题 | 方向 | 负载 |
 | --- | --- | --- |
-| `capture.request` | 任意插件/UI（托盘菜单、`--capture`）→ 流水线 | 空；v1 忽略负载 |
-| `capture.done` | 流水线 → 所有订阅者 | JSON：`{"path":"...","width":1920,"height":1080,"processors":2}` |
+| `capture.request` | 任意插件/UI（托盘菜单、热键、region_selector、`--capture`）→ 流水线 | 三态：空 / 非 region = 整屏；`{"mode":"region","region":{x,y,width,height}}` = 抓整屏后按物理虚拟桌面像素裁剪；`{"mode":"region"}` 无 region 或 region 非法 = **框选请求**（流水线忽略：不采集、不落盘、不发 `capture.*`），事件仍分发给其它订阅者（region_selector 用它开始框选）。见 `document/CAPTURE.md` §3.1 |
+| `capture.done` | 流水线（工作线程）→ 所有订阅者 | JSON：`{"path":"...","width":1920,"height":1080,"processors":2}`；`width/height` 是最终图像尺寸（区域截图时是裁剪后的） |
 | `capture.failed` | 流水线 → 所有订阅者 | JSON：`{"stage":"capture","reason":"..."}`；`stage` = `"capture"` / `"save"` |
 | `settings.open` | 托盘（`plugins/tray`）→ 设置页 | 空 |
 | `config.applied` | 宿主 → 所有插件 | 空（设置页一次批量提交完成，见 `document/SETTINGS.md`） |
@@ -70,7 +71,10 @@
 
 ## 5. 生命周期与限制
 
-- 插件必须在 **`deinit` 返回前退订**（`unsubscribe(user)`）；卸载后宿主不再回调。
+- 插件必须在**实例销毁前退订**：`shot.ui_provider` 插件在 `deinit` 返回前
+  `unsubscribe(user)`；`PluginType::Generic` 插件没有 `init/deinit`，订阅在
+  `create(index, host)` 里建立、在 `destroy` 里退订（见 `document/SETTINGS.md` §3.3）。
+  卸载后宿主不再回调。
 - 单条负载上限 **64 KiB**；队列上限 **4096** 条，满时 publish 返回 -1（丢弃，不阻塞）。
 - **大对象不进总线**：`capture.done` 只带路径与尺寸，画面数据走单独的 frame/surface 服务
   （见 `document/CAPTURE.md` §3）；列表内容也不塞进事件——事件里只放 list id 与条目 JSON，
@@ -107,7 +111,7 @@ bus.publish("capture.request", payload);
 - [ ] 主题全小写、点分隔，第三方用自己前缀？
 - [ ] 负载 < 64 KiB，像素/大对象走 frame 服务而不是总线？
 - [ ] 回调里没有阻塞、没有直接操作其他插件的 UI？
-- [ ] `deinit` 返回前调用了 `unsubscribe`？
+- [ ] 退订时机正确：UI 插件在 `deinit` 返回前，Generic 插件在 `destroy` 里？
 - [ ] publish 返回值检查了（队列满会丢事件）？
 - [ ] 新增的宿主服务能力已在 `document/ABI_POLICY.md` 登记？
 - [ ] 新增/修改的是列表协议（`lists.*` / 新 list id）？→ 同步 `document/LISTS.md` 的登记表与 schema。

@@ -1,4 +1,4 @@
-// 托盘窗口线程：建隐藏消息窗口、添加托盘图标、消息循环、事件回调。
+// 托盘窗口线程：建隐藏消息窗口、消息循环、托盘鼠标回调。
 //
 // 为什么需要一个窗口：Shell_NotifyIconW 要求一个 hWnd 接收托盘回调消息；
 // 这个窗口永远不显示（没有 WS_VISIBLE），它只是托盘线程的消息泵：
@@ -7,14 +7,13 @@
 //   · kMsgQuit             → stop() 请求退出消息循环；
 //   · "TaskbarCreated"     → explorer.exe 重启后重新添加图标。
 //
-// 右键菜单的内容由 tray_command_list 数据驱动：渲染在 tray_icon_menu.cpp、
-// 数据模型在 tray_menu.cpp；本文件只做窗口/线程/托盘图标。事件出队与气泡通知在
-// tray_icon_notify.cpp；生命周期/线程握手在 tray_icon.cpp；ABI 胶水在
+// 托盘图标的来源与刷新在 tray_icon_icon.cpp；右键菜单的内容由 tray_command_list
+// 数据驱动（渲染在 tray_icon_menu.cpp、数据模型在 tray_menu.cpp）；事件出队在
+// tray_icon_events.cpp；生命周期/线程握手在 tray_icon.cpp；ABI 胶水在
 // plugin_entry.cpp（STYLE.md §6.8 按职责拆文件）。
 
 #include "tray_icon.h"
 
-#include <cwchar>
 #include <string>
 
 #include "shot_plugin_helpers.h"
@@ -25,7 +24,6 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"PluginShotTrayWnd";  /**< 进程内唯一；类不随 DLL 卸载消失，必须显式注销。 */
 constexpr wchar_t kWindowTitle[] = L"Plugin-shot 托盘";     /**< 隐藏窗口的标题，只用于排障。 */
-constexpr wchar_t kTooltip[] = L"Plugin-shot 托盘";         /**< 鼠标悬停提示，最长 127 字符。 */
 
 }  // namespace
 
@@ -137,8 +135,8 @@ void TrayIcon::Impl::run() {
         return;
     }
 
-    // 图标已添加，先只做握手：宿主可能在 init 返回后立刻发 capture.done，
-    // 那些事件先入队，消息循环启动后统一 drain。
+    // 图标已添加，先只做握手：宿主可能在 init 返回后立刻发 lists.changed /
+    // config.applied，那些事件先入队，消息循环启动后统一 drain。
     {
         std::lock_guard<std::mutex> lock(readyMutex);
         ready = true;
@@ -166,7 +164,7 @@ void TrayIcon::Impl::run() {
 }
 
 void TrayIcon::Impl::messageLoop() {
-    // 线程就绪前入队的事件（例如宿主 init 后立刻发布的 capture.done）在这里补处理。
+    // 线程就绪前入队的事件（例如宿主 init 后立刻发布的 lists.changed）在这里补处理。
     drainEvents();
     MSG msg{};
     for (;;) {
@@ -178,67 +176,6 @@ void TrayIcon::Impl::messageLoop() {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-}
-
-bool TrayIcon::Impl::addIcon(HWND wnd) {
-    // TODO: 这里用系统共享的应用图标兜底（LoadIconW(nullptr, IDI_APPLICATION)），
-    // 因为本插件还没有自己的图标资源；等 package 带上 .rc 图标后换成
-    // LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(...))。
-    HICON loaded = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
-    if (loaded == nullptr) {
-        shot::Logger(host).error("[tray] 加载托盘图标失败");
-        return false;
-    }
-    icon = loaded;
-
-    NOTIFYICONDATAW data{};
-    data.cbSize = sizeof(data);
-    data.hWnd = wnd;
-    data.uID = kTrayIconId;
-    data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    data.uCallbackMessage = trayCallbackMessage;
-    data.hIcon = icon;
-    // szTip 是定长缓冲；_TRUNCATE 保证超长时安全截断，不会写坏结构体。
-    wcsncpy_s(data.szTip, kTooltip, _TRUNCATE);
-    if (!Shell_NotifyIconW(NIM_ADD, &data)) {
-        shot::Logger(host).error("[tray] Shell_NotifyIconW(NIM_ADD) 失败");
-        icon = nullptr;
-        return false;
-    }
-    iconAdded = true;
-    shot::Logger(host).info("[tray] 托盘图标已添加（Shell_NotifyIconW NIM_ADD 成功）");
-
-    // 再向 Shell 查一次图标矩形：确认图标真的挂上了，也方便排障时知道它在哪。
-    // 系统把图标放进通知区域溢出区时可能查不到，这不是错误，所以只当调试信息。
-    NOTIFYICONIDENTIFIER identifier{};
-    identifier.cbSize = sizeof(identifier);
-    identifier.hWnd = wnd;
-    identifier.uID = kTrayIconId;
-    RECT rect{};
-    if (SUCCEEDED(Shell_NotifyIconGetRect(&identifier, &rect))) {
-        shot::Logger(host).debug("[tray] 托盘图标在通知区域的位置 " + std::to_string(rect.left) +
-                                 "," + std::to_string(rect.top) + " " +
-                                 std::to_string(rect.right - rect.left) + "x" +
-                                 std::to_string(rect.bottom - rect.top));
-    }
-    return true;
-}
-
-void TrayIcon::Impl::removeIcon() {
-    if (!iconAdded) {
-        return;
-    }
-    NOTIFYICONDATAW data{};
-    data.cbSize = sizeof(data);
-    data.hWnd = hwnd;
-    data.uID = kTrayIconId;
-    if (!Shell_NotifyIconW(NIM_DELETE, &data)) {
-        // 删不掉只能用日志留痕：窗口马上要销毁，Shell 最终也会清理这个图标。
-        shot::Logger(host).warn("[tray] Shell_NotifyIconW(NIM_DELETE) 失败");
-    }
-    iconAdded = false;
-    // LoadIconW 返回的是系统共享图标，不能 DestroyIcon 释放（会破坏其它进程/窗口的图标）。
-    icon = nullptr;
 }
 
 LRESULT CALLBACK TrayIcon::Impl::windowProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam) {

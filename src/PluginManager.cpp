@@ -251,7 +251,8 @@ PluginManager::CreatedPlugin PluginManager::createPlugin(const std::shared_ptr<D
                                                          const ShotModule* module, uint32_t index,
                                                          const std::string& id,
                                                          const std::string& name,
-                                                         const std::string& version) {
+                                                         const std::string& version,
+                                                         bool hasMetadata) {
     CreatedPlugin created;
     void* instance = module->create(index, &Host::g_hostServices);
     if (instance == nullptr) {
@@ -332,9 +333,23 @@ PluginManager::CreatedPlugin PluginManager::createPlugin(const std::shared_ptr<D
         return created;
     }
 
-    // 认不出任何能力：必须自己把实例还给插件销毁，宿主绝不 delete 插件对象。
+    // 五种具名能力都认不出来：可能是"纯订阅者 / 纯配置项"插件（例如 clipboard.main
+    // 只声明 shot.configurable、在 create 里订阅 capture.done）。这类插件没有能力表
+    // 可以包装，但实例、配置项与事件订阅都是有效的：只要 metadata 声明过它，就用
+    // 基类包成 Generic 继续加载 —— 注册表照常列 LOADED、列表目录能枚举它的配置项、
+    // 启停走同一套生命周期（destroy 里由插件自己退订）。
+    //
+    // 没有 metadata 的包保持原有行为：来源解释不清的实例按"无法识别"销毁并跳过，
+    // 不把坏 DLL / 老插件静默挂进宿主。
+    if (hasMetadata) {
+        created.instance = std::make_shared<PluginBase>(dll, module, instance, id, displayName,
+                                                        version, PluginType::Generic);
+        spdlog::info("  + {}（通用插件：无具名能力，按配置项/事件订阅加载）", displayName);
+        return created;
+    }
+    // 认不出能力又没有 metadata：必须自己把实例还给插件销毁，宿主绝不 delete 插件对象。
     module->destroy(instance);
-    created.reason = "没有本宿主认识的任何能力";
+    created.reason = "没有 metadata 且没有本宿主认识的任何能力";
     return created;
 }
 
@@ -506,7 +521,8 @@ bool PluginManager::loadPlugins(const std::string& dir) {
                     continue;
                 }
                 CreatedPlugin plugin = createPlugin(dll, module, i, created.info.id,
-                                                    created.info.name, created.info.version);
+                                                    created.info.name, created.info.version,
+                                                    /*hasMetadata=*/false);
                 if (plugin.instance == nullptr) {
                     created.info.state = SHOT_PLUGIN_STATE_FAILED;
                     created.info.reason = plugin.reason;
@@ -611,7 +627,8 @@ bool PluginManager::loadPlugins(const std::string& dir) {
         }
 
         CreatedPlugin plugin = createPlugin(dll, module, record.index, record.info.id,
-                                            record.info.name, record.info.version);
+                                            record.info.name, record.info.version,
+                                            /*hasMetadata=*/true);
         if (plugin.instance == nullptr) {
             record.info.state = SHOT_PLUGIN_STATE_FAILED;
             record.info.reason = plugin.reason;
@@ -688,6 +705,8 @@ void PluginManager::unloadAll() {
         m_recordIds.clear();
     }
     // UI 插件先收 shutdown 通知（与旧的卸载顺序一致），返回前必须自己停线程、销窗口。
+    // Generic（纯订阅者/纯配置项）没有 init/deinit：事件订阅在 create 里做、
+    // 在 destroy 里退订，所以下面的实例析构就是它的收尾点。
     for (const auto& instance : instances) {
         if (const auto uiProvider = std::dynamic_pointer_cast<UIProvider>(instance)) {
             uiProvider->postToPlugin(makeShutdownEvent());
@@ -746,6 +765,7 @@ bool PluginManager::disableOne(const std::string& id, std::string& reason) {
 
     if (instance != nullptr) {
         // 与 unloadAll 顺序一致：先投 shutdown 通知，再 deinit（插件停线程、销窗口）。
+        // Generic 没有 init/deinit，退订在它的 destroy 里完成（实例析构即收尾）。
         // 这里故意在生命周期锁之外 deinit：UI 插件的窗口线程可能在等配置目录的
         // 生命周期锁，持锁等它退出会互相等待。SETTINGS.md 也约定入口 UI 插件不启停。
         if (const auto uiProvider = std::dynamic_pointer_cast<UIProvider>(instance)) {
@@ -791,6 +811,7 @@ bool PluginManager::enableOne(const std::string& id, std::string& reason) {
     std::string dllPath;
     std::string name;
     std::string version;
+    bool hasMetadata = false;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         Record* record = findRecordLocked(id);
@@ -805,6 +826,7 @@ bool PluginManager::enableOne(const std::string& id, std::string& reason) {
         dllPath = record->info.dllPath;
         name = record->info.name;
         version = record->info.version;
+        hasMetadata = record->hasMeta;
     }
 
     std::shared_ptr<DllHandler> dll;
@@ -820,7 +842,7 @@ bool PluginManager::enableOne(const std::string& id, std::string& reason) {
         return false;
     }
 
-    CreatedPlugin plugin = createPlugin(dll, module, index, id, name, version);
+    CreatedPlugin plugin = createPlugin(dll, module, index, id, name, version, hasMetadata);
     if (plugin.instance == nullptr) {
         std::lock_guard<std::mutex> lock(m_mutex);
         Record* record = findRecordLocked(id);

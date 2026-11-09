@@ -76,7 +76,7 @@ cmake --build build
 
 | 平台 | 状态 |
 | --- | --- |
-| Windows（MSVC x64） | ✅ 已验证（构建 + 端到端冒烟） |
+| Windows（MSVC x64） | ✅ 已验证（构建 + 端到端冒烟；**双屏 150% + 100%**：运行中跨屏拖动按新 DPI 重缩放、几何恢复按目标显示器 DPI clamp） |
 | Linux / macOS | **未验证**：代码走同一套 GLFW + OpenGL3 + NFD 分支、CMake 也有 `OpenGL::GL` 分支，但当前开发机只有 Windows，没有真机验证 |
 
 POSIX 未验证的具体点（都留了代码里的 `// TODO:`）：
@@ -85,8 +85,9 @@ POSIX 未验证的具体点（都留了代码里的 `// TODO:`）：
 - macOS 上 NFD（NSOpenPanel）可能同样要求主线程，且主线程调用才最稳；
 - Linux 的中文字体路径（Noto CJK / 文泉驿）只是常见发行版的候选；
 - `glfwGetMonitorWorkarea` 在没有窗口管理器的环境下可能拿不到，代码会退回视频模式分辨率；
-- 多显示器且各屏 DPI 不同时没有验证：clamp 用的是窗口当前 DPI 的边框尺寸（本机单屏
-  150% 已验证），跨 DPI 屏需要按目标显示器重新取 `glfwGetWindowFrameSize`（代码里有 TODO）。
+- 其它 DPI 组合（125% / 200% / 三屏以上）、多屏负 origin 的摆放、以及 POSIX 多屏**未实测**：
+  DPI 逻辑按 GLFW content scale / 显示器矩形通用处理（不是硬编码 1.5/1.0），但真机只验证了
+  Windows 双屏（主屏 150% @0,0 + 副屏 100% @2560,0）下的跨屏拖动与副屏越界恢复。
 
 ## 3. 生命周期与事件
 
@@ -98,6 +99,7 @@ POSIX 未验证的具体点（都留了代码里的 `// TODO:`）：
 | `lists.changed` | `list == "config_list"` 时重建配置区：按 owner+id 把未应用的本地修改合并回去，不丢用户正在编辑的值 |
 | `lists.updated` | 写值结果：按同 `tag` 匹配本次提交；`ok=false` 的项标红显示 `reason`，然后自动进入 `lists.commit` |
 | `plugins.changed` | 整表重新枚举注册表与配置列表（节可能增删），把负载里的 `reason` 显示在对应行，结束"应用中…" |
+| 窗口跨屏拖动 | GLFW `content scale` 回调置脏标记 → 下一帧从默认样式基线重算 `ScaleAllSizes` + `FontScaleMain`（运行中 150% ↔ 100% 自动重缩放，不累积）；`settings.open` 恢复几何到另一块屏时也会先按目标屏 DPI 重建，第一帧就是对的 |
 | X / Esc | 只隐藏窗口：点 X 清掉 GLFW 的 should-close 标记，Esc 由键盘回调置位后统一 `glfwHideWindow`；线程、窗口、GL 上下文全部保留 |
 | `host.shutdown` / `deinit` | 先退订事件总线，再让事件循环退出并 `join` UI 线程，最后销毁窗口、终止 GLFW |
 
@@ -169,9 +171,9 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | 请求 3.3 core 上下文 | ImGui 1.92 的 OpenGL3 后端在 core profile 下最省心；macOS 另加 forward-compatible |
 | GLSL 按 GL 版本选 150/130 | 3.2+ 用 150，3.0/3.1 用 130；低于 3.0 干净失败（`NewFrame` 建 shader 失败是 `IM_ASSERT`） |
 | 中文字体按平台候选（msyh / PingFang / Noto CJK / WenQuanYi） | 只是显示效果降级；全部缺失时退回 ImGui 内置字体，功能不受影响 |
-| DPI：content scale + `style.ScaleAllSizes` + `FontScaleMain` | ImGui 1.92 的字体缩放字段；不改进程级 DPI 感知 |
+| DPI：content scale + `style.ScaleAllSizes` + `FontScaleMain` | ImGui 1.92 的全局字号缩放；字体按需动态烘焙，改完不需要手动重建图集。运行中跨屏变化时保留"未缩放的默认样式"基线重新放大（乘法缩放不能累积） |
 | 几何存宿主配置，`io.IniFilename = nullptr` | 不在插件目录/工作目录旁边生成 `imgui.ini`；几何属于用户界面状态，不占用任何插件配置节 |
-| 几何恢复 clamp 计入窗口边框 | 上次位置可能来自别的显示器；把标题栏/边框算进去，外层矩形完整落在工作区内，不会"打开看不见"或底部被裁 |
+| 几何恢复 clamp 计入窗口边框、且边框按**目标显示器** DPI 取 | 先把隐藏窗口搬进目标显示器再 `glfwGetWindowFrameSize`（真机实测 setPos 返回时已同步更新），否则 150% 创建、100% 恢复会拿错边框；实测主屏 L11/T45/R11/B11、副屏 L8/T31/R8/B8 |
 | 原生对话框只经 `settings_dialog` 一个模块 | 平台差异与库生命周期收在一处；设置页模型不需要知道窗口句柄 |
 
 ## 6. 降级行为

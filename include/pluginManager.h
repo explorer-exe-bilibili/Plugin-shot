@@ -278,18 +278,23 @@ class PluginManager {
     /**
      * @brief 创建第 index 个插件实例并按能力包装（插件代码，必须在数据锁外调用）。
      *
-     * 没有本宿主认识的任何能力时，会先调插件的 destroy 再返回失败——绝不泄漏实例。
-     * @param[in] dll     模块的 DLL 句柄。
-     * @param[in] module  模块表。
-     * @param[in] index   create(index) 的索引。
-     * @param[in] id      插件 id（身份，来自 get_info 或 metadata）。
-     * @param[in] name    插件显示名。
-     * @param[in] version 插件版本。
+     * 五种具名能力（图像处理 / 库提供者 / UI / 采集 / 保存）按函数表包装；
+     * 都认不出来时：**有 metadata 声明**的插件按 PluginType::Generic 用基类包装
+     * 继续加载（纯配置项、纯事件订阅插件，例如 clipboard.main），没有 metadata 的
+     * 包才按"无法识别"销毁实例并返回失败——绝不泄漏实例。
+     * @param[in] dll         模块的 DLL 句柄。
+     * @param[in] module      模块表。
+     * @param[in] index       create(index) 的索引。
+     * @param[in] id          插件 id（身份，来自 get_info 或 metadata）。
+     * @param[in] name        插件显示名。
+     * @param[in] version     插件版本。
+     * @param[in] hasMetadata 该插件是否有 metadata 声明；决定"无具名能力"时是
+     *                        包装成 Generic 还是按无法识别跳过。
      * @return 包装好的实例（失败时 instance 为空，reason 有原因）。
      */
     CreatedPlugin createPlugin(const std::shared_ptr<DllHandler>& dll, const ShotModule* module,
                                uint32_t index, const std::string& id, const std::string& name,
-                               const std::string& version);
+                               const std::string& version, bool hasMetadata);
 
 public:
     /** @brief 构造空管理器；不加载任何插件。 */

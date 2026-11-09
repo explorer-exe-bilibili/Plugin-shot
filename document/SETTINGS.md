@@ -8,7 +8,8 @@
 ## 1. 总体结构
 
 宿主**没有主窗口**，设置窗口本身也是一个插件（`plugins/settings_ui`，实现
-`shot.ui_provider`）。宿主只提供两个 append-only 宿主服务；设置页不直接调用其他插件。
+`shot.ui_provider`）。设置页这条链路只用到两个 append-only 宿主服务（列表服务 + 插件注册表）；
+设置页不直接调用其他插件。
 
 | 组件 | 位置 | 职责 |
 | --- | --- | --- |
@@ -128,6 +129,8 @@ UI 线程里发生（见 `document/EVENT_BUS.md` 的线程模型）。
 
 - **加载/卸载只在宿主 main 线程执行**（与事件分发同线程），设置页只发请求。
 - 插件 `deinit` 必须自己停线程、退订事件总线、销毁窗口——热卸载让它从"建议"变成硬要求。
+  `PluginType::Generic` 没有 `deinit`（见 §3.3）：订阅在 `create`、退订在 `destroy`；
+  自己起后台线程的 Generic 插件必须在 `destroy` 里停线程并 `join`。
 - **被依赖的插件不允许单独禁用**：v1 直接拒绝并提示"被 X 依赖"，不做级联禁用。
 - **只有设置页自己不允许禁用**（`settings_ui.main`）：设置页把这一行置灰，宿主不为此
   增加特判。托盘 `tray.main` 是普通可启停插件——热卸载会注销托盘窗口类，重新加载时
@@ -163,6 +166,28 @@ UI 线程里发生（见 `document/EVENT_BUS.md` 的线程模型）。
   "应用中…"有 5 秒超时兜底）；
 - 设置页每收到一条通知就重新枚举注册表并重读 `config_list`；如果它正在"应用中…"，
   第一条通知就会结束等待，后续通知继续刷新列表。
+
+### 3.3 `PluginType::Generic`：纯订阅者 / 纯配置项插件
+
+宿主把「有具名能力」的插件按五个包装类分类（图像处理 / 库提供者 / UI / 采集 / 保存）。
+**五种都认不出来、但 metadata 声明过它的插件**，按 `PluginType::Generic` 用基类包装
+继续加载：
+
+- 注册表照常列 LOADED，可以像其它插件一样启用/禁用/热卸载；
+- `config_list` 照常用 `query_interface(shot.configurable)` 枚举它的配置项——
+  "没有宿主可调用的能力"不等于"没有配置项"；
+- 加载条件：**必须有 metadata**。没有 metadata 又没有宿主认识的任何具名能力时，宿主会
+  销毁实例并跳过（`reason = "没有 metadata 且没有本宿主认识的任何能力"`），不把来源
+  不明的 DLL 挂进宿主。这也是 metadata「加载前声明」价值的落点。
+- **没有 `init` / `deinit` / `post_to_plugin`**：事件订阅必须在 `create(index, host)`
+  里建立（这是唯一能拿到宿主服务表的时机），在 `destroy` 里退订。宿主热卸载/退出时先
+  让实例走 `destroy`（插件自己收线程、退订），再 `module->shutdown`、最后放 DLL 句柄。
+- 判定口径：**有没有 `shot.ui_provider` 只取决于"宿主是否需要给插件投 `post_to_plugin`"**。
+  自己开线程/建隐藏窗口、但不需要宿主投递事件的插件（如 `plugins/notify`）仍然是
+  Generic，不需要假装成 UI 插件。
+- 现有例子：`plugins/clipboard`（只声明 `shot.configurable`，在 `create` 里订阅
+  `capture.done`）、`plugins/notify`（`shot.configurable` + 订阅
+  `capture.done` / `capture.failed` / `app.quit`，通知线程在 `create` 起、`destroy` 收）。
 
 ## 4. 应用 / 取消
 
@@ -222,8 +247,11 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
 | `debug.console` | BOOL | `1` | 立即开/关控制台 sink（文件日志不受影响） |
 | `logging.file` | BOOL | `1` | 立即开/关文件 sink（`<dataPath>/logs/host.log`） |
 
-**宿主设置里刻意没有 `output.*`**：输出目录/格式/剪贴板属于"保存"这件事，
-以后由独立的 save 插件用 `shot.configurable` 声明，设置页会自动多出一节，宿主代码不参与。
+**宿主设置里刻意没有 `output.*`**：输出目录/格式/质量/剪贴板这类"保存"相关的配置不在宿主
+设置里，由实现保存/剪贴板能力的插件用 `shot.configurable` 自己声明
+（`plugins/image_saver` 的 `directory` / `format` / `quality` / `filename`，
+`plugins/clipboard` 的 `enabled` / `also_file_drop`）；设置页按 `config_list` 自动多出
+对应小节，宿主代码不参与。
 
 ## 6. 设置页插件（`plugins/settings_ui`）
 
@@ -262,6 +290,40 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
 - **插件管理**：只有 `settings_ui.main` 自己那一行置灰（入口插件不能禁用自己）；禁用行
   显示原因；勾选只改本地状态，应用时才 `set_enabled`。
 
+### 6.1 DPI 与多显示器
+
+宿主在启动最早期（任何窗口创建 / 屏幕采集之前、日志初始化之前调用，结果随后写日志）
+显式声明 **per-monitor v2 DPI 感知**：`user32!SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`
+→ 回退 `shcore!SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)` → 回退
+`SetProcessDPIAware()`，全部失败只 warn、不阻止启动。日志行是 `DPI awareness: <模式>`。
+不声明的话，没有设置页的进程默认 DPI-unaware，采集会拿到逻辑坐标（150% 下
+3584x1600 的虚拟桌面会变成 2389x1066 一类），设置页一初始化 GLFW 又"碰巧"改对——
+必须由宿主统一声明。
+
+设置窗口自己的 DPI 处理：
+
+- **content scale 只用于字号，绝不用于坐标**：GLFW 报告的是物理像素坐标；代码把
+  content scale 传给 `ScaleAllSizes` + `FontScaleMain` 放大字体，并且每帧从"未缩放的
+  默认样式基线"重算，**乘法缩放不累积**。
+- **跨屏拖动**：GLFW content scale 回调置脏标记，下一帧按新屏 DPI 重缩放；运行中
+  150% ↔ 100% 拖动不会字体变大两次或变小两次。
+- **几何恢复按目标显示器 DPI clamp**：`settings_ui.window` 保存的是内容区 `x,y,w,h`；
+  恢复时先把（隐藏）窗口搬到目标显示器，再按**目标屏** DPI 取标题栏/边框尺寸，把外层
+  矩形 clamp 进目标屏 `glfwGetMonitorWorkarea`（先夹尺寸、再夹位置），换分辨率 / 拔掉
+  副屏后窗口不会跑到屏幕外或只露出标题栏。
+
+**已验证**（本机 Windows 11，双屏混合 DPI）：主屏 150% 2560x1600 @(0,0) +
+副屏 100% 1024x768 @(2560,0) 下——运行中跨屏拖动自动重缩放且不累积；几何恢复到
+另一块屏时第一帧就按目标 DPI 正确；按目标屏工作区（含边框）clamp 通过。
+
+**未验证**（代码按 GLFW content scale / 显示器矩形的通用逻辑写，不是硬编码 1.5/1.0，
+但没有真机结论）：其它 DPI 组合（125% / 200% 等）、三屏及以上、多屏负 origin
+（副屏在主屏左侧/上方）、POSIX 多屏。详见 `plugins/settings_ui/README.md` §2。
+
+采集侧另有自己的兜底：`screen_capture` 在每次 `describe` / `capture` 进入平台层时
+临时把调用线程的 DPI 上下文提升到 PMv2，返回前恢复；所以即使宿主线程原本是别的
+上下文，截图尺寸与像素也仍是物理值（见 `document/CAPTURE.md` §2.1）。
+
 ## 7. 刻意不做的事
 
 | 不做 | 原因 |
@@ -271,11 +333,13 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
 | 级联禁用 | 被依赖时直接拒绝更可解释。启用则按相反方向级联（见 §3.1）；禁用不做级联。 |
 | 在设置页安装/删除插件 | 只管理**已安装**插件的启停；安装属于另一个层（安装器） |
 | 多个设置窗口 | 单实例足够；多实例会带来"两处同时改同一项"的冲突 |
-| 把 `output.*` 塞进宿主设置 | 保存逻辑以后是 save 插件，配置跟着它自己走 |
+| 把 `output.*` 塞进宿主设置 | 保存/剪贴板逻辑在各自插件里（`plugins/image_saver` / `plugins/clipboard`），配置跟着插件自己走 |
 
 ## 8. 检查清单
 
 - [ ] 新增配置项只改插件自己的 `kConfig[]`，`config_list` 自动多一条，没有改宿主代码？
+- [ ] 新增的是**纯订阅者 / 纯配置项插件**？→ 确认它在 metadata 里声明过、订阅在 `create`
+      建立 / `destroy` 退订，并且没有为了拿 `post_to_plugin` 而假装 `shot.ui_provider`（§3.3）
 - [ ] 配置值一律用字符串，没有跨边界传结构体/数字？
 - [ ] 不认识的 key / 不认识的 kind 是安静跳过，而不是报错崩溃？
 - [ ] 读写配置只走 `lists.update` / `lists.commit` / `lists.changed` / `config.applied`，

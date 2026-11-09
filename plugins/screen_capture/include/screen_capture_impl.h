@@ -34,16 +34,26 @@ namespace screen_capture {
  * 不持有任何成员状态：每次抓屏都是一次完整的 GetDC → BitBlt → GetDIBits 生命周期，
  * 句柄在函数返回前全部释放。截图是低频操作，为省一次建 DC 而把句柄挂在实例上只会
  * 引入跨调用状态和插件卸载时的清理问题。
+ *
+ * DPI 由本层自己保证：两个公开函数进入时都显式把调用线程的 DPI 感知上下文临时提升到
+ * PER_MONITOR_AWARE_V2（运行期解析，设置失败只 warn），返回前恢复原上下文。所以宿主
+ * 是否在清单里声明 DPI aware 不影响插件拿到的几何与像素。
  */
 class GdiDesktopCapture {
 public:
     /**
-     * @brief 读当前虚拟桌面的几何。
+     * @brief 读当前虚拟桌面的几何（物理像素与系统坐标）。
+     *
+     * 进入时先把调用线程的 DPI 上下文提升到 PER_MONITOR_AWARE_V2（失败只 warn），
+     * 所以这里拿到的是物理像素尺寸与虚拟桌面左上角的系统坐标，不依赖宿主进程的
+     * DPI 感知声明；返回前恢复调用前的上下文。
+     *
      * @param[out] info 成功时只填 width/height/origin_x/origin_y 四个字段；
      *                  struct_size 与 pixel_format 由调用方负责（它们属于契约层）。
+     * @param[in]  log  宿主日志；DPI 上下文提升失败（老系统）时写一条 warn。
      * @return true = 成功；false = 没有可采集的屏幕（宽或高 <= 0）。
      */
-    static bool queryGeometry(ShotCaptureInfo& info);
+    static bool queryGeometry(ShotCaptureInfo& info, shot::Logger log);
 
     /**
      * @brief 把整个虚拟桌面抓进 dst（BGRA8，尺寸必须与 target 一致）。
@@ -52,6 +62,8 @@ public:
      * @param[in] log    宿主日志；失败时就地写明是哪一步失败及 GetLastError()。
      * @return true = 成功；false = 系统调用失败（已写日志）。
      * @warning 只写像素，不修改 dst 的任何结构体字段。
+     * @note 内部同样会临时提升线程 DPI 上下文：BitBlt 的源坐标必须和 queryGeometry
+     *       读到的几何在同一套物理像素坐标系里。
      */
     static bool captureTo(const ShotImage& dst, const ShotCaptureInfo& target, shot::Logger log);
 

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "region_selector.main",
+      "name": "Region Selector",
+      "version": "0.1.0",
+      "description": "屏幕区域选择覆盖层：在鼠标所在显示器上框选，确认后发布带 region 的 capture.request（GLFW + ImGui + OpenGL3）",
+      "interfaces": ["shot.ui_provider"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}

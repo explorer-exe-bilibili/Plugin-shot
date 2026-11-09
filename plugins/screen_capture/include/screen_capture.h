@@ -42,8 +42,10 @@ public:
      * @param[out] out 由调用方提供并填好 struct_size 的输出结构；不能为 nullptr。
      * @return 0 = 成功；1 = 当前没有可采集的屏幕（无显示器 / 远程会话断开）；
      *         2 = out 为空或 struct_size 装不下完整结构（宿主与本插件的契约不同步）。
-     * @note 尺寸与 origin 直接来自 GetSystemMetrics(SM_*VIRTUALSCREEN)；
-     *       进程的 DPI 感知级别会影响到手的是物理像素还是逻辑像素。
+     * @note 尺寸与 origin 直接来自 GetSystemMetrics(SM_*VIRTUALSCREEN)，是**物理像素**
+     *       与系统坐标：进入时本插件显式把调用线程的 DPI 感知上下文临时提升到
+     *       PER_MONITOR_AWARE_V2（失败只 warn 并按原上下文采集），所以不依赖宿主进程
+     *       是否声明 DPI aware。
      */
     std::int32_t describe(ShotCaptureInfo* out) const;
 

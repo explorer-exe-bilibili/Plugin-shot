@@ -480,6 +480,13 @@ shot_add_plugin(my_plugin
 | 插件启停级联 / 入口兜底 / `plugins.changed` 通知语义 | `document/SETTINGS.md` §3.1–§3.2、相关插件 `README.md`、`README.md`/`README.en.md` 的「设置页与插件启停」段 |
 | 采集流水线 / `capture.*` 事件 / `--capture` 行为 | `document/CAPTURE.md`、`document/EVENT_BUS.md` §4、`README.md`/`README.en.md` 的运行说明与状态表 |
 | 采集 / 保存 / 托盘插件的新增或行为变化 | `document/ABI_POLICY.md` 登记表、`document/CAPTURE.md`、该插件 `README.md`、`README.md`/`README.en.md` 的状态表与目录树 |
+| 新增插件（clipboard / notify / hotkey / region_selector 等） | 该插件 `README.md`、`README.md`/`README.en.md` 的「当前状态」表与目录树；按能力同步 `document/CAPTURE.md`（消费方）或 `document/SETTINGS.md`（configurable） |
+| `PluginType::Generic` 加载规则 / 纯订阅者插件约定 | `document/SETTINGS.md` §3.3、`document/README_SDK.md`、`README.md`/`README.en.md` 的状态表 |
+| 区域截图 / `capture.request` 负载 / region 坐标与裁剪语义 | `document/CAPTURE.md` §3.1、§4、`document/EVENT_BUS.md` §4、`plugins/region_selector/README.md`、`README.md`/`README.en.md` 的状态表 |
+| 截屏结果消费方（通知 / 剪贴板）行为 | `plugins/notify/README.md`、`plugins/clipboard/README.md`、`README.md`/`README.en.md` 的状态表 |
+| 托盘图标来源 / 通知分工 | `plugins/tray/README.md`、`README.md`/`README.en.md` 的托盘说明（图标是宿主**命名资源** `IDI_ICON1`） |
+| 多显示器 / DPI 行为 | `document/CAPTURE.md` §2.1、`document/SETTINGS.md` §6.1、`plugins/screen_capture/README.md`、`plugins/settings_ui/README.md`、`README.md`/`README.en.md` 的「多显示器与 DPI」 |
+| CI / 跨平台构建 | `README.md` 的「构建」「平台」、`README.en.md` 对应段、`.github/workflows/cmake.yml` 注释、`document/README_SDK.md` 的编译说明 |
 | 目录结构、文件改名、新增模块 | `README.md`/`README.en.md` 的目录树、本文 §2 |
 | 构建目标 / 产物布局 / CMake 开关 / 最低版本 | `README.md` 的「构建」「产物布局」、`CMakeLists.txt` 注释、本文 §8 |
 | SDK 导出内容 | `document/README_SDK.md`（唯一源；`export_sdk` 会复制成 `sdk/README.md`） |

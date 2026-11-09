@@ -37,6 +37,7 @@ major 涨到 2。**从 2.0 起，新增一种 UI/宿主数据不再改 ABI**：�
 | 想加什么 | 做法 | 需要动 `abi_major` 吗 |
 | --- | --- | --- |
 | 一类新插件（同一种能力的新实现） | 新写一个插件工程，复用已有能力结构体 | 不需要 |
+| 纯订阅者 / 纯配置项插件（没有具名能力） | 有 metadata 声明即可按 `PluginType::Generic` 加载；订阅在 `create`、退订在 `destroy`（见 `document/SETTINGS.md` §3.3） | 不需要 |
 | 一种新能力 | 新 interface id + 新结构体 + 在 `query_interface` 里回答它 | 不需要 |
 | 给 UI/宿主提供一种新数据（菜单项、配置项、目标列表…） | 新 list id + JSON schema + `lists.add` 事件（见 `document/LISTS.md`），**不新增 ABI 结构体** | 不需要 |
 | 给已有能力加一个可选操作 | 该结构体**末尾**追加一个函数指针字段 | 不需要 |
@@ -52,7 +53,7 @@ major 涨到 2。**从 2.0 起，新增一种 UI/宿主数据不再改 ABI**：�
 | `shot.image_processor` | `ShotImageProcessorV1` | 1 | 处理一张 `ShotImage`，返回 0 = 成功 |
 | `shot.configurable` | `ShotConfigurableV1` | 1 | 声明并读写配置项（值一律字符串） |
 | `shot.lib_provider` | `ShotLibProviderV1` | 1 | 声明「我是运行库提供者」，报告库名与版本；宿主按 `PluginType::Lib` 登记 |
-| `shot.ui_provider` | `ShotUIProviderV1` | 1 | 创建并管理UI组件（窗口，托盘.....） |
+| `shot.ui_provider` | `ShotUIProviderV1` | 1 | 窗口/托盘由插件自己创建和管理，宿主只调 `init` / `deinit` / `post_to_plugin` |
 | `shot.screen_capture` | `ShotScreenCaptureV1` | 1 | 屏幕采集：`describe` 报虚拟桌面几何，`capture` 把像素写进宿主分配的 `ShotImage`（BGRA8），见 `document/CAPTURE.md` |
 | `shot.image_saver` | `ShotImageSaverV1` | 1 | 图像保存：把 `ShotImage` 落盘并写回最终路径；格式/质量/目录来自插件配置项，见 `document/CAPTURE.md` |
 | `shot.host.config` | `ShotHostConfigV1` | 1 | 宿主提供的配置读写接口 |

@@ -24,6 +24,8 @@ plugins/example_processor/
 ## 构建
 
 宿主仓库内：由根 `CMakeLists.txt` 自动 `add_subdirectory`，跟着整个工程一起构建。
+本插件依赖 OpenCV：configure 时加 `-DSHOT_ENABLE_OPENCV=OFF` 会把本工程整体跳过
+（CI / 没有 OpenCV 的环境用这个开关，默认 `ON`）。
 
 离线 SDK 独立构建：
 

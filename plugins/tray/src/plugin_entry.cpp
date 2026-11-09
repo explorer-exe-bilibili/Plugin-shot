@@ -138,9 +138,9 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 namespace tray {
 namespace {
 
-/** @brief 插件状态：一个托盘图标 + 两个开关配置（生命周期覆盖整个插件实例）。 */
+/** @brief 插件状态：一个托盘图标 + 一个配置项（生命周期覆盖整个插件实例）。 */
 struct TrayState {
-    TrayConfig config; /**< shot.configurable：notify / notify_on_error。 */
+    TrayConfig config; /**< shot.configurable：icon。 */
     TrayIcon icon;     /**< shot.ui_provider：托盘线程 + 图标。 */
 };
 
@@ -199,7 +199,7 @@ std::int32_t ui_post(void* self, const ShotEvent* ev) {
     }
 }
 
-// ---- shot.configurable：两个开关由 TrayConfig 拥有，ABI 层只做参数转发 ----
+// ---- shot.configurable：icon 由 TrayConfig 拥有，ABI 层只做参数转发 ----
 
 std::uint32_t config_count(void* self) {
     auto* state = static_cast<TrayState*>(state_of(self));
@@ -218,7 +218,17 @@ std::int32_t config_get(void* self, const char* key, char* buf, std::uint32_t bu
 
 std::int32_t config_set(void* self, const char* key, const char* value) {
     auto* state = static_cast<TrayState*>(state_of(self));
-    return (state == nullptr) ? -1 : state->config.setValue(key, value);
+    if (state == nullptr) {
+        return -1;
+    }
+    const std::int32_t result = state->config.setValue(key, value);
+    if (result == 0) {
+        // 配置可能在宿主 init 的 apply_stored 阶段就被推过来（那时还没有
+        // config.applied 事件），也可能来自设置页应用；两种路径都只需唤醒托盘
+        // 线程"重读配置"——要不要真换图标由托盘线程按路径是否变化自己判断。
+        state->icon.requestIconRefresh();
+    }
+    return result;
 }
 
 const ShotUIProviderV1 kUiOps = SHOT_OPS(ShotUIProviderV1,

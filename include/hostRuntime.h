@@ -22,8 +22,9 @@
 //   · tick：执行 pending 启停 → 清理被卸载插件的列表贡献 → 回灌重新启用的配置
 //           → 重建 config_list → 统一 flush lists.changed → 脏配置落盘。
 //
-//  线程模型：init / tick / 采集流水线只在宿主 main 线程调用（与事件分发同线程）；
-//  列表服务与注册表服务的函数可以在任意插件线程调用。
+//  线程模型：init / tick 只在宿主 main 线程调用（与事件分发同线程）；列表服务与
+//  注册表服务的函数可以在任意插件线程调用；采集流水线由 CapturePipeline 自己的工作
+//  线程执行（main 线程只负责把 capture.request 入队），执行期间持有本对象的生命周期锁。
 // ============================================================================
 
 namespace Host {
@@ -77,7 +78,7 @@ public:
     HostListCatalog& listCatalog();
     /** @brief 插件注册表服务对象。 */
     HostPluginRegistry& pluginRegistry();
-    /** @brief 采集流水线（主循环的 capture.request 与 --capture 共用同一个实例）。 */
+    /** @brief 采集流水线（主循环的 capture.request 与 --capture 共用同一个实例；内部工作线程）。 */
     CapturePipeline& capturePipeline();
 
 private:

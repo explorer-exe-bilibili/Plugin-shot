@@ -31,14 +31,15 @@ std::int32_t ScreenCapture::describe(ShotCaptureInfo* out) const {
     }
 
     ShotCaptureInfo geometry = {};
-    if (!GdiDesktopCapture::queryGeometry(geometry)) {
+    if (!GdiDesktopCapture::queryGeometry(geometry, log)) {
         // 远程会话断开 / 没有显示器时 GetSystemMetrics 会返回 0。这不是错误，而是
         // "当前没有可采集的屏幕"，契约给了独立的返回码 1。
         log.warn("screen_capture: 当前没有可采集的屏幕");
         return 1;
     }
-    // TODO: 区域 / 单显示器采集：v1 只描述整个虚拟桌面。等 ShotCaptureInfo 追加目标
-    // 矩形字段后再在这里换算成矩形，capture 按矩形 BitBlt / 裁剪，ABI 胶水不用动。
+    // 区域 / 单显示器采集：v1 只描述整个虚拟桌面（ShotCaptureInfo 没有目标矩形字段）。
+    // 取景不归插件管：宿主先抓整屏，再按 region 自己做裁剪，所以这里永远报整屏几何。
+    // 以后若 ABI 追加目标矩形字段，再在这里换算成矩形；capture 的 BitBlt 参数不用动。
 
     out->width = geometry.width;
     out->height = geometry.height;
@@ -56,7 +57,7 @@ std::int32_t ScreenCapture::capture(ShotImage* dst) const {
     }
 
     ShotCaptureInfo geometry = {};
-    if (!GdiDesktopCapture::queryGeometry(geometry)) {
+    if (!GdiDesktopCapture::queryGeometry(geometry, log)) {
         log.warn("screen_capture: 当前没有可采集的屏幕");
         return 1;
     }

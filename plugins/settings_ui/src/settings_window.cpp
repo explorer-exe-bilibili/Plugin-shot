@@ -137,6 +137,9 @@ bool SettingsWindow::Impl::createWindow() {
     // 键盘/关闭回调：GLFW 的窗口用户指针用来在回调里找回 Impl（static 回调没有 this）。
     glfwSetWindowUserPointer(window, this);
     glfwSetKeyCallback(window, &Impl::onKey);
+    // 跨屏拖动 / 程序的 setPos 让窗口换到另一块 DPI 不同的显示器时，GLFW 会回调这里；
+    // 回调只置脏标记，真正重建 ImGui 样式在下一帧（见 settings_graphics.cpp）。
+    glfwSetWindowContentScaleCallback(window, &Impl::onContentScale);
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);  // 有垂直同步就开；没有也只是多画几帧，不影响功能
     return true;
@@ -262,6 +265,9 @@ void SettingsWindow::Impl::showWindow() {
     }
     if (!visible) {
         restoreGeometry();
+        // 恢复几何可能把窗口搬到另一块显示器（150% → 100%）：按目标显示器的
+        // content scale 重建 ImGui 样式/字号，再显示，第一帧就是对的缩放。
+        refreshDpiScale();
         glfwShowWindow(window);
         glfwFocusWindow(window);
         visible = true;

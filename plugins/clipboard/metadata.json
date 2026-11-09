@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "clipboard.main",
+      "name": "Clipboard",
+      "version": "0.1.0",
+      "description": "截屏落盘后把图片写进系统剪贴板（CF_DIB），可选同时提供 CF_HDROP 文件列表",
+      "interfaces": ["shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}

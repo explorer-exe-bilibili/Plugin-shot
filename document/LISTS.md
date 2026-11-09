@@ -241,7 +241,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | list id | 类型 | 谁写 | 主要读方 | schema |
 | --- | --- | --- | --- | --- |
 | `config_list` | 宿主生成（只读投影） | 宿主从 `core` + 所有 `shot.configurable` 实例生成；插件写值走 `lists.update`、落盘走 `lists.commit` | 设置页 | §5.1 |
-| `tray_command_list` | 宿主预置 core 三项 + 插件贡献 | 宿主预置 core；插件 `lists.add` / `lists.remove` | 托盘 | §5.2 |
+| `tray_command_list` | 宿主预置 core 四项 + 插件贡献 | 宿主预置 core；插件 `lists.add` / `lists.remove` | 托盘 | §5.2 |
 
 ### 5.1 `config_list`
 
@@ -268,16 +268,24 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 
 ### 5.2 `tray_command_list`
 
-托盘菜单的唯一数据源。宿主在 `HostListCatalog` 构造时预置 core 三项（owner = `"core"`，
+托盘菜单的唯一数据源。宿主在 `HostListCatalog` 构造时预置 core 四项（owner = `"core"`，
 插件不能 remove）：
 
 ```json
 [
   {"id":"capture.request","label":"截屏","event":"capture.request","data":"","order":10,"separator":false},
+  {"id":"region.capture","label":"区域截屏","event":"capture.request","data":{"mode":"region"},"order":15,"separator":false},
   {"id":"settings.open","label":"打开设置","event":"settings.open","data":"","order":20,"separator":false},
   {"id":"app.quit","label":"退出","event":"app.quit","data":"","order":100,"separator":false}
 ]
 ```
+
+`region.capture` 的 `data` 是 **JSON 对象** `{"mode":"region"}`（不是字符串）：托盘把
+`data` 原样透传，点击后所有订阅者收到的事件负载就是这段 JSON 文本。`capture.request`
+的 `mode=region` 语义见 `document/CAPTURE.md` §3.1——`plugins/region_selector` 收到
+“带 mode、不带 region”的请求会弹框选覆盖层，用户确认后再发一条**带 `region`** 的
+`capture.request`。这条触发请求会被流水线**忽略**（不采集、不落盘、不发 `capture.*`），
+不会再额外存一张全屏图；如果 region_selector 没加载/被禁用，只是没人弹框选。
 
 插件贡献的条目 schema（由托盘解释，宿主只用于 upsert 与排序）：
 

@@ -11,12 +11,23 @@ namespace Plugin {
  * @brief 插件的能力分类；宿主按它给实例建索引。
  */
 enum class PluginType{
-    None,            /**< 未分类/未知。 */
+    None,            /**< 未分类/未知（仅作包装类的默认值，不会登记到索引）。 */
     Lib,             /**< 运行库提供者（shot.lib_provider）。 */
     UIProvider,      /**< 自带窗口/托盘的 UI 提供者（shot.ui_provider）。 */
     ImageProcessor,  /**< 图像处理器（shot.image_processor）。 */
     ScreenCapture,   /**< 屏幕采集（shot.screen_capture）：只写宿主分配的缓冲。 */
-    ImageSaver       /**< 图像保存（shot.image_saver）：只负责落盘。 */
+    ImageSaver,      /**< 图像保存（shot.image_saver）：只负责落盘。 */
+    /**
+     * @brief 无具名能力的通用插件：只声明配置项、或在 create 里订阅事件参与协作。
+     *
+     * 典型例子是 clipboard.main（只有 shot.configurable + capture.done 订阅）——
+     * 它没有宿主可以直接调用的能力表，但实例、配置项与订阅都是有效的。宿主用
+     * PluginBase 基类包装它（不会索引到任何能力向量里），注册表照常列 LOADED、
+     * 列表目录照常用 query_interface(shot.configurable) 枚举它的配置项。
+     *
+     * @note 这类插件没有 init/deinit：事件订阅必须在 create 里做、在 destroy 里退订。
+     */
+    Generic
 };
 /**
  * @brief 宿主侧插件实例基类：持有模块表、插件实例指针与 DLL 句柄。

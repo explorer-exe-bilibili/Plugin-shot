@@ -1,12 +1,14 @@
 # ============================================================================
 #  tray —— Windows 托盘图标插件（"shot.ui_provider"）
 #
-#  无主窗口架构下，托盘是"没有任何窗口时也能触发动作"的入口：左键执行默认命令，
-#  右键菜单完全由宿主列表服务的 tray_command_list 数据驱动（core 预置三项 + 插件
-#  lists.add 贡献的命令）。它自己开线程、自己建隐藏的消息窗口、自己调
-#  Shell_NotifyIconW；宿主只调 init / deinit / post_to_plugin，既不接触 HWND，
-#  也不知道插件有几个线程。所有跨插件通信只走事件总线（点击条目发布条目声明的
-#  event，气泡订阅 capture.done / capture.failed），托盘不直接调用其它插件。
+#  无主窗口架构下，托盘是"没有任何窗口时也能触发动作"的入口：图标默认用宿主应用
+#  图标（可用 icon 配置换成 .ico），左键执行默认命令，右键菜单完全由宿主列表服务的
+#  tray_command_list 数据驱动（core 预置三项 + 插件 lists.add 贡献的命令）。它自己
+#  开线程、自己建隐藏的消息窗口、自己调 Shell_NotifyIconW；宿主只调 init / deinit /
+#  post_to_plugin，既不接触 HWND，也不知道插件有几个线程。所有跨插件通信只走事件
+#  总线（点击条目发布条目声明的 event；只订阅 lists.changed / config.applied），
+#  托盘不直接调用其它插件。成功/失败提示气泡全部由独立的消息提示插件
+#  plugins/notify 负责，托盘只管图标 + 菜单。
 #
 #  构建方式一（宿主仓库内）：
 #    根 CMakeLists 用 file(GLOB plugins/*/CMakeLists.txt) 自动纳入本工程，
@@ -49,8 +51,7 @@ if(NOT COMMAND shot_add_plugin)
     include(ShotPlugin)
 endif()
 
-# nlohmann-json 用来解析 tray_command_list（菜单数据）与 capture.done /
-# capture.failed 的 JSON 负载（header-only，根 vcpkg 清单里已有，不会给插件目录
+# nlohmann-json 用来解析 tray_command_list（菜单数据）与 lists.changed 的 JSON 负载（header-only，根 vcpkg 清单里已有，不会给插件目录
 # 带进额外运行库）。
 find_package(nlohmann_json CONFIG REQUIRED)
 
@@ -61,8 +62,9 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  src/tray_config.cpp
                  src/tray_icon.cpp
                  src/tray_icon_window.cpp
+                 src/tray_icon_icon.cpp
                  src/tray_icon_menu.cpp
-                 src/tray_icon_notify.cpp
+                 src/tray_icon_events.cpp
                  src/tray_menu.cpp
     INCLUDE_DIRS include
     LINK_LIBRARIES
