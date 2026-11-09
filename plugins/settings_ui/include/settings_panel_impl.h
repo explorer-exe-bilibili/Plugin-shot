@@ -91,7 +91,7 @@ struct ConfigDesc {
     std::string key;            /**< 配置 id（config_list 的 "id"）；存盘键是 <owner>/<id>。 */
     std::string label;          /**< 界面显示名；缺失时用 id 兜底。 */
     std::string defaultValue;   /**< 默认值（字符串形式），没有默认值时为空串。 */
-    std::string options;        /**< ENUM 候选，形如 "luma|average"；其它类型为空串。 */
+    std::string options;        /**< ENUM 候选（"luma|average"）；PATH 用 "directory"/"file" 选对话框。 */
     double min = 0.0;           /**< INT / FLOAT 下界；其它类型忽略。 */
     double max = 0.0;           /**< INT / FLOAT 上界；其它类型忽略。 */
     double step = 0.0;          /**< INT / FLOAT 步长；其它类型忽略。 */
@@ -143,6 +143,19 @@ struct PendingConfigChange {
     std::string owner;  /**< 提供者 id（core 或插件 id）。 */
     std::string key;    /**< 配置 id。 */
     std::string value;  /**< 提交的值；这是基线应该变成的值，不要用当前编辑缓冲代替。 */
+};
+
+/**
+ * @brief PATH 配置项的"浏览…"该弹哪种对话框。
+ *
+ * 描述符里没有独立的"文件/目录"字段（ABI 2.0 不再为数据形状加结构体），所以约定用
+ * `ShotConfigDesc::options` 表达：`"directory"` = 选目录，`"file"` = 选文件，其它/空
+ * = 按当前值推断（已存在目录就选目录，否则选文件）。见 document/SETTINGS.md 的 kind 表。
+ */
+enum class PathPicker {
+    Auto,       /**< 描述符没声明：按当前值是否为已存在目录推断。 */
+    File,       /**< 描述符声明 "file"：只弹文件对话框。 */
+    Directory,  /**< 描述符声明 "directory"（或 dir/folder）：只弹目录对话框。 */
 };
 
 /**
@@ -269,6 +282,16 @@ struct SettingsPanel::Impl {
     static std::vector<std::string> splitOptions(std::string_view options);
     static std::string defaultValueFor(const ConfigDesc& desc);
     static void syncColorHex(ConfigItem& item);
+
+    /**
+     * @brief 判断一个 PATH 配置项的"浏览…"该弹文件还是目录对话框。
+     *
+     * 先看描述符的 options 约定（"directory"/"dir"/"folder" 或 "file"）；没声明时返回
+     * PathPicker::Auto，由调用方按当前值是否为已存在目录推断。
+     * @param[in] desc 配置项声明。
+     * @return 对话框类型；ENUM 的候选列表同样放在 options 里，但只有 PATH 会调用本函数。
+     */
+    static PathPicker pathPickerFor(const ConfigDesc& desc);
 };
 
 }  // namespace settings_ui

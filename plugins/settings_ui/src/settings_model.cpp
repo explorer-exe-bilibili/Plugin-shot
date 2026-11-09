@@ -253,6 +253,24 @@ std::string SettingsPanel::Impl::defaultValueFor(const ConfigDesc& desc) {
     }
 }
 
+PathPicker SettingsPanel::Impl::pathPickerFor(const ConfigDesc& desc) {
+    // options 对 ENUM 是候选列表（"png|jpeg"），对 PATH 借用来声明对话框类型：
+    // ABI 里没有独立的"文件/目录"字段，而为它加一个可选字段不值得（数据形状不进 ABI）。
+    // 这里只做大小写无关的关键词匹配，认不出就当没声明，交给调用方按当前值推断。
+    std::string hint;
+    hint.reserve(desc.options.size());
+    for (const char c : desc.options) {
+        hint.push_back(static_cast<char>((c >= 'A' && c <= 'Z') ? (c - 'A' + 'a') : c));
+    }
+    if (hint == "directory" || hint == "dir" || hint == "folder") {
+        return PathPicker::Directory;
+    }
+    if (hint == "file") {
+        return PathPicker::File;
+    }
+    return PathPicker::Auto;
+}
+
 /**
  * @brief 把 COLOR 项当前值同步进十六进制编辑缓冲；其它 kind 是空操作。
  *

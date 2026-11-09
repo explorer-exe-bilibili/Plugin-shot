@@ -41,7 +41,9 @@ const ShotConfigDesc kConfig[] = {
         .key           = kKeyDirectory,
         .label         = "保存目录",
         .default_value = kDefaultDirectory,
-        .options       = nullptr,
+        // PATH 借 options 声明对话框类型（document/SETTINGS.md 的 kind 表）：
+        // 保存目录必须选目录，否则默认值为空时设置页会弹成"选文件"。
+        .options       = "directory",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,

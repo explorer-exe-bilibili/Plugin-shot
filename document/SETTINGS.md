@@ -248,9 +248,13 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
 | ENUM | Combo（`options` 按 `\|` 切） | 选项字符串 |
 | STRING | InputText | 原样 |
 | COLOR | ColorEdit4 + hex 输入 | `"#RRGGBB"` 或 `"R,G,B,A"`（统一成 `#RRGGBBAA` 存盘） |
-| PATH | InputText + "浏览…" | 原样 |
+| PATH | InputText + "浏览…"（对话框类型见下方约定） | 原样 |
 | 未知 kind | 跳过并显示灰色"不支持的配置类型" | —— |
 
+- **PATH 的对话框类型**：描述符的 `options` 用来声明该 PATH 指文件还是目录——
+  `"directory"`（也接受 `"dir"` / `"folder"`）弹"选择文件夹"，`"file"` 弹"打开文件"，
+  空或其它值则按当前值推断（当前值是已存在目录时选目录，否则选文件）。保存目录这类配置项
+  必须写 `"directory"`，否则默认值为空时会弹成选文件。
 - **每项**：label + 悬停 `tooltip` + "恢复默认"小按钮（写 `default_value` 到本地副本）。
 - **状态**：脏标记（没有脏项时"应用"置灰）；`lists.updated` 里 `ok=false` 的项标红
   "写入失败：reason"并保留脏标记；插件已被卸载 → 该节灰掉；窗口位置/大小存宿主配置的

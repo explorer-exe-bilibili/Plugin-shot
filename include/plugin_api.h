@@ -386,7 +386,7 @@ typedef struct ShotConfigDesc {
     const char* key;             /**< "keep_alpha"：读写与存盘的唯一标识，发布后不能改名 */
     const char* label;           /**< 界面显示名；不能为 NULL */
     const char* default_value;   /**< 默认值，一律字符串表达："1" / "128" / "low"；可为 NULL（无默认值） */
-    const char* options;         /**< ENUM 用："low|mid|high"；其它类型为 NULL */
+    const char* options;         /**< ENUM 用 "low|mid|high"；PATH 用 "directory"/"file" 指定对话框类型 */
     double      min;             /**< INT / FLOAT 用；取值范围下界 */
     double      max;             /**< INT / FLOAT 用；取值范围上界 */
     double      step;            /**< INT / FLOAT 用；界面步长 */

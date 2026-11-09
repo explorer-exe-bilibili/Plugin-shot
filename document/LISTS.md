@@ -257,7 +257,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | `kind` | number | `SHOT_CONFIG_KIND_*`（1=Bool / 2=Int / 3=Float / 4=String / 5=Enum / 6=Color / 7=Path） |
 | `value` | string | 当前值（一律字符串；读不出来时给空串并记 WARN） |
 | `default` | string | 默认值；没有时为 `""` |
-| `options` | string | ENUM 候选，`"low\|mid\|high"`；其它 kind 为 `""` |
+| `options` | string | ENUM 候选，`"low\|mid\|high"`；PATH 用 `"directory"` / `"file"` 声明对话框类型（见 `document/SETTINGS.md`）；其它 kind 为 `""` |
 | `min` / `max` / `step` | number | INT / FLOAT 的取值范围与步长；其它 kind 忽略 |
 | `tooltip` | string | 悬停提示；没有时为 `""` |
 

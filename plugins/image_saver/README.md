@@ -75,7 +75,7 @@ cmake --build build
 
 | key | kind | 默认值 | 取值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `directory` | PATH | 空 | 任意目录 | 空 = 系统图片目录；相对路径相对宿主工作目录 |
+| `directory` | PATH（`options="directory"`） | 空 | 任意目录 | 空 = 系统图片目录；相对路径相对宿主工作目录；设置页「浏览…」弹的是**选目录**对话框 |
 | `format` | ENUM | `png` | `png` / `jpeg` | PNG 无损（保留 alpha）；JPEG 有损、无 alpha |
 | `quality` | INT | `90` | `1`–`100`（step 1） | 只对 JPEG 生效；越界值夹到区间内 |
 | `filename` | STRING | `shot_%Y%m%d_%H%M%S` | 任意模板 | 不含扩展名；支持 `%Y %m %d %H %M %S` 与 `%%` |

@@ -290,11 +290,25 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item) {
             if (ImGui::Button("浏览…")) {
                 std::string chosen = item.value;
                 std::string dialogError;
-                // 描述符没有声明 PATH 是文件还是目录：当前值指向已存在目录时按目录选，
-                // 否则按文件选（与旧版"只选文件"的行为一致，目录是额外支持）。
-                std::error_code pathError;
-                const bool pickFolder =
-                    !chosen.empty() && std::filesystem::is_directory(chosen, pathError);
+                // 描述符可以声明该 PATH 是文件还是目录（options = "directory"/"file"）；
+                // 没声明时才退回"当前值是不是已存在目录"的推断。保存目录这类项必须选目录，
+                // 否则默认值为空时会弹成文件对话框（用户踩过）。
+                bool pickFolder = false;
+                switch (pathPickerFor(item.desc)) {
+                    case PathPicker::Directory:
+                        pickFolder = true;
+                        break;
+                    case PathPicker::File:
+                        pickFolder = false;
+                        break;
+                    case PathPicker::Auto:
+                    default: {
+                        std::error_code pathError;
+                        pickFolder = !chosen.empty() &&
+                                     std::filesystem::is_directory(chosen, pathError);
+                        break;
+                    }
+                }
                 if (pickFolder ? pickExistingFolder(chosen, dialogError)
                                : pickExistingFile(chosen, dialogError)) {
                     item.value = std::move(chosen);
