@@ -60,6 +60,11 @@ constexpr char kWindowTitle[] = "Plugin-shot 区域选择";
 constexpr int kInitialWindowWidth = 320;
 constexpr int kInitialWindowHeight = 180;
 
+// "隐藏"覆盖层用的屏幕外坐标：窗口不 hide/show（那会触发 DWM 过渡动画而闪屏），
+// 只把它挪到所有显示器之外；框选时再挪回来。Windows 允许窗口位于屏幕外。
+constexpr int kParkedX = -32000;
+constexpr int kParkedY = -32000;
+
 // GLFW 的错误回调没有 user 参数，只能用一个文件内全局记录"当前实例的宿主服务"。
 // 单窗口单实例所以够用；由 UI 线程在 glfwInit 之前设置、在窗口销毁之后清空。
 // 这两个函数与任何类无关、只在本 TU 用，所以放匿名命名空间（STYLE.md §6.7）。
@@ -208,6 +213,7 @@ bool RegionWindow::Impl::createWindow() {
     }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);  // 有垂直同步就开；覆盖层每帧都是一次整屏混合，没必要超频绘制
+    configureOverlayWindowNative();  // 关 DWM 显隐过渡动画（否则一出现/一关闭会闪一下）
     return true;
 }
 
@@ -383,51 +389,51 @@ bool RegionWindow::Impl::startSelection() {
     }
     monitorRect = monitor;
 
-    // 无边框窗口搬到目标显示器并铺满整块屏。位置/尺寸都是物理像素（PMv2 实测），
-    // 150% 屏幕上就是 2560x1600，不是 1707x1067。整块显示器（不是工作区）——
-    // 任务栏区域也在可框选范围内，与整屏截图的内容对齐。
-    //
-    // 刻意不用 glfwSetWindowMonitor(window, nullptr, ...)：它走的是"切成全屏/窗口模式"
-    // 的代码路径，Windows 上会触发窗口样式重建 + DWM 重新合成，用户看到的是类似切换
-    // 全屏（分辨率变化）的黑屏闪烁。这里窗口本来就是无边框置顶窗口，隐藏状态下直接
-    // setSize + setPos 即可，显示时不会再有模式切换。
+    // ---- 顺序有讲究：全程不 hide/show，避免 DWM 的显隐过渡动画（用户看到"一闪"）----
+    // 1) 先把窗口挪到屏幕外（如果已经 show 过；第一次还隐藏着就什么都不用做）。
+    parkOverlay();
+
+    // 2) 调整到目标显示器尺寸：位置/尺寸都是物理像素（PMv2），150% 屏就是 2560x1600。
+    //    窗口此刻在屏幕外，不可见，调整不会闪；也绝不出现在下面的快照里。
     glfwSetWindowSize(window, monitor.width, monitor.height);
-    glfwSetWindowPos(window, monitor.x, monitor.y);
     // content scale 只用来放大字号：坐标已经是物理像素，不能再乘它。
     applyMonitorScale(contentScale);
 
-    // 记录初始光标位置：覆盖层显示的第一帧就能画出十字线。
-    int windowWidth = 0;
-    int windowHeight = 0;
-    glfwGetWindowSize(window, &windowWidth, &windowHeight);
-    double cursorX = 0.0;
-    double cursorY = 0.0;
-    glfwGetCursorPos(window, &cursorX, &cursorY);
-    drag = DragState{};
-    drag.cursorX = std::clamp(static_cast<int>(cursorX), 0, std::max(0, windowWidth - 1));
-    drag.cursorY = std::clamp(static_cast<int>(cursorY), 0, std::max(0, windowHeight - 1));
-    drag.startX = drag.cursorX;
-    drag.startY = drag.cursorY;
-    // 显示覆盖层时左键可能还按着（从托盘菜单触发）：先等松开，别把菜单点击当确认。
-    drag.waitRelease = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-
-    if (crosshairCursor != nullptr) {
-        glfwSetCursor(window, crosshairCursor);
-    }
-    // 截一张当前桌面的快照当覆盖层背景（窗口不透明，靠这张纹理"假装透明"）。
-    // 失败只 warn：退化成纯遮罩背景，框选功能不受影响。
+    // 3) 截一张当前桌面的快照当覆盖层背景（窗口不透明，靠这张纹理"假装透明"）。
+    //    失败只 warn：退化成纯遮罩背景，框选功能不受影响。
     if (!captureBackground()) {
         shot::Logger(host).warn("region_selector：没有桌面快照背景，覆盖层只显示遮罩");
     }
 
-    // 先隐藏状态下渲染一帧再显示：否则 glfwShowWindow 后、第一帧 swap 之前，DWM 会把
-    // 窗口的初始（未渲染）内容合上去，用户看到一瞬间的黑/花屏。渲染一帧后缓冲区里
-    // 已经是"桌面快照 + 遮罩 + 十字线"，显示时第一次合成就是对的。
+    // 4) 初始光标位置：用 Win32 GetCursorPos（屏幕物理像素）减去显示器原点。
+    //    窗口在屏幕外时 glfwGetCursorPos 给的是相对窗口的坐标，不可用，所以走平台层。
+    drag = DragState{};
+    int cursorScreenX = 0;
+    int cursorScreenY = 0;
+    if (cursorScreenPosition(cursorScreenX, cursorScreenY)) {
+        drag.cursorX = std::clamp(cursorScreenX - monitor.x, 0, std::max(0, monitor.width - 1));
+        drag.cursorY = std::clamp(cursorScreenY - monitor.y, 0, std::max(0, monitor.height - 1));
+    }
+    drag.startX = drag.cursorX;
+    drag.startY = drag.cursorY;
+    // 显示覆盖层时左键可能还按着（从托盘菜单触发）：先等松开，别把菜单点击当确认。
+    drag.waitRelease = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    if (crosshairCursor != nullptr) {
+        glfwSetCursor(window, crosshairCursor);
+    }
+
+    // 5) 在屏幕外先把这一帧渲染好（快照 + 遮罩 + 十字线），再挪到目标显示器：
+    //    挪过去时内容已经正确，不会出现"先黑/先旧内容再刷新"的一帧。
     for (int attempt = 0; attempt < 2; ++attempt) {
         renderFrame();
         glfwPollEvents();
     }
-    glfwShowWindow(window);
+    glfwSetWindowPos(window, monitor.x, monitor.y);
+    glfwSetWindowAttrib(window, GLFW_FLOATING, GLFW_TRUE);
+    if (!windowShown) {
+        glfwShowWindow(window);  // 只在第一次框选时 show 一次
+        windowShown = true;
+    }
     glfwFocusWindow(window);
     overlayVisible = true;
 
@@ -452,11 +458,18 @@ void RegionWindow::Impl::cancelSelection() {
 }
 
 void RegionWindow::Impl::hideOverlay() {
-    if (window != nullptr) {
-        glfwHideWindow(window);
-    }
+    parkOverlay();
     overlayVisible = false;
     drag = DragState{};
+}
+
+void RegionWindow::Impl::parkOverlay() {
+    if (window == nullptr) {
+        return;
+    }
+    // 取消置顶 + 挪到屏幕外：等价于"隐藏"，但不触发 DWM 的 show/hide 过渡。
+    glfwSetWindowAttrib(window, GLFW_FLOATING, GLFW_FALSE);
+    glfwSetWindowPos(window, kParkedX, kParkedY);
 }
 
 void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth, int localHeight) {

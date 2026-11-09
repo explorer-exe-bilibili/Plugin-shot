@@ -77,4 +77,5 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  glfw
                  opengl32
                  user32
+                 dwmapi
 )

@@ -20,7 +20,13 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#include <GLFW/glfw3.h>  // 跨平台窗口库：显示器位置、视频模式、内容缩放
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3.h>          // 跨平台窗口库：显示器位置、视频模式、内容缩放
+#include <GLFW/glfw3native.h>    // 只为拿 HWND 去关 DWM 过渡动画
+
+#include <dwmapi.h>
+
+#include "plugin_api.h"
 
 #include "region_window_impl.h"
 #include "shot_plugin_helpers.h"
@@ -128,5 +134,34 @@ void RegionWindow::Impl::logMonitorMetrics() const {
         log.info(line);
     }
 }
+
+bool RegionWindow::Impl::cursorScreenPosition(int& x, int& y) const {
+    POINT point{};
+    if (GetCursorPos(&point) == FALSE) {
+        return false;
+    }
+    x = point.x;
+    y = point.y;
+    return true;
+}
+
+
+void RegionWindow::Impl::configureOverlayWindowNative() {
+    if (window == nullptr) {
+        return;
+    }
+    HWND hwnd = glfwGetWin32Window(window);
+    if (hwnd == nullptr) {
+        return;
+    }
+    // 关掉 DWM 对这个窗口的"显示/隐藏过渡动画"：Windows 10/11 会给新出现的窗口做
+    // 淡入/淡出，全屏覆盖层上表现为"一出现/一关闭就闪一下"。截图类覆盖层不需要动画。
+    // DWMWA_TRANSITIONS_FORCEDISABLED = 3（Windows 8 起；旧系统调用失败不影响功能）。
+    constexpr DWORD kTransitionsForcedDisabled = 3;
+    BOOL disabled = TRUE;
+    DwmSetWindowAttribute(hwnd, kTransitionsForcedDisabled, &disabled, sizeof(disabled));
+    // 注意不要加 WS_EX_NOACTIVATE：覆盖层要靠键盘焦点才能收到 Esc。
+}
+
 
 }  // namespace region_selector
