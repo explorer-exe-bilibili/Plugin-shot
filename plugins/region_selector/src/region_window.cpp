@@ -60,6 +60,13 @@ constexpr char kWindowTitle[] = "Plugin-shot 区域选择";
 constexpr int kInitialWindowWidth = 320;
 constexpr int kInitialWindowHeight = 180;
 
+// 覆盖层比显示器多出的像素（宽高各 +1）。**不能省，也不能改成 0**（真机踩过）：
+// 当窗口矩形与显示器矩形**完全相等**时，Windows 会把它当成"全屏窗口"，走 fullscreen
+// optimization（direct flip）路径——表现为每次显示/隐藏闪一下，进程退出后甚至可能
+// 留下整块黑色"幽灵"残影（要重启 dwm 才恢复）。比屏幕大 1 像素就不再满足全屏判定，
+// 走普通窗口合成，显示/隐藏都平滑，也不会有残影。
+constexpr int kOverlayOversize = 1;
+
 // GLFW 的错误回调没有 user 参数，只能用一个文件内全局记录"当前实例的宿主服务"。
 // 单窗口单实例所以够用；由 UI 线程在 glfwInit 之前设置、在窗口销毁之后清空。
 // 这两个函数与任何类无关、只在本 TU 用，所以放匿名命名空间（STYLE.md §6.7）。
@@ -391,7 +398,9 @@ bool RegionWindow::Impl::startSelection() {
     // 的代码路径，Windows 上会触发窗口样式重建 + DWM 重新合成，用户看到的是类似切换
     // 全屏（分辨率变化）的黑屏闪烁。这里窗口本来就是无边框置顶窗口，隐藏状态下直接
     // setSize + setPos 即可，显示时不会再有模式切换。
-    glfwSetWindowSize(window, monitor.width, monitor.height);
+    // 宽高各 +kOverlayOversize（1px）：避开 Windows 的"全屏窗口"判定（见上面常量注释）。
+    glfwSetWindowSize(window, monitor.width + kOverlayOversize,
+                      monitor.height + kOverlayOversize);
     glfwSetWindowPos(window, monitor.x, monitor.y);
     // content scale 只用来放大字号：坐标已经是物理像素，不能再乘它。
     applyMonitorScale(contentScale);
@@ -428,7 +437,8 @@ bool RegionWindow::Impl::startSelection() {
         glfwPollEvents();
     }
     glfwShowWindow(window);
-    glfwFocusWindow(window);
+    // 不再额外调 glfwFocusWindow：窗口 hint 里 GLFW_FOCUS_ON_SHOW 已经让它拿到焦点，
+    // 再显式聚焦一次会多触发一轮焦点切换（真机上表现为又闪一下）。
     overlayVisible = true;
 
     // 把覆盖层几何与换算基准写进日志：落盘区域不对时第一眼看这几行。

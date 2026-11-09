@@ -156,7 +156,11 @@ void RegionWindow::Impl::drawOverlay() const {
     // 0. 背景：触发瞬间的桌面快照。窗口是不透明的，这张图就是用户看到的"桌面"，
     //    遮罩与挖空都画在它上面（等价于透明覆盖层，但不依赖 DWM 合成）。
     if (backgroundTexture != 0) {
-        draw->AddImage(static_cast<ImTextureID>(backgroundTexture), origin, bottomRight);
+        // 按纹理原始尺寸画（= 显示器尺寸），不要拉满整个窗口：窗口比显示器大 1px，
+        // 拉满会把快照整体拉伸 1px。多出来的那条边在屏幕外，看不见。
+        const ImVec2 backgroundMax(origin.x + static_cast<float>(backgroundWidth),
+                                   origin.y + static_cast<float>(backgroundHeight));
+        draw->AddImage(static_cast<ImTextureID>(backgroundTexture), origin, backgroundMax);
     }
 
     // 1. 暗色遮罩：拖拽中只压暗"选区之外"的四块，选区本身保持完全透明——
