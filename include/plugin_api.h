@@ -36,8 +36,11 @@
  *
  * @warning 递增之前先确认真的无法用"末尾追加字段 + 新结构体"解决；
  *          改动后同步更新文件末尾的布局锚点与 document/ABI_POLICY.md。
+ * @note 2.0 删除了宿主服务 `shot.host.plugin_config`（配置目录），改为通用列表服务
+ *       `shot.host.plugin_lists`：列表数据是 JSON，注册/写值/提交全部走 `lists.*`
+ *       事件（见 document/LISTS.md）。删除已发布的服务属于破坏性变更，所以 major 涨到 2。
  */
-#define SHOT_ABI_MAJOR 1
+#define SHOT_ABI_MAJOR 2
 
 /**
  * @brief 契约次版本号：只在末尾追加能力时递增。
@@ -47,10 +50,12 @@
  *
  * @note 追加字段、新增 interface id 时递增；追加出来的字段老宿主永远不会调用，
  *       因此"必须执行"的语义不能靠追加字段表达。
- * @note 1.3 新增两个宿主服务：`shot.host.plugin_config` 与 `shot.host.plugin_registry`
- *       （配置目录 + 插件生命周期管理，见 document/SETTINGS.md）。
+ * @note 2.0 起，"给 UI/宿主提供一批数据"不再对应新的能力或服务：定义一个新 list id
+ *       + JSON schema，由插件在运行期用 `lists.add` 注册、宿主用 `lists.changed`
+ *       通知、写值/提交用 `lists.update` / `lists.commit`（见 document/LISTS.md）。
+ *       因此此后新增列表类型不需要再改 ABI。
  */
-#define SHOT_ABI_MINOR 3
+#define SHOT_ABI_MINOR 0
 
 // ============================================================================
 //  元数据尾部标记
@@ -109,8 +114,27 @@
 
 /**
  * @brief UI 提供者能力：窗口/托盘由插件自己创建和管理，对应结构体 ShotUIProviderV1。
+ *
+ * 窗口和托盘都用这一种能力，不区分：宿主只调 init / deinit / post_to_plugin，
+ * 插件内部是窗口还是托盘图标、有没有额外线程，宿主完全不知道。
  */
 #define SHOT_IFACE_UI_PROVIDER      "shot.ui_provider"
+
+/**
+ * @brief 屏幕采集能力：插件把屏幕变成一张 ShotImage，对应结构体 ShotScreenCaptureV1。
+ *
+ * 只负责"抓"，不负责处理或保存：宿主按 capture.request 事件把采集、处理、保存
+ * 串成流水线（见 document/CAPTURE.md）。版本 1 只支持整个虚拟桌面。
+ */
+#define SHOT_IFACE_SCREEN_CAPTURE   "shot.screen_capture"
+
+/**
+ * @brief 图像保存能力：插件把一张 ShotImage 落盘，对应结构体 ShotImageSaverV1。
+ *
+ * 格式、质量、目录、文件名模板都是插件自己的 shot.configurable 配置项；宿主只
+ * 提供图像和一次性的覆盖参数，不硬编码任何保存策略。
+ */
+#define SHOT_IFACE_IMAGE_SAVER      "shot.image_saver"
 
 /**
  * @brief 宿主配置服务：向宿主 query_interface 索取 ShotHostConfigV1。
@@ -136,13 +160,14 @@
 #define SHOT_HOST_IFACE_EVENT_BUS   "shot.host.event_bus"
 
 /**
- * @brief 宿主配置目录：向宿主 query_interface 索取 ShotHostPluginConfigV1。
+ * @brief 宿主列表服务：向宿主 query_interface 索取 ShotHostPluginListsV1。
  *
- * 把"所有实现了 shot.configurable 的插件 + 宿主自己"合成一张可枚举的配置目录，
- * 设置页据此生成表单；设置页不需要逐个去问插件。version 传 1；
- * 实现方是宿主（见 document/SETTINGS.md）。
+ * 通用"插件贡献的数据列表"：宿主把 core 与各插件的贡献按 list id 聚成 JSON 快照
+ * （`config_list`、`tray_command_list` 等，见 document/LISTS.md）。列表的注册、
+ * 写值与提交全部通过 `lists.*` 事件完成；本服务只负责枚举与读取快照。
+ * version 传 1；实现方是宿主。
  */
-#define SHOT_HOST_IFACE_PLUGIN_CONFIG   "shot.host.plugin_config"
+#define SHOT_HOST_IFACE_PLUGIN_LISTS    "shot.host.plugin_lists"
 
 /**
  * @brief 宿主插件注册表：向宿主 query_interface 索取 ShotHostPluginRegistryV1。
@@ -152,7 +177,6 @@
  */
 #define SHOT_HOST_IFACE_PLUGIN_REGISTRY "shot.host.plugin_registry"
 
-// TODO: 新增 Window / Tray 能力：按本段规则加 interface id + 结构体即可，已有契约不用动。
 // TODO: 新增录屏能力：同上，新增 interface id + 结构体，契约本身不用改。
 
 // ============================================================================
@@ -457,6 +481,108 @@ typedef struct ShotUIProviderV1 {
 } ShotUIProviderV1;
 
 // ============================================================================
+//  能力：屏幕采集  "shot.screen_capture"
+// ============================================================================
+
+/**
+ * @brief 采集目标的几何与像素格式：宿主据此分配目标缓冲。
+ *
+ * v1 只描述"整个虚拟桌面"：多显示器时 width/height 是合成后的像素总尺寸，
+ * origin_x/origin_y 是左上角在系统坐标系里的位置（主屏左上角不一定是 (0,0)）。
+ * 区域采集、单显示器采集留给后续版本（新增字段或新结构体，老字段不动）。
+ *
+ * @note 字段只在 describe 成功后有效；宿主不应对失败时的内容做任何假设。
+ */
+typedef struct ShotCaptureInfo {
+    uint32_t struct_size;   /**< = sizeof(ShotCaptureInfo)；构造方填，读取方先比对 */
+    int32_t  width;         /**< 采集结果像素宽；有效时 >= 1 */
+    int32_t  height;        /**< 采集结果像素高；有效时 >= 1 */
+    int32_t  origin_x;      /**< 内容左上角在系统坐标里的 x；多显示器时可能为负 */
+    int32_t  origin_y;      /**< 内容左上角在系统坐标里的 y；多显示器时可能为负 */
+    uint32_t pixel_format;  /**< 结果的像素格式，目前必须是 SHOT_PIXEL_FORMAT_BGRA8 */
+} ShotCaptureInfo;
+
+/**
+ * @brief 屏幕采集能力函数表，对应 SHOT_IFACE_SCREEN_CAPTURE、版本 1。
+ *
+ * 两段式：宿主先 describe 拿到尺寸，自己分配一块 BGRA8 缓冲并填好 ShotImage，
+ * 再调 capture 让插件往里写像素。插件因此**从不分配图像内存**，也就没有
+ * "谁分配谁释放"的跨 DLL 所有权问题；capture 返回后插件不得保存 dst 或其
+ * data 指针——下一张图宿主可能换一块完全不同的内存。
+ *
+ * 线程模型：两个函数都只在宿主调用线程上执行，实现内部若用系统 API 需要自己
+ * 保证该线程可用（Windows 上 GDI 抓屏不要求 UI 线程）。
+ *
+ * 返回码：0 = 成功；1 = 当前没有可采集的屏幕（无显示器/远程会话断开）；
+ * 2 = 参数不合法（out/dst 为空、pixel_format 不认识、缓冲尺寸不足）；
+ * 3 = 系统调用失败（实现应已写日志）。非 0 时宿主不会使用 dst 的内容。
+ *
+ * @note 两个函数指针都必须实现；缺一个宿主按"不支持屏幕采集"处理，跳过该插件。
+ */
+typedef struct ShotScreenCaptureV1 {
+    uint32_t struct_size;   /**< = sizeof(ShotScreenCaptureV1)；构造方填 */
+    uint32_t version;       /**< 函数表版本，当前为 1 */
+    /**
+     * @brief 报告采集目标的几何与像素格式。
+     * @param[in]  self 插件实例指针。
+     * @param[out] out  由调用方提供并填好 struct_size；插件据此判断能写哪些字段。
+     * @return 0 = 成功；非 0 见上面的返回码约定。
+     */
+    int32_t (*describe)(void* self, ShotCaptureInfo* out);
+    /**
+     * @brief 把屏幕像素写进宿主提供的图像。
+     * @param[in] self 插件实例指针。
+     * @param[in,out] dst 宿主填好 data/width/height/stride/channels/pixel_format 的图像；
+     *                 插件只能写像素，不得改结构体字段。必须按 stride 逐行写，
+     *                 stride 为负表示自底向上存储。
+     * @return 0 = 成功；非 0 见上面的返回码约定。
+     */
+    int32_t (*capture)(void* self, ShotImage* dst);
+} ShotScreenCaptureV1;
+
+// ============================================================================
+//  能力：图像保存  "shot.image_saver"
+// ============================================================================
+
+/**
+ * @brief 图像保存能力函数表，对应 SHOT_IFACE_IMAGE_SAVER、版本 1。
+ *
+ * 宿主把处理完的图像交给它，由它决定文件格式、编码参数、目录布局——这些全部
+ * 来自插件自己的 shot.configurable 配置项，宿主不硬编码任何保存策略。因此换一个
+ * 保存插件（例如只写 BMP 的调试插件、上传到图床的插件）不需要改宿主。
+ *
+ * directory / basename 是**本次调用的覆盖参数**：为 NULL 时插件使用自己的配置/默认值；
+ * 非 NULL 时以传入值为准（设置页/命令行"另存为"会用到）。basename 不含扩展名。
+ *
+ * path 由宿主提供：成功时插件把最终文件路径（含扩展名，NUL 结尾）写进去；长度不够
+ * 时返回 2，宿主应先给 1024 字节这类够用的缓冲。路径以平台习惯编码（Windows UTF-8
+ * 落盘前再转宽字符）写入，宿主只用于日志与事件负载。
+ *
+ * 线程模型：save 只在宿主调用线程上执行，同一实例不会被并发调用；实现无需考虑重入。
+ *
+ * 返回码：0 = 已落盘；1 = 参数不合法（image 为空/尺寸非法/格式不认识）；
+ * 2 = path 缓冲不足；3 = 保存失败（目录不可写、编码失败等，实现应已写日志）。
+ *
+ * @note save 必须实现；没有它宿主按"没有保存插件"处理并发布 capture.failed。
+ */
+typedef struct ShotImageSaverV1 {
+    uint32_t struct_size;   /**< = sizeof(ShotImageSaverV1)；构造方填 */
+    uint32_t version;       /**< 函数表版本，当前为 1 */
+    /**
+     * @brief 把一张图像保存成文件。
+     * @param[in]  self      插件实例指针。
+     * @param[in]  image     待保存图像；只读，插件不得修改像素或结构体字段。
+     * @param[in]  directory 覆盖输出目录（UTF-8）；NULL = 用插件配置。
+     * @param[in]  basename  覆盖文件名（不含扩展名，UTF-8）；NULL = 用插件配置。
+     * @param[out] path      接收最终文件路径的缓冲；不能为 NULL。
+     * @param[in]  path_size path 的字节数。
+     * @return 0 = 成功；非 0 见上面的返回码约定。
+     */
+    int32_t (*save)(void* self, const ShotImage* image, const char* directory,
+                    const char* basename, char* path, uint32_t path_size);
+} ShotImageSaverV1;
+
+// ============================================================================
 //  宿主 → 插件的服务表
 // ============================================================================
 
@@ -669,87 +795,58 @@ typedef struct ShotHostPluginRegistryV1 {
 } ShotHostPluginRegistryV1;
 
 // ============================================================================
-//  宿主服务：配置目录  "shot.host.plugin_config"
+//  宿主服务：列表  "shot.host.plugin_lists"
 // ============================================================================
 
 /**
- * @brief 宿主配置目录函数表，对应 SHOT_HOST_IFACE_PLUGIN_CONFIG、版本 1。
+ * @brief 宿主列表服务函数表，对应 SHOT_HOST_IFACE_PLUGIN_LISTS、版本 1。
  *
- * 把"当前可配置的提供者"聚成一张目录：索引 0 固定是宿主自己（id `"core"`，
- * 宿主设置也用同一套 ShotConfigDesc 声明），其余是实现了 shot.configurable 的
- * 插件实例。设置页只面向这一张目录，不需要逐个直接调用插件。
+ * 宿主把"插件贡献的数据"按 list id 聚成 JSON 快照，这里只提供只读枚举。
+ * 列表的注册、写值、提交都不在这里——它们是 `lists.add` / `lists.remove` /
+ * `lists.update` / `lists.commit` 事件（见 document/LISTS.md），由宿主 main 线程
+ * 统一处理，所以写路径天然是单线程的。
  *
- * 存盘键是 `<plugin_id>/<key>`（如 `"example.invert/keep_alpha"`），值一律字符串，
- * 落在宿主配置 JSON 里。启动时宿主用 apply_stored 把已存值灌回插件。
+ * 已知 list id：`config_list`（设置页配置项）、`tray_command_list`（托盘菜单项），
+ * 后续新增的列表只需登记 id 与 JSON schema，不需要改本结构体。
  *
- * @note 所有函数都可能在任意插件线程上被调用；宿主实现负责线程安全，并保证
- *       "查询/读值/写值"期间对应插件不会被热卸载。
- * @note set_value 同步转调插件的 set_config：返回 0 时值已经生效，同时记入宿主
- *       配置；落盘要再调 save。
+ * 线程模型：所有函数可在任意插件线程调用；宿主内部用快照 + 互斥保护，返回的
+ * JSON 是调用方自己缓冲里的副本，与列表后续变化无关。
+ *
+ * @note list_json 用两段式读取：buf 传 NULL、buf_size 传 0 时返回所需字节数
+ *       （不含结尾 NUL），再分配缓冲读取；返回负数表示 list id 不认识或缓冲不足。
  */
-typedef struct ShotHostPluginConfigV1 {
-    uint32_t struct_size;   /**< = sizeof(ShotHostPluginConfigV1)；宿主填 */
+typedef struct ShotHostPluginListsV1 {
+    uint32_t struct_size;   /**< = sizeof(ShotHostPluginListsV1)；宿主填 */
     uint32_t version;       /**< 函数表版本，当前为 1 */
 
     /**
-     * @brief 可配置提供者个数（含索引 0 的宿主自己）。
+     * @brief 当前已注册的列表个数。
+     * @return 列表个数；宿主没有可读列表时为 0。
      */
-    uint32_t (*configurable_count)(void* ctx);
+    uint32_t (*list_count)(void* ctx);
 
     /**
-     * @brief 取第 index 个提供者的身份证；index 0 是宿主，id 固定为 "core"。
-     * @param[out] out 调用方填好 struct_size；字符串由提供者持有，插件卸载后失效。
-     * @return 0 = 成功；1 = index 越界或参数不合法；2 = out 结构太短。
+     * @brief 取第 index 个列表的 id。
+     * @param[in]  index     0 .. list_count()-1。
+     * @param[out] buf       接收缓冲；可为 NULL（此时只查长度）。
+     * @param[in]  buf_size  buf 的字节数；必须大于 id 长度（给 NUL 留位）。
+     * @return >= 0 = id 的字节数（不含 NUL）；负数 = 越界/缓冲不足/参数非法。
      */
-    int32_t (*configurable_info)(void* ctx, uint32_t index, ShotPluginInfo* out);
+    int32_t (*list_id)(void* ctx, uint32_t index, char* buf, uint32_t buf_size);
 
     /**
-     * @brief 按提供者 id 取配置项个数。
-     * @return 配置项个数；id 不认识时返回 0。
-     */
-    uint32_t (*config_count)(void* ctx, const char* provider_id);
-
-    /**
-     * @brief 取第 item 项配置声明。
-     * @param[in]  provider_id 提供者 id，如 "core" / "example.invert"。
-     * @param[in]  item        0 .. config_count()-1。
-     * @param[out] out         调用方填好 struct_size；字符串由提供者持有，插件卸载后失效。
-     * @return 0 = 成功；1 = 参数/索引不合法；2 = out 结构太短；-1 = provider_id 不认识。
-     */
-    int32_t (*config_desc)(void* ctx, const char* provider_id, uint32_t item, ShotConfigDesc* out);
-
-    /**
-     * @brief 读当前值（转调提供者的 get_config）。
-     * @return 同 ShotConfigurableV1::get_config：>= 0 是值长度（不含 NUL），负数 = 失败。
-     */
-    int32_t (*get_value)(void* ctx, const char* provider_id, const char* key,
-                         char* buf, uint32_t buf_size);
-
-    /**
-     * @brief 写当前值（转调提供者的 set_config），成功后记入宿主配置。
-     * @return 0 = 已生效；负数 = 提供者拒绝、provider_id/key 不认识或参数非法。
-     * @note 只改内存，落盘要再调 save()。
-     */
-    int32_t (*set_value)(void* ctx, const char* provider_id, const char* key, const char* value);
-
-    /**
-     * @brief 把宿主配置里的已存值灌回所有提供者（宿主启动时调用）。
+     * @brief 取一个列表的 JSON 快照（UTF-8，所需长度不含结尾 NUL）。
      *
-     * 对每个提供者的每个配置项：有已存值就用已存值，没有就用 default_value，
-     * 并顺手把 default_value 记入配置——这样第一次运行后配置文件就是完整的。
-     * @return 成功灌入的项数（>= 0）；负数 = 宿主还没绑定配置目录。
-     */
-    int32_t (*apply_stored)(void* ctx);
-
-    /**
-     * @brief 把宿主配置落盘，成功时发布 `config.applied` 事件。
+     * JSON 形状由 list id 决定，schema 见 document/LISTS.md。宿主内部已解析成
+     * 结构保存，序列化结果有缓存，调用方按需读取即可，不要每帧轮询。
      *
-     * `config.applied` 是"一次批量提交完成"的通知：缓存了派生状态的插件收到后
-     * 重新读一遍当前值即可，不需要新的 ABI（见 document/SETTINGS.md）。
-     * @return 0 = 已保存并发布；负数 = 落盘失败（不发布）。
+     * @param[in]  list_id  列表 id；NULL 或未注册时返回负数。
+     * @param[out] buf      接收缓冲；可为 NULL（此时只查长度）。
+     * @param[in]  buf_size buf 的字节数；必须大于返回长度（给 NUL 留位）。
+     * @return >= 0 = JSON 字节数；负数 = list id 不认识/缓冲不足/参数非法。
      */
-    int32_t (*save)(void* ctx);
-} ShotHostPluginConfigV1;
+    int32_t (*list_json)(void* ctx, const char* list_id, char* buf, uint32_t buf_size);
+} ShotHostPluginListsV1;
 
 /**
  * @brief 宿主 → 插件的服务表：插件拿它回调宿主的一切。
@@ -931,6 +1028,18 @@ SHOT_STATIC_ASSERT(offsetof(ShotLibProviderV1, get_library_version) == 16);
 SHOT_STATIC_ASSERT(sizeof(ShotUIProviderV1) == 32);
 SHOT_STATIC_ASSERT(offsetof(ShotUIProviderV1, post_to_plugin) == 24);
 
+SHOT_STATIC_ASSERT(sizeof(ShotCaptureInfo) == 24);
+SHOT_STATIC_ASSERT(offsetof(ShotCaptureInfo, width) == 4);
+SHOT_STATIC_ASSERT(offsetof(ShotCaptureInfo, origin_x) == 12);
+SHOT_STATIC_ASSERT(offsetof(ShotCaptureInfo, pixel_format) == 20);
+
+SHOT_STATIC_ASSERT(sizeof(ShotScreenCaptureV1) == 24);
+SHOT_STATIC_ASSERT(offsetof(ShotScreenCaptureV1, describe) == 8);
+SHOT_STATIC_ASSERT(offsetof(ShotScreenCaptureV1, capture) == 16);
+
+SHOT_STATIC_ASSERT(sizeof(ShotImageSaverV1) == 16);
+SHOT_STATIC_ASSERT(offsetof(ShotImageSaverV1, save) == 8);
+
 SHOT_STATIC_ASSERT(sizeof(ShotConfigDesc) == 72);
 SHOT_STATIC_ASSERT(offsetof(ShotConfigDesc, min) == 40);
 
@@ -959,9 +1068,10 @@ SHOT_STATIC_ASSERT(sizeof(ShotHostPluginRegistryV1) == 40);
 SHOT_STATIC_ASSERT(offsetof(ShotHostPluginRegistryV1, installed_count) == 8);
 SHOT_STATIC_ASSERT(offsetof(ShotHostPluginRegistryV1, set_enabled) == 32);
 
-SHOT_STATIC_ASSERT(sizeof(ShotHostPluginConfigV1) == 72);
-SHOT_STATIC_ASSERT(offsetof(ShotHostPluginConfigV1, config_desc) == 32);
-SHOT_STATIC_ASSERT(offsetof(ShotHostPluginConfigV1, save) == 64);
+SHOT_STATIC_ASSERT(sizeof(ShotHostPluginListsV1) == 32);
+SHOT_STATIC_ASSERT(offsetof(ShotHostPluginListsV1, list_count) == 8);
+SHOT_STATIC_ASSERT(offsetof(ShotHostPluginListsV1, list_id) == 16);
+SHOT_STATIC_ASSERT(offsetof(ShotHostPluginListsV1, list_json) == 24);
 
 SHOT_STATIC_ASSERT(sizeof(ShotHostServices) == 48);
 SHOT_STATIC_ASSERT(offsetof(ShotHostServices, log) == 24);

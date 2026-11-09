@@ -2,10 +2,10 @@
 // 以及 render() 的顶层窗口框架（操作条 + 滚动内容区）。
 //
 // 具体实现按职责拆在：
-//   settings_model.cpp        —— 模型刷新与纯值工具
+//   settings_model.cpp        —— config_list JSON 解析、模型刷新与纯值工具
 //   settings_form.cpp         —— 操作条 + 配置节 + 控件渲染
 //   settings_plugin_table.cpp —— 插件管理表渲染
-//   settings_apply.cpp        —— 应用 / 取消 / 恢复默认 / 事件
+//   settings_apply.cpp        —— 应用状态机 / 事件 / 超时
 // 这个文件只留"进门"的那一层，避免又长回一个上帝类（STYLE.md §6.8）。
 
 #include "settings_panel.h"
@@ -93,6 +93,20 @@ void SettingsPanel::onPluginsChanged(std::string_view payload) {
         return;
     }
     m_impl->onPluginsChanged(payload);
+}
+
+void SettingsPanel::onListsChanged(std::string_view payload) {
+    if (!m_impl) {
+        return;
+    }
+    m_impl->onListsChanged(payload);
+}
+
+void SettingsPanel::onListsUpdated(std::string_view payload) {
+    if (!m_impl) {
+        return;
+    }
+    m_impl->onListsUpdated(payload);
 }
 
 }  // namespace settings_ui

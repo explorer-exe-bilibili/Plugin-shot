@@ -7,7 +7,7 @@
 
 | 目录 | 内容 | 用途 |
 | --- | --- | --- |
-| `include/` | `plugin_api.h`、`plugin_api_export.h`、`shot_plugin_helpers.h`（汇总头，只做 include）、`shot_plugin_helpers/`（每类一个头文件）、`opencv4/` | 契约头 + 插件侧小工具（能力目录 / `shot::Logger` / `shot::Config` / `shot::EventBus` / `shot::PluginConfig` / `shot::PluginRegistry`） + OpenCV 头 |
+| `include/` | `plugin_api.h`、`plugin_api_export.h`、`shot_plugin_helpers.h`（汇总头，只做 include）、`shot_plugin_helpers/`（每类一个头文件）、`opencv4/` | 契约头 + 插件侧小工具（能力目录 / `shot::Logger` / `shot::Config` / `shot::EventBus` / `shot::PluginLists` / `shot::PluginRegistry`） + OpenCV 头 |
 | `lib/` | release 版 `*.lib` 导入库 | Release 构建链接期使用 |
 | `lib/debug/` | debug 版 `*.lib`（`opencv_*4d.lib` 等） | Debug 构建链接期使用 |
 | `bin/` | release 版 `*.dll` 运行时库 | **不要拷进插件目录**，见下 |
@@ -33,10 +33,10 @@ shot_add_plugin(my_plugin
 `shot_add_plugin()` 统一处理 /MD、隐藏符号、产物目录、元数据贴尾与产物剪枝。
 
 插件里访问宿主服务用 `shot_plugin_helpers.h` 的封装：`shot::Logger`（写宿主日志）、
-`shot::Config`（读写宿主配置）、`shot::EventBus`（主题发布/订阅）、`shot::PluginConfig`
-（配置目录：枚举宿主与所有可配置插件的配置项）、`shot::PluginRegistry`（插件启停）。
-汇总头本身只做 include，每个类各有一个头文件（在 `shot_plugin_helpers/` 子目录）；它们对老宿主自动降级，
-不需要逐处手写 `SHOT_HAS_FIELD` 判空。
+`shot::Config`（读写宿主配置）、`shot::EventBus`（主题发布/订阅）、`shot::PluginLists`
+（读取宿主聚合的列表 JSON 快照，如 `config_list` / `tray_command_list`）、`shot::PluginRegistry`
+（插件启停）。汇总头本身只做 include，每个类各有一个头文件（在 `shot_plugin_helpers/` 子目录）；
+它们对老宿主自动降级，不需要逐处手写 `SHOT_HAS_FIELD` 判空。
 手工搭建时，等价的最小配置是：
 
 ```cmake
@@ -76,18 +76,67 @@ target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
 6. **能力用 interface id 查询**
    query_interface(instance, "shot.image_processor", 1) 返回函数表，
    没有的能力返回 NULL。已注册的插件能力：shot.image_processor、shot.configurable、
-   shot.lib_provider、shot.ui_provider。
+   shot.lib_provider、shot.ui_provider、shot.screen_capture、shot.image_saver。
    宿主服务也走同一个入口（`shot.host.*`）：`shot.host.config`、`shot.host.board_msg`、
-   `shot.host.event_bus`、`shot.host.plugin_config`、`shot.host.plugin_registry`。
+   `shot.host.event_bus`、`shot.host.plugin_lists`、`shot.host.plugin_registry`。
 
 7. **abi_major 必须与宿主一致**
-   版本不匹配的插件会被宿主拒绝加载。升级 SDK 后请整体替换
-   include/，不要新旧混用。
+   当前 `SHOT_ABI_MAJOR = 2` / `SHOT_ABI_MINOR = 0`；版本不匹配的插件会被宿主拒绝加载。
+   2.0 删除了旧的配置目录服务，改为通用列表服务 `shot.host.plugin_lists`（见下一节）；
+   删除已发布的服务属于破坏性变更，所以 major 涨到 2。
+   升级 SDK 后请整体替换 include/，不要新旧混用。
 
 8. **metadata.json 会被贴到 DLL 尾部**
    构建期由 `cmake/AppendPluginMeta.cmake` 追加纯文本标记（见 `plugin_api.h` 的
    `PLUGIN_META_START_MARKER` / `PLUGIN_META_END_MARKER`）。文件尾的额外数据不影响
    装载，元数据跟着插件文件走，不会与 DLL 分家。
+
+## 给 UI 提供数据：用列表 + 事件，不加 ABI
+
+插件想给宿主/设置页/托盘提供**一批数据**（菜单项、配置项、目标列表、热键动作……）时，
+**不要**新增 ABI 结构体、也不要新增宿主服务。ABI 2.0 起统一走**通用列表**：
+
+| 动作 | 做法 |
+| --- | --- |
+| 定义一种新列表 | 选一个 list id + 定义条目的 JSON schema，在宿主仓库的 `document/LISTS.md` §5 登记 |
+| 运行期贡献条目 | `lists.add` 事件：`{"list":"...","owner":"<自己的插件 id>","items":[...]}`；`owner` 必须等于自己，插件卸载时宿主按它自动清理 |
+| 撤回条目 | `lists.remove` 事件（`ids` 省略 = 撤回该 owner 全部） |
+| 读列表 | `shot::PluginLists(host).json("<list id>")`：两段式只读 JSON 快照，任意线程可调 |
+| 变化通知 | 宿主发布 `lists.changed`（负载只有 list id）；收到后重新读快照，**不要每帧轮询** |
+| 写值 / 落盘 | 仅宿主生成的 `config_list`：`lists.update` 写值、`lists.commit` 落盘，结果走 `lists.updated` / `config.applied` |
+
+```cpp
+// 贡献一条托盘命令（插件侧，运行时发一次；完全不碰托盘代码）
+shot::EventBus bus(host);
+bus.publish("lists.add", R"json({
+  "list": "tray_command_list",
+  "owner": "acme.tools",
+  "items": [{"id": "acme.capture", "label": "Acme 截屏", "event": "capture.request", "order": 20}]
+})json");
+
+// 读宿主聚合出来的快照
+shot::PluginLists lists(host);
+const std::string text = lists.json("tray_command_list");
+```
+
+**硬规则**：
+
+- 新增数据形状 = 新 list id + JSON schema + `lists.*` 事件；**禁止**为它新增 ABI 结构体/服务。
+- 运行期贡献**不写进 `metadata.json`**：metadata 只放身份、依赖与能力（见 `document/METADATA.md` §3）。
+- 消费方在 `lists.changed` / `settings.open` / `config.applied` 等事件之后刷新；
+  完整协议（负载 schema、owner 校验、`order` / `separator` 规则、线程与信任模型）见
+  `document/LISTS.md`。
+
+## 采集与保存能力
+
+SDK 目录结构不变：采集/保存插件仍是普通插件（`shot_add_plugin()` + `metadata.json`），
+通过能力函数表与宿主交互。完整数据流见 `document/CAPTURE.md`，宿主仓库的
+`plugins/screen_capture/` 与 `plugins/image_saver/` 是可直接编译的样板。
+
+| 能力 | 结构体 | 实现要点 |
+| --- | --- | --- |
+| `shot.screen_capture`（屏幕采集） | `ShotScreenCaptureV1` | `describe` 填虚拟桌面的 `width` / `height` / `origin_x` / `origin_y` / `pixel_format`；`capture` 只往宿主分配的 BGRA8 缓冲里写像素，**绝不自己分配图像内存**，必须按 `stride` 逐行寻址；返回码 `0` / `1` / `2` / `3`。平台相关实现（如 Windows GDI）在 CMake 里按平台跳过，不写未验证的伪实现。 |
+| `shot.image_saver`（图像保存） | `ShotImageSaverV1` | `save` 把 `ShotImage` 落盘并把最终绝对路径写回 `path`（缓冲不足返回 `2`）；`directory` / `basename` 为 `NULL` 时用插件自己的配置项；格式/质量/命名策略全在插件侧，宿主不硬编码。 |
 
 ## debug 变体（重要）
 

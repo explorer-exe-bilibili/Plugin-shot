@@ -8,22 +8,22 @@
 namespace settings_ui {
 
 /**
- * @brief 设置窗口：自己开线程、跑 Win32 消息循环、用 OpenGL3 画 ImGui。
+ * @brief 设置窗口：自己开线程、跑 GLFW 事件循环、用 OpenGL3 画 ImGui。
  *
  * 对应契约里的 `shot.ui_provider`：宿主只调 init / deinit / post_to_plugin，
- * 从不接触 HWND，也不知道本插件有几个线程。生命周期：
+ * 从不接触窗口句柄，也不知道本插件有几个线程。生命周期：
  *
  *   - start() 返回 true 时窗口（隐藏）与 ImGui 后端都已就绪；
  *   - 收到 `settings.open` 后显示窗口；X / Esc 只隐藏，线程与窗口保留；
  *   - stop() 退订事件总线、停线程、销毁窗口，返回前线程已 join——宿主热卸载
  *     或退出时都靠它把资源收干净。
  *
- * Win32 / WGL 类型全部关在 Impl 里（定义在内部头 settings_window_impl.h），
- * 公共头不包含 <windows.h>。
+ * GLFW / OpenGL / ImGui 类型全部关在 Impl 里（定义在内部头 settings_window_impl.h），
+ * 公共头不包含任何平台或图形库头文件。
  *
- * @note 实现拆在 src/settings_window.cpp（生命周期/线程/消息循环）、
- *       settings_graphics.cpp（WGL + ImGui + 字体/DPI + 渲染）、
- *       settings_geometry.cpp（窗口几何持久化）。
+ * @note 实现拆在 src/settings_window.cpp（生命周期/事件循环）、
+ *       settings_graphics.cpp（ImGui 后端 + 字体/DPI + 渲染）、
+ *       settings_geometry.cpp（窗口几何持久化）、settings_dialog.cpp（原生文件对话框）。
  */
 class SettingsWindow {
 public:
@@ -41,7 +41,8 @@ public:
      * @brief 建隐藏窗口并启动 UI 线程；返回时窗口与 ImGui 已就绪（或已失败）。
      *
      * 幂等：已在运行时直接返回 true。同时订阅事件总线主题 `settings.open` /
-     * `config.applied` / `plugins.changed`（回调只入队 + PostMessage 唤醒）。
+     * `config.applied` / `plugins.changed` / `lists.changed` / `lists.updated`
+     * （回调只入队 + glfwPostEmptyEvent 唤醒）。
      *
      * @param[in] host 宿主服务表；可为 nullptr（老宿主没有服务表，窗口仍可显示，
      *                  只是配置模型为空）。指针必须活到 stop() 返回。
@@ -70,7 +71,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> m_impl;  /**< PIMPL：Win32 / WGL / ImGui 状态全藏在 Impl 里。 */
+    std::unique_ptr<Impl> m_impl;  /**< PIMPL：GLFW / OpenGL / ImGui 状态全藏在 Impl 里。 */
 };
 
 }  // namespace settings_ui

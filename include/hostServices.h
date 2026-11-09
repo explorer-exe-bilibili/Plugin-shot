@@ -41,7 +41,7 @@ namespace HostServices {
     /**
      * @brief 按 interface id 向插件提供宿主服务表。
      *
-     * 分发宿主配置、看板广播、事件总线、配置目录（shot.host.plugin_config）与
+     * 分发宿主配置、看板广播、事件总线、通用列表服务（shot.host.plugin_lists）与
      * 插件注册表（shot.host.plugin_registry），其余 id 返回 nullptr。
      * @param[in] ctx 未使用。
      * @param[in] ifaceId 接口 id；为空时返回 nullptr。

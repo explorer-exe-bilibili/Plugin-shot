@@ -3,14 +3,15 @@
 // ============================================================================
 //  settings_window_impl.h —— 内部头：SettingsWindow 的 PIMPL 与窗口内部类型
 //
-//  **不是插件对外接口**：只有本插件的 .cpp 包含它。这里会出现 Win32 类型
-//  （HWND / HDC / HGLRC），因为窗口线程确实要持有它们；但公共头
-//  settings_window.h 不包含 <windows.h>，宿主与其它插件看不到任何 Win32 句柄。
+//  **不是插件对外接口**：只有本插件的 .cpp 包含它。窗口层现在基于 GLFW，跨平台；
+//  GLFW 只以 `struct GLFWwindow;` 前置声明出现在这里，本头不拖 <GLFW/glfw3.h>，
+//  更不含任何平台头。公共头 settings_window.h 不包含任何平台类型。
 //
 //  定义按职责拆成三个 .cpp：
-//    settings_window.cpp   —— 生命周期 / 窗口线程 / 消息循环 / 事件队列 / WndProc
-//    settings_graphics.cpp —— WGL + ImGui + 字体与 DPI + 每帧渲染
+//    settings_window.cpp   —— 生命周期 / 窗口线程 / GLFW 事件循环 / 事件队列
+//    settings_graphics.cpp —— GLFW 窗口 + ImGui 后端 + 字体与 DPI + 每帧渲染
 //    settings_geometry.cpp —— 窗口几何持久化与屏幕内 clamp
+//  原生文件对话框在 settings_dialog.cpp（不依赖窗口句柄，单独一个内部模块）。
 // ============================================================================
 
 #include <condition_variable>
@@ -20,15 +21,11 @@
 #include <string>
 #include <thread>
 
-#ifndef NOMINMAX
-#define NOMINMAX  // 防止 <windows.h> 的 min/max 宏把 std::min / std::max 顶掉
-#endif
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-
 #include "plugin_api.h"
 #include "settings_panel.h"
 #include "settings_window.h"
+
+struct GLFWwindow;  // 前置声明：内部头不拖 GLFW/GL 头文件
 
 namespace settings_ui {
 
@@ -50,7 +47,7 @@ struct QueuedEvent {
     std::string payload;
 };
 
-/** @brief 窗口几何（屏幕坐标，单位像素）。 */
+/** @brief 窗口几何（屏幕坐标，单位像素；GLFW 的"窗口位置/大小"指客户区）。 */
 struct WindowGeometry {
     int x = 0;
     int y = 0;
@@ -59,7 +56,7 @@ struct WindowGeometry {
 };
 
 /**
- * @brief SettingsWindow 的实现：窗口句柄、GL 上下文、事件队列、线程握手全在这里。
+ * @brief SettingsWindow 的实现：GLFW 窗口、事件队列、线程握手全在这里。
  *
  * 声明集中在这个结构里，定义按职责分散到多个 .cpp（STYLE.md §6.7）。
  */
@@ -68,8 +65,9 @@ struct SettingsWindow::Impl {
     std::thread thread;
     std::mutex mutex;
     std::queue<QueuedEvent> queue;
-    HWND hwnd = nullptr;
     bool acceptingEvents = false;  // start 成功拉起线程后为 true；stop 一开始就置 false
+    bool glfwInitialized = false;  // 任意线程据此判断能否 glfwPostEmptyEvent 唤醒
+    bool quitRequested = false;    // stop()/host.shutdown 要求事件循环退出
 
     // ---- start() 与 UI 线程之间的"窗口 + ImGui 就绪了没有"握手 ----
     std::mutex readyMutex;
@@ -82,30 +80,32 @@ struct SettingsWindow::Impl {
 
     SettingsPanel panel;
 
-    // ---- 以下只在 UI 线程上访问（线程创建后到退出前） ----
-    HDC windowDc = nullptr;
-    HGLRC glContext = nullptr;
-    const char* glslVersion = "#version 130";
+    // ---- 以下只在 UI 线程（GLFW 的主线程）上访问 ----
+    GLFWwindow* window = nullptr;
     bool imguiInitialized = false;
-    bool vsyncEnabled = false;
     bool visible = false;
-    float dpiScale = 1.0f;
+    bool escHideRequested = false;  // 键盘回调只置位，隐藏动作在事件循环里做
 
-    // ---- 生命周期与窗口线程（settings_window.cpp） ----
+    // ---- 生命周期与事件循环（settings_window.cpp） ----
     void run();
     void messageLoop();
     void drainEvents();
     void enqueue(const char* name, const char* data, std::uint32_t len);
+    bool shouldQuit();
+    void requestQuit();  // 任意线程可调：置退出标记并唤醒事件循环
     void showWindow();
     void hideWindow();
-    static LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam);
+    bool initGlfw();
+    bool createWindow();
+    void shutdownGlfw();
     static void onBusEvent(void* user, const char* topic, const void* data, std::uint32_t len);
+    static void onGlfwError(int errorCode, const char* description);
+    static void onKey(GLFWwindow* window, int key, int scancode, int action, int mods);
 
-    // ---- WGL / ImGui / 每帧渲染（settings_graphics.cpp） ----
-    bool initOpenGl(HWND wnd);
-    bool initImGui(HWND wnd);
+    // ---- ImGui / 字体与 DPI / 每帧渲染（settings_graphics.cpp） ----
+    bool initImGui();
     void loadFonts();
-    void applyDpiScale(HWND wnd);
+    void applyContentScale();
     void shutdownGraphics();
     bool renderFrame();
 
@@ -113,7 +113,7 @@ struct SettingsWindow::Impl {
     void saveGeometry();
     void restoreGeometry();
     static bool parseGeometry(const std::string& text, WindowGeometry& out);
-    static WindowGeometry clampToVisibleArea(const WindowGeometry& geometry);
+    WindowGeometry clampToVisibleArea(const WindowGeometry& geometry) const;
 };
 
 }  // namespace settings_ui

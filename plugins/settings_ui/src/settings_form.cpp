@@ -1,104 +1,30 @@
 // settings_form —— 设置页的"表单"：顶部操作条 + 按提供者分节的滚动内容 +
-// 7 种 ShotConfigDesc::kind 对应的 ImGui 控件。
+// 7 种 SHOT_CONFIG_KIND_* 对应的 ImGui 控件。
 //
 // 只负责"把模型画出来、把用户改动写回本地缓冲"；读取模型在 settings_model.cpp，
 // 点「应用」之后的提交在 settings_apply.cpp，插件管理表在 settings_plugin_table.cpp。
 //
-// PATH 项的"浏览…"要弹系统文件对话框（Win32 的 GetOpenFileNameW），这是本文件里
-// 唯一出现 Win32 的地方；公共头不含任何 Win32 类型。
+// PATH 项的"浏览…"通过 settings_dialog.cpp 调 nativefiledialog-extended；本文件不
+// 直接依赖任何平台 API，对话框不可用时把提示写在配置项旁边、用户可手输路径。
 
-#include <algorithm>
-#include <iterator>
+#include <filesystem>
 #include <string>
-#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
-#ifndef NOMINMAX
-#define NOMINMAX  // 防止 <windows.h> 的 min/max 宏把 std::min / std::max 顶掉
-#endif
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-
-#include <commdlg.h>
-
 #include "imgui.h"
 #include "imgui_stdlib.h"
+#include "settings_dialog.h"
 #include "settings_panel_impl.h"
+#include "shot_plugin_helpers.h"
 
 namespace settings_ui {
-namespace {
-
-// UTF-8 <-> UTF-16 转换与文件对话框只服务 PATH 控件的"浏览…"：既不属于设置页
-// 模型，也不属于窗口状态，所以留在本 TU 的匿名命名空间（STYLE.md §6.7）。
-std::wstring utf8ToWide(std::string_view text) {
-    if (text.empty()) {
-        return std::wstring();
-    }
-    const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(),
-                                           static_cast<int>(text.size()), nullptr, 0);
-    if (length <= 0) {
-        return std::wstring();
-    }
-    std::wstring result(static_cast<std::size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
-                        result.data(), length);
-    return result;
-}
-
-std::string wideToUtf8(std::wstring_view text) {
-    if (text.empty()) {
-        return std::string();
-    }
-    const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(),
-                                           static_cast<int>(text.size()),
-                                           nullptr, 0, nullptr, nullptr);
-    if (length <= 0) {
-        return std::string();
-    }
-    std::string result(static_cast<std::size_t>(length), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
-                        result.data(), length, nullptr, nullptr);
-    return result;
-}
-
-/**
- * @brief 弹系统"打开文件"对话框给 PATH 配置项选路径。
- *
- * 用 GetOpenFileNameW 而不是自己糊一个文件列表：PATH 是"选个文件"这个通用需求，
- * 系统对话框自带最近目录、网络位置和长路径处理。它只在本 .cpp 内出现，
- * 公共头仍然不含 Win32 类型。
- *
- * @param[in,out] path 进 = 当前值（作为对话框初始路径），出 = 用户选的路径（UTF-8）。
- * @return true = 用户选了文件；false = 取消或对话框失败（保持原值）。
- */
-bool browseForFile(std::string& path) {
-    wchar_t buffer[1024] = {};
-    const std::wstring initial = utf8ToWide(path);
-    const std::size_t copied = std::min(initial.size(), std::size(buffer) - 1);
-    std::copy_n(initial.begin(), copied, buffer);
-
-    OPENFILENAMEW dialog{};
-    dialog.lStructSize = sizeof(dialog);
-    dialog.hwndOwner = GetActiveWindow();
-    // 过滤串是"显示名\0通配符\0"序列，末尾再来一个 \0；直接写进宽字面量即可。
-    dialog.lpstrFilter = L"所有文件 (*.*)\0*.*\0\0";
-    dialog.lpstrFile = buffer;
-    dialog.nMaxFile = static_cast<DWORD>(std::size(buffer));
-    dialog.lpstrTitle = L"选择文件";
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (GetOpenFileNameW(&dialog) == FALSE) {
-        return false;  // 用户取消不是错误
-    }
-    path = wideToUtf8(buffer);
-    return true;
-}
-
-}  // namespace
 
 void SettingsPanel::Impl::renderActionBar() {
+    const bool busy = isBusy();
     const bool pending = hasPendingChanges();
-    const bool canApply = pending && !waitingForPlugins;
+    const bool canApply = pending && !busy;
 
     ImGui::BeginDisabled(!canApply);
     if (ImGui::Button("应用")) {
@@ -112,7 +38,7 @@ void SettingsPanel::Impl::renderActionBar() {
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(waitingForPlugins);
+    ImGui::BeginDisabled(busy);
     if (ImGui::Button("恢复全部默认")) {
         restoreDefaults();
     }
@@ -122,8 +48,9 @@ void SettingsPanel::Impl::renderActionBar() {
     // 状态文本优先级：等待中 > 有未应用修改 > 上一次操作的结果。
     std::string text = statusText;
     Tone tone = statusTone;
-    if (waitingForPlugins) {
-        text = "应用中…（等待宿主完成插件启停）";
+    if (busy) {
+        // 事件驱动的提交分几个等待阶段：显示当前阶段，用户才知道在等什么。
+        text = busyText();
         tone = Tone::Warning;
     } else if (pending) {
         text = "有未应用的修改";
@@ -138,15 +65,31 @@ void SettingsPanel::Impl::renderActionBar() {
 
 void SettingsPanel::Impl::renderConfigSections() {
     if (configUnavailable) {
-        ImGui::TextDisabled("宿主未提供设置目录服务（shot.host.plugin_config）："
-                            "当前宿主不能读插件配置，设置页只剩插件管理。");
-    } else if (!sections.empty()) {
-        // 目录约定索引 0 固定是宿主自己（id "core"），所以它永远排在最前面。
-        renderProviderSection(sections[0]);
+        // 老宿主没有列表服务 / config_list 暂时读不到：显示具体原因，插件管理照常渲染。
+        ImGui::TextDisabled("%s", configUnavailableReason.c_str());
+        renderPluginTable();
+        // 刚被热卸载的提供者：还显示一节灰色的"插件已卸载"，下一次刷新就消失。
+        for (ProviderSection& section : removedSections) {
+            renderProviderSection(section);
+        }
+        return;
+    }
+    // 宿主 core 固定排最前（config_list 一般也按这个顺序给，但这里不依赖它的顺序）。
+    for (ProviderSection& section : sections) {
+        if (section.id == "core") {
+            renderProviderSection(section);
+            break;
+        }
     }
     renderPluginTable();
-    for (std::size_t index = 1; index < sections.size(); ++index) {
-        renderProviderSection(sections[index]);
+    if (sections.empty()) {
+        ImGui::TextDisabled("宿主与插件都没有声明配置项。");
+    }
+    for (ProviderSection& section : sections) {
+        if (section.id == "core") {
+            continue;  // 已经在插件管理表之前画过
+        }
+        renderProviderSection(section);
     }
     // 刚被热卸载的提供者：还显示一节灰色的"插件已卸载"，下一次刷新就消失。
     for (ProviderSection& section : removedSections) {
@@ -189,7 +132,7 @@ void SettingsPanel::Impl::renderProviderSection(ProviderSection& section) {
 }
 
 void SettingsPanel::Impl::renderConfigItem(ConfigItem& item) {
-    const shot::ConfigDesc& desc = item.desc;
+    const ConfigDesc& desc = item.desc;
     ImGui::PushID(desc.key.c_str());
     ImGui::TableNextRow();
 
@@ -216,17 +159,22 @@ void SettingsPanel::Impl::renderConfigItem(ConfigItem& item) {
 
     if (!item.error.empty()) {
         ImGui::SameLine();
-        ImGui::TextColored(kToneError, "插件拒绝：%s", item.error.c_str());
+        // 失败原因来自 lists.updated 的 reason（宿主转述插件 set_config 的结果）。
+        ImGui::TextColored(kToneError, "写入失败：%s", item.error.c_str());
     } else if (item.value != item.baseline) {
         ImGui::SameLine();
         ImGui::TextColored(kToneWarning, "已修改");
+    }
+    // 控件级提示（例如文件对话框不可用 → 请手输）：换一行显示，别把表格撑宽。
+    if (!item.hint.empty()) {
+        ImGui::TextColored(kToneWarning, "%s", item.hint.c_str());
     }
     ImGui::PopID();
 }
 
 // 返回 true = 这一帧控件改了值（值已经写回 item.value）。
 bool SettingsPanel::Impl::renderItemControl(ConfigItem& item) {
-    const shot::ConfigDesc& desc = item.desc;
+    const ConfigDesc& desc = item.desc;
     switch (desc.kind) {
         case SHOT_CONFIG_KIND_BOOL: {
             bool value = parseBoolValue(item.value);
@@ -341,9 +289,20 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item) {
             ImGui::SameLine();
             if (ImGui::Button("浏览…")) {
                 std::string chosen = item.value;
-                if (browseForFile(chosen)) {
+                std::string dialogError;
+                // 描述符没有声明 PATH 是文件还是目录：当前值指向已存在目录时按目录选，
+                // 否则按文件选（与旧版"只选文件"的行为一致，目录是额外支持）。
+                std::error_code pathError;
+                const bool pickFolder =
+                    !chosen.empty() && std::filesystem::is_directory(chosen, pathError);
+                if (pickFolder ? pickExistingFolder(chosen, dialogError)
+                               : pickExistingFile(chosen, dialogError)) {
                     item.value = std::move(chosen);
+                    item.hint.clear();
                     changed = true;
+                } else if (!dialogError.empty()) {
+                    item.hint = std::move(dialogError);
+                    shot::Logger(host).warn("settings_ui：PATH 文件对话框不可用，已降级为手输路径");
                 }
             }
             return changed;

@@ -18,6 +18,8 @@
 - 把实例包装成 C++ 对象，按 `PluginType` 分类索引；插件对象由插件自己销毁，宿主绝不 `delete`
 - 支持运行期启用/禁用插件：禁用即**热卸载**（销毁实例 → 退订事件总线 → `FreeLibrary`），
   重新启用则重新加载 DLL 并回灌已存配置
+- 把插件贡献的 UI 数据按 **list id** 聚成只读 JSON 快照（`shot.host.plugin_lists`），
+  列表变化用 `lists.changed` 通知；新增数据形状只加 list id + JSON schema，不再改 ABI
 
 **插件**（动态库）负责一切具体能力。当前主线是截图。
 
@@ -29,13 +31,19 @@
 | 单入口 `shot_module_entry` + 自描述模块表（`struct_size` 约定） | ✅ 可用 |
 | 一 DLL 多插件（`plugin_count` + `create(index)` + `get_info`） | ✅ 可用 |
 | 能力查询 `query_interface("shot.image_processor", 1)` | ✅ 可用 |
+| 屏幕采集 `shot.screen_capture`（`plugins/screen_capture`，GDI 抓虚拟桌面；仅 Windows） | ✅ 可用（`document/CAPTURE.md`） |
+| 图像保存 `shot.image_saver`（`plugins/image_saver`，PNG / JPEG + 四个配置项） | ✅ 可用（`document/CAPTURE.md`） |
+| 采集 → 处理 → 保存流水线（`capture.request` / `capture.done` / `capture.failed`） | ✅ 可用（`document/CAPTURE.md`） |
 | 宿主事件总线 `shot.host.event_bus`（主题发布 / 订阅） | ✅ 可用（`document/EVENT_BUS.md`） |
-| 宿主配置目录 `shot.host.plugin_config`（宿主 + 所有可配置插件） | ✅ 可用（`document/SETTINGS.md`） |
+| 通用列表服务 `shot.host.plugin_lists`（按 list id 返回 JSON 快照：`config_list` / `tray_command_list`） | ✅ 可用（`document/LISTS.md`） |
+| 列表事件协议 `lists.*`（`add` / `remove` / `update` / `commit` / `updated` / `changed`，事件驱动写值） | ✅ 可用（`document/LISTS.md`） |
 | 宿主插件注册表 `shot.host.plugin_registry`（启停 / 热卸载） | ✅ 可用（`document/SETTINGS.md`） |
 | 运行库提供者 `shot.lib_provider`（`PluginType::Lib`） | ✅ 可用（`plugins/opencv_provider` 把 OpenCV 带进进程） |
-| UI 提供者 `shot.ui_provider`（窗口/托盘由插件自己创建） | ✅ 可用（`plugins/setting_window`、`plugins/settings_ui`） |
-| 插件配置 `shot.configurable`（插件声明，宿主枚举 / 存盘 / 回灌） | ✅ 可用（`document/SETTINGS.md`） |
-| 设置页插件 `plugins/settings_ui`（ImGui + Win32 + OpenGL3，描述符驱动表单） | ✅ 可用 |
+| UI 提供者 `shot.ui_provider`（窗口/托盘由插件自己创建） | ✅ 可用（`plugins/settings_ui`、`plugins/tray`） |
+| 插件配置 `shot.configurable`（插件声明，宿主聚成 `config_list`、事件驱动写值 / 存盘 / 回灌） | ✅ 可用（`document/SETTINGS.md`） |
+| 设置页插件 `plugins/settings_ui`（读 `config_list`，ImGui + GLFW + OpenGL3，描述符驱动表单） | ✅ 可用（跨平台；Windows 已验证） |
+| 托盘入口 `plugins/tray`（菜单数据来自 `tray_command_list`；截屏 / 打开设置 / 退出；仅 Windows） | ✅ 可用 |
+| 命令行 `--capture` / `--settings` / `--help` | ✅ 可用 |
 | 宿主自身设置（`core` 伪插件：日志级别 / 控制台 / 文件日志） | ✅ 可用 |
 | 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主加载前读取：预筛 + 依赖拓扑排序） |
 | 元数据构建期校验（id 唯一 / interfaces 已注册 / abi 与头一致 / 依赖语法） | ✅ 可用（`cmake/ValidatePluginMeta.cmake`） |
@@ -51,30 +59,36 @@
 
 ```
 .
-├── CMakeLists.txt          # 跨平台构建脚本（vcpkg 清单模式 + OpenCV）
+├── CMakeLists.txt          # 跨平台构建脚本（vcpkg 清单模式 + GLOB 自动发现插件）
 ├── vcpkg.json              # 依赖清单
 ├── include/
 │   ├── plugin_api.h          # ★ 宿主 ⇄ 插件的 ABI 契约（唯一的跨边界头，纯 C）
 │   ├── plugin_api_export.h   # 导出宏：插件默认 dllexport，宿主定义 SCREENSHOT_HOST_EXPORTS
 │   ├── shot_plugin_helpers.h # 插件侧工具汇总头（只 include，不声明类）
-│   └── shot_plugin_helpers/  # 每类一个头文件：iface_entry / logger / config /
-│                             # event_bus / plugin_config / plugin_registry
+│   ├── shot_plugin_helpers/  # 每类一个头文件：iface_entry / logger / config /
+│   │                         # event_bus / plugin_lists / plugin_registry
 │   ├── dllHandler.h           # LoadLibrary / dlopen 封装（含不抛异常的 tryGetFunction）
 │   ├── pluginManager.h       # 插件扫描、依赖排序、加载与热卸载
-│   ├── hostServices.h        # 宿主服务表：日志、配置、事件总线、配置目录、插件注册表
-│   ├── hostRuntime.h         # 宿主编排：PluginManager + 配置目录 + 插件注册表
+│   ├── hostServices.h        # 宿主服务表：日志、配置、事件总线、列表服务、插件注册表
+│   ├── hostListCatalog.h     # 通用列表目录：config_list 生成 + lists.* 事件协议
+│   ├── hostRuntime.h         # 宿主编排：PluginManager + 列表目录 + 插件注册表 + 采集流水线
+│   ├── capturePipeline.h     # 采集流水线：屏幕采集 → 图像处理 → 图像保存的宿主编排
 │   ├── config.h              # core::Config：JSON 配置文件读写
-│   └── PluginInstances/      # 宿主侧插件对象包装（base / ImageProcessor / LibProvider …）
+│   └── PluginInstances/      # 宿主侧插件包装（base / ImageProcessor / LibProvider / ScreenCapture / ImageSaver …）
 ├── src/                      # 宿主实现与入口
 ├── plugins/                  # 每个子目录都是一个独立插件工程
 │   ├── example_processor/    # 完整示例：一个 DLL 两个插件，都带配置项
 │   ├── opencv_provider/      # 合法但零能力的插件包（把 OpenCV 带进进程）
-│   ├── setting_window/       # Win32 窗口示例：插件自建线程与消息循环
-│   └── settings_ui/          # 设置页：ImGui + Win32 + OpenGL3
+│   ├── screen_capture/       # 屏幕采集：Windows GDI 抓虚拟桌面（非 Windows 跳过）
+│   ├── image_saver/          # 图像保存：PNG/JPEG，目录/格式/质量/文件名可配置
+│   ├── settings_ui/          # 设置页：ImGui + GLFW + OpenGL3（跨平台，Windows 已验证）
+│   └── tray/                 # 托盘入口：截屏 / 打开设置 / 退出（非 Windows 跳过）
 ├── document/
 │   ├── README_SDK.md         # SDK 使用与完整编译约束
 │   ├── ABI_POLICY.md         # 只追加规则、interface id 登记表
-│   ├── SETTINGS.md           # 设置页、配置目录、插件启停与热卸载
+│   ├── SETTINGS.md           # 设置页：config_list、事件驱动写值/提交、插件启停与热卸载
+│   ├── LISTS.md              # 通用列表与事件驱动：list id 登记、lists.* 协议与刷新时机
+│   ├── CAPTURE.md            # 采集流水线：capture.* 事件、失败语义与 --capture
 │   ├── EVENT_BUS.md          # 宿主事件总线：主题约定、线程模型、生命周期
 │   └── METADATA.md           # metadata.json 的字段定义、权威规则与不写什么
 ├── cmake/
@@ -100,20 +114,34 @@ cmake --build build/Windows
 cmake --build build/Windows --target export_sdk
 ```
 
-首次 configure 会以清单模式自动安装 OpenCV（`opencv4` + jpeg/png/tiff/webp 特性）、`nlohmann-json`、`spdlog`
-与设置页插件用的 `imgui`（静态库，`win32-binding` + `opengl3-binding`），耗时较长。
+首次 configure 会以清单模式自动安装依赖（`opencv4` + jpeg/png/tiff/webp 特性、`nlohmann-json`、
+`spdlog`、`glfw3`、`nativefiledialog-extended`、`stb`，以及设置页插件用的 `imgui`——
+静态库，`glfw-binding` + `opengl3-binding`），耗时较长。设置页的运行期依赖 `glfw3.dll`、
+`nfd.dll` 与 OpenCV 一样由 `cmake/copy_runtime_deps.cmake` 从 vcpkg 运行时目录布置到 `bin/`，
+插件目录不含这些 DLL。通用列表协议不引入新依赖：列表快照就是 `nlohmann-json` 序列化的 JSON。
 
 ### 运行
 
 ```bash
-cd build/Windows/bin && ./Plugin-shot.exe
+cd build/Windows/bin && ./Plugin-shot.exe            # 不带参数：托盘常驻
+cd build/Windows/bin && ./Plugin-shot.exe --capture  # 截一张、打印路径后退出
+cd build/Windows/bin && ./Plugin-shot.exe --settings # 打开设置页后继续常驻（调试入口）
+cd build/Windows/bin && ./Plugin-shot.exe --help     # 打印用法
 ```
 
 插件目录按相对路径 `./plugins` 解析，因此**必须在 `bin/` 下启动**。
 
-启动后宿主发布 `settings.open`，设置窗口随程序打开。日志用 spdlog：控制台 +
+不带参数启动后宿主不会主动打开设置页（托盘正常时）：托盘菜单「截屏 / 打开设置 / 退出」分别
+发布 `capture.request` / `settings.open` / `app.quit`；若 `tray.main` 未加载（被禁用或加载
+失败），启动会自动发布 `settings.open` 兜底。截图默认保存到 `%USERPROFILE%\Pictures`，
+文件名模板 `shot_%Y%m%d_%H%M%S`、默认 PNG；目录/格式/质量/文件名都是 `plugins/image_saver`
+的配置项，可在设置页修改。`--capture` 成功时日志打印 `Capture saved: <path>`，失败返回非 0
+（退出码见 `document/CAPTURE.md` §6）。
+
+日志用 spdlog：控制台 +
 `%LOCALAPPDATA%\screen-shot\logs\host.log`（追加写）；配置写在
-`%LOCALAPPDATA%\screen-shot\config.json`（宿主设置与插件配置项都在这里，键是 `<plugin_id>/<key>`）。
+`%LOCALAPPDATA%\screen-shot\config.json`（宿主设置与插件配置项都在这里，键是 `<owner>/<id>`，
+与 `config_list` 条目的 `owner` / `id` 一一对应）。
 
 ### 产物布局（硬约束）
 
@@ -152,11 +180,12 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void);
 一个 DLL 就是**一个插件包**：`plugin_count` + `create(index)` 让宿主不必提前知道包里有什么，
 `metadata.json` 的 `plugins[]` 顺序与索引一一对应。
 
-### 三条让 ABI 不必再改的规则
+### 四条让 ABI 不必再改的规则
 
 1. **只加字段，不加符号**：整个包只有 `shot_module_entry` 一个导出。加能力靠往结构体末尾**追加字段**，不是加导出函数。
 2. **读字段前先问长度**：每个跨边界结构体第一个字段都是 `struct_size`，读取方一律先过 `SHOT_HAS_FIELD(ptr, type, field)`。于是老插件（短结构）与新宿主（想读新字段）能安全共存——**加字段永远不需要改版本号**。
 3. **能力用字符串 id 问**：`query_interface(instance, "shot.image_processor", 1)` 返回函数表，没有就返回 `NULL`，宿主安静跳过。新增一类能力 = 新增一个 id + 一个结构体，不动任何已有结构体。
+4. **数据形状不进 ABI**：新增一类 UI/宿主数据（菜单项、配置项、目标列表……）= 新 list id + JSON schema + `lists.*` 事件；ABI 只描述能力与行为，不描述数据结构，见 `document/LISTS.md`。
 
 `plugin_api.h` 末尾用 `static_assert` 钉住了每个结构体的字段偏移与总大小：
 重排或改类型会直接编译失败，而"追加字段"必须手动更新那一行——把破坏 ABI 变成一次有意识的行为。
@@ -166,12 +195,21 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void);
 | interface id | 结构体 | 作用 |
 | --- | --- | --- |
 | `shot.image_processor` | `ShotImageProcessorV1` | 处理一张图：`process(self, ShotImage*)`，返回 0 表示成功 |
+| `shot.screen_capture` | `ShotScreenCaptureV1` | 屏幕采集：`describe` 报告虚拟桌面几何，`capture` 把 BGRA8 像素写进宿主分配的 `ShotImage`，见 `document/CAPTURE.md` |
+| `shot.image_saver` | `ShotImageSaverV1` | 图像保存：把 `ShotImage` 落盘并写回最终路径；格式/质量/目录来自插件配置项，见 `document/CAPTURE.md` |
 | `shot.configurable` | `ShotConfigurableV1` | 声明并读写配置项，见下 |
 | `shot.lib_provider` | `ShotLibProviderV1` | 声明"我是运行库提供者"，报告库名与版本；宿主按 `PluginType::Lib` 登记 |
 | `shot.ui_provider` | `ShotUIProviderV1` | 窗口/托盘由插件自己创建，宿主只调 `init` / `deinit` / `post_to_plugin` |
 | `shot.host.event_bus` | `ShotHostEventBusV1` | **宿主服务**：进程内主题发布/订阅 |
-| `shot.host.plugin_config` | `ShotHostPluginConfigV1` | **宿主服务**：配置目录（宿主 + 可配置插件） |
+| `shot.host.config` | `ShotHostConfigV1` | **宿主服务**：宿主配置读写（旧接口；新代码用 `plugin_lists` 的 `config_list`） |
+| `shot.host.board_msg` | `ShotHostBoardEventV1` | **宿主服务**：旧版广播队列（新代码用 event_bus） |
+| `shot.host.plugin_lists` | `ShotHostPluginListsV1` | **宿主服务**：通用列表，按 list id 返回只读 JSON 快照（`config_list` / `tray_command_list`），见 `document/LISTS.md` |
 | `shot.host.plugin_registry` | `ShotHostPluginRegistryV1` | **宿主服务**：已安装插件状态与异步启停 |
+
+当前契约版本 `SHOT_ABI_MAJOR = 2` / `SHOT_ABI_MINOR = 0`：2.0 删除了旧的配置目录服务，
+改为通用列表服务 `shot.host.plugin_lists`（列表数据是 JSON 快照，注册/写值/提交全部走
+`lists.*` 事件）。删除已发布的服务属于破坏性变更，所以 major 涨到 2；
+**从 2.0 起，新增一种 UI/宿主数据不再改 ABI**：新 list id + JSON schema 即可。
 
 `ShotImage` 描述一块 8 位像素缓冲：
 
@@ -202,27 +240,40 @@ typedef struct ShotConfigurableV1 {
 - 约定：`set_config` 可能在运行中被调用（用户拖滑块），实现要么线程安全，要么声明"下次 `process` 生效"。
 
 **宿主的设置也走同一套描述符**：宿主内部以 `core` 伪插件实现 `shot.configurable`（日志级别、
-控制台/文件日志开关），配置目录把它和所有插件配置排在一起，设置页只写一套渲染逻辑。
+控制台/文件日志开关），宿主把所有可配置实例聚成 `config_list` JSON 快照，设置页只写一套
+渲染逻辑。
 
-- 存盘键是 `<plugin_id>/<key>`，值由**宿主**落盘到 `%LOCALAPPDATA%\screen-shot\config.json`；
+- 存盘键是 `<owner>/<id>`，值由**宿主**落盘到 `%LOCALAPPDATA%\screen-shot\config.json`；
   插件只负责 get/set，不需要自己写配置文件。
 - 启动时宿主把已存值灌回插件（没有已存值就用 `default_value`），插件不需要"读配置"这一步。
-- 应用一批设置后宿主发布 `config.applied`：缓存了派生状态的插件重读当前值即可，
-  **没有单独的 reload 调用**。
+- 写值走 `lists.update`（事件驱动、逐项回结果），落盘走 `lists.commit`；成功后宿主发布既有
+  `config.applied`（空负载）：缓存了派生状态的插件重读当前值即可，**没有单独的 reload 调用**。
 - 输出/保存相关的设置不归宿主：谁实现保存能力，谁在自己的 `kConfig[]` 里声明这些项。
 
-完整链路（配置目录、设置页插件、插件启停与热卸载）见 [`document/SETTINGS.md`](document/SETTINGS.md)。
+**列表：新数据形状不进 ABI**：`config_list` 与托盘菜单的 `tray_command_list` 来自同一个
+通用列表服务。插件要给 UI 提供一批新数据（菜单项、目标列表……）时，定义新 **list id + JSON
+schema**，运行期用 `lists.add` 注册、宿主用 `lists.changed` 通知；**不要为数据形状新增 ABI
+结构体或宿主服务**。完整协议、list id 登记表与性能约定见 [`document/LISTS.md`](document/LISTS.md)。
+
+完整链路（`config_list`、设置页插件、插件启停与热卸载）见 [`document/SETTINGS.md`](document/SETTINGS.md)。
 
 ### 设置页与插件启停
 
 设置窗口本身也是插件（`plugins/settings_ui`，实现 `shot.ui_provider`），宿主没有主窗口：
 
-- 设置页通过 `shot.host.plugin_config` 枚举配置目录，按描述符渲染 7 种控件
-  （BOOL / INT / FLOAT / STRING / ENUM / COLOR / PATH）；
+- 设置页通过 `shot.host.plugin_lists` 读 `config_list` JSON 快照，按条目 schema 渲染 7 种控件
+  （BOOL / INT / FLOAT / STRING / ENUM / COLOR / PATH）；写值走 `lists.update`、落盘走
+  `lists.commit`（带 `tag` 的事件往返，逐项结果回 `lists.updated` / `config.applied`）；
 - 通过 `shot.host.plugin_registry` 管理插件启停。**禁用是热卸载**：销毁实例、UI 插件先
   `host.shutdown` + `deinit`、退订事件总线，同包最后一个实例卸载后 `FreeLibrary`；
   重新启用则重新加载 DLL 并回灌已存配置。被其他已加载插件 `requires` 的插件不允许单独禁用；
-- 启停请求是异步的：设置页只登记，宿主 main 线程执行完才发布 `plugins.changed`。
+- **启用会级联启用依赖**：启用一个插件时，宿主先递归启用它 `requires` 的提供者；提供者
+  启用失败则整条启用失败，原因里写明是哪个依赖；
+- 托盘 `plugins/tray` 可以禁用/重新启用：右键菜单内容来自 `tray_command_list`（宿主预置
+  core 三项，插件用 `lists.add` 贡献），点击菜单项只发布条目声明的事件；`tray.main` 未加载
+  （被禁用或加载失败）时，常驻启动会自动发布 `settings.open`，以设置页作为入口兜底；
+- 启停请求是异步的：设置页只登记，宿主 main 线程执行完才发布 `plugins.changed`；一次启用
+  可能级联多个依赖，所以设置页可能连续收到多条 `plugins.changed`。
 
 ### 必须遵守的 ABI 约定
 
@@ -330,8 +381,9 @@ shot_add_plugin(acme_tools
 
 Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。
 macOS / Linux 分支按平台选择产物扩展名（`SHOT_DYN_EXT`）、运行库定位（RPATH）与剪枝规则；
-GUI 类插件（`plugins/setting_window` 的 Win32 窗口、`plugins/settings_ui` 的 ImGui 设置页）
-在非 Windows 上自动跳过。
+`plugins/screen_capture` 与 `plugins/tray` 是平台相关插件（GDI 抓屏 / Win32 托盘），
+非 Windows 由 CMake 直接跳过；`plugins/settings_ui` 用 GLFW 实现跨平台窗口，目前只有
+Windows 经过验证，macOS / Linux 的未验证点见 `plugins/settings_ui/README.md`。
 
 ## 许可
 

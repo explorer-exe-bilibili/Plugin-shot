@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "tray.main",
+      "name": "Tray",
+      "version": "0.1.0",
+      "description": "Windows 托盘图标：右键菜单由 tray_command_list 数据驱动（宿主预置 core 三项，插件可 lists.add 贡献），点击菜单项发布其声明的事件",
+      "interfaces": ["shot.ui_provider", "shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}

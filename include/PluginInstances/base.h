@@ -14,7 +14,9 @@ enum class PluginType{
     None,            /**< 未分类/未知。 */
     Lib,             /**< 运行库提供者（shot.lib_provider）。 */
     UIProvider,      /**< 自带窗口/托盘的 UI 提供者（shot.ui_provider）。 */
-    ImageProcessor   /**< 图像处理器（shot.image_processor）。 */
+    ImageProcessor,  /**< 图像处理器（shot.image_processor）。 */
+    ScreenCapture,   /**< 屏幕采集（shot.screen_capture）：只写宿主分配的缓冲。 */
+    ImageSaver       /**< 图像保存（shot.image_saver）：只负责落盘。 */
 };
 /**
  * @brief 宿主侧插件实例基类：持有模块表、插件实例指针与 DLL 句柄。

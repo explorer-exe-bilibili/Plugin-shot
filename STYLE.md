@@ -53,7 +53,10 @@
 
 - 读任何跨边界结构体的字段之前，先 `SHOT_HAS_FIELD`；
 - 跨边界结构体第一个字段永远是 `uint32_t struct_size`，由**构造方**填自己的 `sizeof`；
-- 插件不提供某个能力（函数指针为 `NULL`）是**正常情况**，不是错误。
+- 插件不提供某个能力（函数指针为 `NULL`）是**正常情况**，不是错误；
+- **数据形状不进 ABI**：给 UI/宿主提供一批新数据（菜单项、目标列表、热键……）时，做法是
+  **新 list id + JSON schema + `lists.*` 事件**，不是新结构体、新宿主服务；ABI 只描述能力与
+  行为（见 `document/LISTS.md`）。
 
 改契约之前必须读 `document/ABI_POLICY.md`，改元数据格式必须读 `document/METADATA.md`。
 
@@ -67,7 +70,7 @@
 | --- | --- | --- |
 | 契约头（纯 C，跨 DLL） | snake_case | `plugin_api.h` `plugin_api_export.h` |
 | 契约相邻的共享头（C++） | snake_case | `shot_plugin_helpers.h`（汇总头）、`shot_plugin_helpers/shot_logger.h` `shot_plugin_helpers/shot_config.h`（每类一个）、`plugin_meta.h` `plugin_requirement.h` `shot_semver.h` |
-| 宿主内部头 | lowerCamelCase | `dllHandler.h` `hostServices.h` `pluginManager.h` `configItem.h` `hostRuntime.h` `hostConfigCatalog.h` |
+| 宿主内部头 | lowerCamelCase | `dllHandler.h` `hostServices.h` `pluginManager.h` `configItem.h` `hostRuntime.h` `hostListCatalog.h` |
 | 宿主包装类 | PascalCase，放 `include/PluginInstances/` | `ImageProcessor.h` `LibProvider.h` `UIProvider.h`（`base.h` 是唯一例外，保留） |
 | 插件目录 | snake_case，**目录名 = CMake 目标名 = DLL 名 = 命名空间名** | `plugins/example_processor/` → `example_processor.dll` → `namespace example_processor` |
 | 插件源文件 | snake_case，一个能力一个文件 | `src/plugin_entry.cpp` `src/grayscale.cpp` `src/invert.cpp` |
@@ -158,7 +161,7 @@ std::int32_t grayscale_process(void* self, ShotImage* image) {  // 自由函数 
   - `}  // extern "C"`
 - **行尾不留空格**（现存 2 处，见 §11）；**不要**在文件中留下空行块（连续 3 个空行）。
 - **包含顺序**（每组之间空一行）：
-  1. 自身头文件（`setting_window.cpp` 的第一行是 `"setting_window.h"`）
+  1. 自身头文件（`src/HostServices.cpp` 的第一行是 `"hostServices.h"`）
   2. 标准库 `<...>`，**字母序**
   3. 项目头文件 `"..."`，**字母序**
   - 契约头永远写 `"plugin_api.h"`（靠 target include 目录找到），不写相对路径。
@@ -288,14 +291,14 @@ bool readFromFile(const std::string& dllPath, std::string& error);
 
 - **C 边界只有返回码**：`0` = 成功；`1` = 参数/索引/格式不对；`2` = 对方结构太短；配置键不认识返回**负数**。**不要发明新的码值**，现有语义见 `plugin_api.h` 各结构体注释。
 - **内部 C++ 用 `bool`**，边界处再映射：`return m_ops->process(m_instance, &image) == 0;`
-- **异常绝不跨越 DLL 边界**。边界内的 `try/catch` 只出现在必须兜底的地方（`PluginManager.cpp:215-223` 加载 DLL、`setting_window.cpp:201-205` 建线程），且 `catch (...)` 后就地转成返回码/`false`。
+- **异常绝不跨越 DLL 边界**。边界内的 `try/catch` 只出现在必须兜底的地方（`PluginManager.cpp:215-223` 加载 DLL、`plugins/settings_ui/src/settings_window.cpp` 的 `start()` 建线程），且 `catch (...)` 后就地转成返回码/`false`。
 - **失败不炸整个宿主**：加载失败 = 跳过一个插件并打日志（`document/METADATA.md:105-117` 的六步策略）。
 
 ### 6.3 内存与资源
 
 - **谁分配谁释放**：插件分配的对象只能由插件的 `destroy` 释放，**宿主绝不 `delete`**（`base.h:34-40`、`PluginBase` 析构里走 `m_module->destroy`）。
 - 插件里分配：`new (std::nothrow)` + 判空，失败清理已分配部分（`plugin_entry.cpp:41-47`）。
-- 宿主持有插件：`std::shared_ptr<DllHandler>` 共享 DLL 生命周期 + 裸 `void*` 不透明实例；`std::unique_ptr` 用于 PIMPL（`setting_window.h:76-77`）。
+- 宿主持有插件：`std::shared_ptr<DllHandler>` 共享 DLL 生命周期 + 裸 `void*` 不透明实例；`std::unique_ptr` 用于 PIMPL（`plugins/settings_ui/include/settings_window.h:72-73`）。
 - `std::string` **只在同一个 DLL 内部用**；跨边界一律 `const char*` + 长度。
 - Win32 类型（`HWND` 等）**只允许出现在 PIMPL 内部**，宿主永远看不到。
 
@@ -339,7 +342,7 @@ if (SHOT_HAS_FIELD(image, ShotImage, pixel_format) &&
 - `include/hostServices.h` + `src/HostServices.cpp`：宿主服务表、事件队列、日志/配置回调的转发；
 - `include/config.h` + `src/config.cpp`、`src/configItem.cpp`：`core::Config` / `core::ConfigItem`，只管配置读写；
 - `include/hostRuntime.h` + `src/hostRuntime.cpp`：运行期装配与生命周期锁，只做"把谁和谁装到一起、每轮做什么"；
-- `include/hostConfigCatalog.h` / `hostConfigurable.h` / `hostPluginRegistry.h` / `hostLogging.h`：配置目录、宿主设置、插件注册表、日志各一组文件；
+- `include/hostListCatalog.h` / `hostConfigurable.h` / `hostPluginRegistry.h` / `hostLogging.h`：列表目录、宿主设置、插件注册表、日志各一组文件；
 - `include/PluginManager.h` + `src/PluginManager.cpp`：只剩本职——扫描、依赖解析、加载/卸载。
 
 **新代码放哪里的三问**：
@@ -372,7 +375,7 @@ if (SHOT_HAS_FIELD(image, ShotImage, pixel_format) &&
   - 插件 DLL 的 ABI 回调（`create_instance` / `grayscale_process` …）签名由契约固定，只能是自由函数；
   - 入口文件 `src/main.cpp` 的一次性装配/演示代码；
   - lambda、模板与 `inline` 小工具（放头文件更合适，如 `include/shot_plugin_helpers.h`）。
-- 构造函数/析构函数在 `.h` 声明、`.cpp` 定义（`plugins/setting_window/include/setting_window.h` 的
+- 构造函数/析构函数在 `.h` 声明、`.cpp` 定义（`plugins/settings_ui/include/settings_window.h` 的
   PIMPL 是范本）。
 
 ### 6.8 头文件与 .cpp 的拆分粒度：一个类一个头文件
@@ -473,6 +476,10 @@ shot_add_plugin(my_plugin
 | `metadata.json` 的字段或语义 | `document/METADATA.md`、`cmake/ValidatePluginMeta.cmake`、相关插件的 `metadata.json` 与 `README.md` |
 | 插件新增/删除/行为变化 | 该插件 `README.md`、`README.md`/`README.en.md` 的「当前状态」表与目录树 |
 | 配置项、设置页、插件启停（热卸载）行为 | `document/SETTINGS.md`、相关插件 `README.md`、`README.md`/`README.en.md` 的状态表 |
+| 新增列表 / 列表事件协议（list id、JSON schema、`lists.*` 负载） | `document/LISTS.md` 的登记表与 schema、`document/EVENT_BUS.md` §4、贡献方/消费方插件的 `README.md`、`README.md`/`README.en.md` 的状态表 |
+| 插件启停级联 / 入口兜底 / `plugins.changed` 通知语义 | `document/SETTINGS.md` §3.1–§3.2、相关插件 `README.md`、`README.md`/`README.en.md` 的「设置页与插件启停」段 |
+| 采集流水线 / `capture.*` 事件 / `--capture` 行为 | `document/CAPTURE.md`、`document/EVENT_BUS.md` §4、`README.md`/`README.en.md` 的运行说明与状态表 |
+| 采集 / 保存 / 托盘插件的新增或行为变化 | `document/ABI_POLICY.md` 登记表、`document/CAPTURE.md`、该插件 `README.md`、`README.md`/`README.en.md` 的状态表与目录树 |
 | 目录结构、文件改名、新增模块 | `README.md`/`README.en.md` 的目录树、本文 §2 |
 | 构建目标 / 产物布局 / CMake 开关 / 最低版本 | `README.md` 的「构建」「产物布局」、`CMakeLists.txt` 注释、本文 §8 |
 | SDK 导出内容 | `document/README_SDK.md`（唯一源；`export_sdk` 会复制成 `sdk/README.md`） |
@@ -493,7 +500,7 @@ shot_add_plugin(my_plugin
 - **代码与文档同提交**：凡 §9.1 矩阵命中的文档，必须和代码在同一个提交里改完；
   只有代码、没有文档的提交视为未完成。
 - **提交前**：`git status` 确认没有把 `build/`、`sdk/`、`build_number.txt` 的自动变化混进本次改动。
-- 当前工作区是**重构进行中**（`setting_window` 未跟踪、`processors.hpp` 刚移位置、`plugin_api.h` 新增了能力）。接手第一件事：`git status --short`，先分清"哪些是未完成的重构"，不要把人家的半成品当成既定风格去模仿。
+- 当前工作区可能处于**重构进行中**（存在未跟踪文件、刚移动位置的头文件、`plugin_api.h` 新增的能力）。接手第一件事：`git status --short`，先分清"哪些是未完成的重构"，不要把人家的半成品当成既定风格去模仿。
 
 ---
 
@@ -513,7 +520,7 @@ shot_add_plugin(my_plugin
 | 5 | `pluginManager.h`、`plugin_meta.h`、`hostServices.h`、`base.h` | `namespace Plugin{` 缺空格、闭括号裸 `}` 或 `} //` | `namespace Plugin {` + `}  // namespace Plugin`（Host 同理） |
 | 6 | `include/shot_semver.h` | `Compare` 用 PascalCase、`to_string()const` 缺空格 | `compare()`、`to_string() const` |
 | 7 | `src/main.cpp` | 空 `while` 忙等 + Allman 花括号（半成品死代码） | 已删除；循环用 K&R |
-| 8 | `processors.hpp` vs `setting_window.h` | 两个同名 `copy_config_value` 语义相反：一个溢出返回 -1（违反契约），一个只报告长度 | 两份统一为契约语义：`>= 0` 是长度，**负数只表示 key 不认识** |
+| 8 | `processors.hpp`（旧窗口插件已删除） | 两个同名 `copy_config_value` 语义相反：一个溢出返回 -1（违反契约），一个只报告长度 | 现有实现统一为契约语义：`>= 0` 是长度，**负数只表示 key 不认识** |
 | 9 | `plugins/opencv_provider/src/plugin_entry.cpp` | `g_module`；手写 interface 查询 + `const_cast`；`init` 不校验 `abi_major` | `kModule`；`shot_plugin_helpers.h` + `SHOT_OPS` + `kIfaces[]`；`init` 校验 `abi_major` |
 | 10 | `src/plugin_meta.cpp`、`include/pluginManager.h` | 行尾多余空格 | 已清 |
 | 11 | `README.md:35` | 中文被写坏成 `依���驱动` | 已修回「依赖驱动」；保存后确认无 U+FFFD |
@@ -523,7 +530,7 @@ shot_add_plugin(my_plugin
 | 15 | `document/README_SDK.md` ↔ `sdk/README.md` | 生成物硬编码且已漂移，还含假事实（"宿主链接 OpenCV"） | `document/README_SDK.md` 是唯一源，`export_sdk` 直接 COPYONLY 复制；假事实已删 |
 | 16 | `CMakeLists.txt`、`CMakePresets.json`、插件 `CMakeLists.txt` | 最低版本三个值（3.15 / 3.21 / 3.20） | 根与插件/模块统一 **3.20**，presets **3.21**（schema v3 要求），README 已同步 |
 | 17 | `src/main.cpp` | 跨边界结构体 `ShotEvent` 用位置初始化 | 一律用指定初始化器（`.struct_size = ...`） |
-| 18 | `plugins/setting_window/src/setting_window.cpp` | `WM_NCCREATE` 里直接 `return TRUE`，`DefWindowProcW` 拿不到 `CREATESTRUCTW::lpszName`，窗口标题为空 | 注册完 `GWLP_USERDATA` 后 `return DefWindowProcW(wnd, msg, wp, lp);` |
+| 18 | 旧 Win32 窗口插件 | `WM_NCCREATE` 里直接 `return TRUE`，`DefWindowProcW` 拿不到 `CREATESTRUCTW::lpszName`，窗口标题为空 | 注册完 `GWLP_USERDATA` 后 `return DefWindowProcW(wnd, msg, wp, lp);` |
 
 **这类问题的共同点**：它们都不是"风格偏好"，而是**编译不过 / 语义反了 / 文档在撒谎**。
 修的时候顺手把 `git status` 看一遍，别把正在进行的重构半成品一起提交。
@@ -560,10 +567,12 @@ shot_add_plugin(my_plugin
 2. `document/ABI_POLICY.md`——只追加规则与 interface 登记表。
 3. `include/plugin_api.h` 开头的几段 banner（`:8-100`）——整个契约的三条纪律。
 4. `src/PluginManager.cpp` 的 `loadPlugins()`——五个阶段的加载流程。
-5. `include/config.h`、`include/hostServices.h`、`include/hostRuntime.h`——宿主基础设施（配置 / 服务表 / 运行期装配），每件一个类或一组文件，是 §6.6 的范本；日志直接用 spdlog，初始化在 `Host::Logging`（`src/hostLogging.cpp`）。
+5. `include/config.h`、`include/hostServices.h`、`include/hostRuntime.h`、`include/hostListCatalog.h`——宿主基础设施（配置 / 服务表 / 运行期装配 / 列表目录），每件一个类或一组文件，是 §6.6 的范本；日志直接用 spdlog，初始化在 `Host::Logging`（`src/hostLogging.cpp`）。
 6. `plugins/example_processor/`（整个目录，尤其 `src/plugin_entry.cpp`）——最完整的插件模板。
 7. `document/METADATA.md`——元数据为什么只是"声明"。
-8. `document/SETTINGS.md`——设置页、配置目录与插件热卸载（宿主 + 设置插件两侧都涉及）。
+8. `document/SETTINGS.md`——设置页、`config_list` 与插件热卸载（宿主 + 设置插件两侧都涉及）。
+9. `document/LISTS.md`——通用列表 + 事件驱动：新数据形状为什么用 list id + JSON schema，而不是加 ABI。
+10. `document/CAPTURE.md`——采集 → 处理 → 保存流水线，`capture.*` 事件与 `--capture`。
 
 **跑**：
 

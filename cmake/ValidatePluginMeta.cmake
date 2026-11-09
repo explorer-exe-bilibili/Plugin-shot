@@ -14,7 +14,8 @@
 #       宿主预筛就永远认不出这个插件）
 #    3b. "requires" 每条都是 name[op version]（op ∈ >= > <= < ==，version 是数字段），
 #        "provides" 每条只是名字，且不允许声明 core（core 是宿主自己）
-#    4. "abi.major" / "abi.minor" 与契约头的 SHOT_ABI_MAJOR / SHOT_ABI_MINOR 一致
+#    4. "abi.major" 与契约头 SHOT_ABI_MAJOR 相等；"abi.minor" 不大于 SHOT_ABI_MINOR
+#       （允许用旧 minor 构建的插件继续加载，追加能力不需要全量改 metadata）
 #
 #  刻意不校验 "package"：这个字段已经从 metadata 里删掉了 —— 它和目标 DLL 名重复，
 #  而宿主做配置键用的是全局唯一的 plugins[].id（改名、换目录都不受影响）。
@@ -46,7 +47,9 @@ set(_problems "")
 # ---------------------------------------------------------------------------
 foreach(_var SHOT_ABI_MAJOR SHOT_ABI_MINOR)
     string(REGEX MATCH "#define[ \t]+${_var}[ \t]+([0-9]+)" _m "${_contract}")
-    if(NOT CMAKE_MATCH_1)
+    # 不能用 if(NOT CMAKE_MATCH_1) 判断"没匹配到"：CMake 把字符串 "0" 当 FALSE，
+    # SHOT_ABI_MINOR 为 0 时会误报"契约头里找不到"。以 MATCH 的整段结果判断匹配与否。
+    if(NOT _m)
         message(FATAL_ERROR "ValidatePluginMeta: 契约头里找不到 ${_var}")
     endif()
     set(_contract_${_var} "${CMAKE_MATCH_1}")
@@ -64,7 +67,7 @@ if(_known_count EQUAL 0)
 endif()
 
 # ---------------------------------------------------------------------------
-# 1. abi.major / abi.minor 与契约头一致
+# 1. abi.major 相等且 abi.minor 不超过契约头
 # ---------------------------------------------------------------------------
 string(REGEX MATCH "\"abi\"[ \t]*:[ \t]*{[^}]*}" _abi_block "${_json}")
 if(NOT _abi_block)
@@ -77,8 +80,8 @@ else()
     if(NOT "${_abi_major}" STREQUAL "${_contract_SHOT_ABI_MAJOR}")
         list(APPEND _problems "abi.major(${_abi_major}) 与契约头(${_contract_SHOT_ABI_MAJOR}) 不一致")
     endif()
-    if(NOT "${_abi_minor}" STREQUAL "${_contract_SHOT_ABI_MINOR}")
-        list(APPEND _problems "abi.minor(${_abi_minor}) 与契约头(${_contract_SHOT_ABI_MINOR}) 不一致")
+    if("${_abi_minor}" GREATER "${_contract_SHOT_ABI_MINOR}")
+        list(APPEND _problems "abi.minor(${_abi_minor}) 比契约头(${_contract_SHOT_ABI_MINOR}) 新，需要重新构建插件")
     endif()
 endif()
 

@@ -2,31 +2,33 @@
 //
 // 一个 DLL = 一个插件包：
 //   · kEntries 的顺序就是 create(index) 的索引，必须与 metadata.json 的
-//     plugins[] 顺序一一对应；
+//     plugins[] 顺序一一对应（本包只有一个插件，对应关系仍然保留）；
 //   · 某个插件"会什么"由它自己的能力目录回答，宿主用 query_interface 逐个询问，
-//     因此这里完全不需要知道有几种插件类型。
+//     因此这里完全不需要知道有几种插件类型；
+//   · 宿主拿到的 instance 是一个不透明指针：插件自己分配、自己释放。
 //
-// 宿主拿到的 instance 是一个不透明指针：插件自己分配、自己释放。
+// 匿名命名空间里的函数都是 ABI 回调 / 模块表回调：签名由契约固定，只能是自由函数
+// （STYLE §6.7 的合法例外）。
 
 #include <cstdint>
 #include <iterator>
 #include <new>
 
 #include "plugin_api.h"
+#include "plugin_entry.h"
 #include "shot_plugin_helpers.h"
-#include "setting_window.h"
 
 namespace {
 
-using setting_window::PluginEntry;
+using image_saver::PluginEntry;
 
 const PluginEntry* const kEntries[] = {
-    &setting_window::kSettingWindow,
+    &image_saver::kImageSaver,
 };
 
 constexpr std::uint32_t kEntryCount = static_cast<std::uint32_t>(std::size(kEntries));
 
-using setting_window::PluginInstance;
+using image_saver::PluginInstance;
 
 void* create_instance(std::uint32_t index, const ShotHostServices* host) {
     if (index >= kEntryCount) {
@@ -45,8 +47,8 @@ void* create_instance(std::uint32_t index, const ShotHostServices* host) {
         return nullptr;
     }
 
-    // 演示"插件向宿主请求服务"：用 shot::Logger 报一句自己的 id。
-    // 老宿主可能没有 log 字段，shot::Logger 内部已经做了降级，这里不用再手写判空。
+    // 用 shot::Logger 报一句自己的 id。老宿主可能没有 log 字段，shot::Logger 内部
+    // 已经做了降级，这里不用再手写判空。
     shot::Logger(host).info(entry->id);
     return instance;
 }

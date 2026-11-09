@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "image_saver.main",
+      "name": "Image Saver",
+      "version": "0.1.0",
+      "description": "把 ShotImage 保存为 PNG/JPEG（stb_image_write）；目录/格式/质量/文件名均可配置",
+      "interfaces": ["shot.image_saver", "shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}

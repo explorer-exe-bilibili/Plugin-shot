@@ -11,7 +11,7 @@
 #include <spdlog/spdlog.h>
 
 #include "config.h"
-#include "hostConfigCatalog.h"
+#include "hostListCatalog.h"
 #include "hostPluginRegistry.h"
 
 using namespace Host;
@@ -102,8 +102,8 @@ void* HostServices::hostQueryInterface(void* /*ctx*/, const char* ifaceId, uint3
     if (ifaceId == nullptr) {
         return nullptr;
     }
-    // 每个服务只有一张表：事件总线/宿主配置/看板广播定义在本 TU，两个新服务
-    // 的表定义在各自类的 .cpp 里，这里只做 id 分发，不再重复定义。
+    // 每个服务只有一张表：事件总线/宿主配置/看板广播定义在本 TU，列表目录与
+    // 插件注册表的表定义在各自类的 .cpp 里，这里只做 id 分发，不再重复定义。
     if (std::strcmp(ifaceId, SHOT_HOST_IFACE_CONFIG) == 0) {
         return const_cast<ShotHostConfigV1*>(&g_hostConfig);
     }
@@ -113,8 +113,8 @@ void* HostServices::hostQueryInterface(void* /*ctx*/, const char* ifaceId, uint3
     if (std::strcmp(ifaceId, SHOT_HOST_IFACE_EVENT_BUS) == 0) {
         return const_cast<ShotHostEventBusV1*>(&g_eventBus);
     }
-    if (std::strcmp(ifaceId, SHOT_HOST_IFACE_PLUGIN_CONFIG) == 0) {
-        return const_cast<ShotHostPluginConfigV1*>(HostConfigCatalog::service());
+    if (std::strcmp(ifaceId, SHOT_HOST_IFACE_PLUGIN_LISTS) == 0) {
+        return const_cast<ShotHostPluginListsV1*>(HostListCatalog::service());
     }
     if (std::strcmp(ifaceId, SHOT_HOST_IFACE_PLUGIN_REGISTRY) == 0) {
         return const_cast<ShotHostPluginRegistryV1*>(HostPluginRegistry::service());

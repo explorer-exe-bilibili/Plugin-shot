@@ -100,8 +100,9 @@ std::int32_t module_init(const ShotHostServices* host, std::uint32_t flags) {
     if (SHOT_HAS_FIELD(host, ShotHostServices, abi_major) && host->abi_major != SHOT_ABI_MAJOR) {
         return 1;
     }
-    // 本插件用到的两个宿主服务是 abi 1.3 才有的；老宿主照常加载（宿主可能没有它们），
-    // 由 UI 侧的降级逻辑负责提示，不在这里拒绝加载。
+    // 本插件用到的宿主服务（shot.host.plugin_lists / shot.host.plugin_registry /
+    // shot.host.event_bus）在旧宿主上可能没有；照常加载，由设置页的降级逻辑提示，
+    // 不在这里拒绝加载。
     return 0;
 }
 
@@ -130,7 +131,7 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 
 // ---------------------------------------------------------------------------
 // ABI 胶水：插件状态对象 + 三个回调 + 能力目录 + 静态插件描述。
-// 与 plugins/setting_window 同一套写法：插件对象由插件 create / destroy，
+// 插件对象由插件 create / destroy，
 // 宿主只拿到一个不透明指针。
 // ---------------------------------------------------------------------------
 namespace settings_ui {

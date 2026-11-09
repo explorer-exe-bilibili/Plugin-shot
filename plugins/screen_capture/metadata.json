@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "screen_capture.main",
+      "name": "Screen Capture",
+      "version": "0.1.0",
+      "description": "用 Windows GDI 抓取整个虚拟桌面，把 BGRA8 像素写进宿主分配的缓冲",
+      "interfaces": ["shot.screen_capture"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}

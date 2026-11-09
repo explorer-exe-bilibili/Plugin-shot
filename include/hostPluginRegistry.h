@@ -23,8 +23,6 @@
 
 namespace Host {
 
-class HostConfigCatalog;
-
 /**
  * @brief 插件注册表：ShotHostPluginRegistryV1 的实现。
  *
@@ -78,28 +76,22 @@ public:
     /**
      * @brief 执行 pending 里的全部启停请求（只允许在 main 线程、持生命周期锁调用）。
      *
-     * 逐条调用 PluginManager::setPluginEnabled；启用的插件回灌已存配置；重建快照；
-     * 最后为每条请求发布 `plugins.changed`（被拒绝/失败时 reason 非空）。
+     * 逐条调用 PluginManager::setPluginEnabled（启用会做依赖级联）；重建快照后
+     * **对比操作前后的状态**，为每个状态变化各发布一条 `plugins.changed` ——
+     * 包括被级联启用的 provider。被拒绝/失败的请求即使状态没变也会发一条
+     * （带 reason），否则设置页拿不到"为什么没生效"。
      *
      * @param[in] manager 插件管理器，执行真正的卸载/加载。
-     * @param[in] catalog 配置目录；启用成功后用它回灌已存配置。
-     * @return true = 至少处理了一条请求（包括被拒绝的）；false = 没有 pending。
+     * @return true = 本轮至少有一个插件从"未加载"变成"已加载"（含依赖级联启用），
+     *         调用方需要为它们回灌已存配置；false = 没有 pending、或只有禁用/拒绝。
+     * @note 注册表刻意不碰配置目录/列表目录：启用后回灌什么、列表怎么重建，是
+     *       HostRuntime 的装配职责（STYLE.md §6.6 一个关注点一个类）。
      * @warning 调用方（HostRuntime）必须已持有生命周期锁，否则卸载可能与配置
      *          目录的插件调用并发。
      */
-    bool applyPending(Plugin::PluginManager& manager, HostConfigCatalog& catalog);
+    bool applyPending(Plugin::PluginManager& manager);
 
 private:
-    /** @brief 一条请求的处理结果，用于发 plugins.changed。 */
-    struct Outcome {
-        std::string id;      /**< 插件 id */
-        bool requested;      /**< 用户请求的是启用(true)还是禁用(false) */
-        std::string reason;  /**< 拒绝/失败原因；成功时为空串 */
-    };
-
-    /** @brief 按 id 从当前快照取记录；找不到返回 false。 */
-    bool findInstalled(const std::string& pluginId, Plugin::InstalledPlugin& out) const;
-
     /**
      * @brief 发布一条 `plugins.changed`（JSON 负载，格式见 SETTINGS.md §3.2）。
      * @param[in] pluginId 插件 id。

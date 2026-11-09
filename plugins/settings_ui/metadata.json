@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "abi": { "major": 1, "minor": 3 },
+  "abi": { "major": 2, "minor": 0 },
   "plugins": [
     {
       "id": "settings_ui.main",
       "name": "Settings",
       "version": "0.1.0",
-      "description": "设置页：描述符驱动的配置表单 + 插件启停管理（ImGui + Win32 + OpenGL3）",
+      "description": "设置页：描述符驱动的配置表单 + 插件启停管理（ImGui + GLFW + OpenGL3）",
       "interfaces": ["shot.ui_provider"],
       "requires": ["core>=0.1.0"],
       "provides": []

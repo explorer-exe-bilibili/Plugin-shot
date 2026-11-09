@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "abi": { "major": 1, "minor": 3 },
+  "abi": { "major": 2, "minor": 0 },
   "plugins": [
     {
       "id": "example.invert",

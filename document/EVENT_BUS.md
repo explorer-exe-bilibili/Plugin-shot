@@ -34,6 +34,8 @@
 - **回调里规则**：不要阻塞、不要做耗时任务；`publish` 会排到下一轮（不会重入）；
   `subscribe` / `unsubscribe` 安全（回调在锁外执行）。
 - 同一轮分发使用**订阅快照**：退订保证"没有新回调"，不保证"当前轮没有在途回调"。
+- 列表协议也建立在这个线程模型上：`lists.*` 事件只在 main 线程分发处理，所以列表写路径
+  天然单线程（见 `document/LISTS.md` §3、§7）。
 
 ## 4. 主题约定
 
@@ -41,24 +43,38 @@
 
 | 主题 | 方向 | 负载 |
 | --- | --- | --- |
-| `capture.request` | UI → 采集 | 空或参数（区域/模式） |
-| `capture.done` | 采集 → 编辑器/剪贴板 | 帧 id 等元数据（**不传像素**） |
-| `editor.save` / `editor.copy` | 编辑器 → 宿主/剪贴板 | 输出路径或空 |
-| `hotkey.triggered` | 托盘/热键 → 采集 | 热键 id |
-| `settings.open` | 托盘/热键 → 设置页 | 空 |
-| `config.applied` | 宿主 → 所有 | 空（设置页一次批量提交完成，见 `document/SETTINGS.md`） |
-| `plugins.changed` | 宿主 → 所有 | JSON：插件启停结果（字段见 `document/SETTINGS.md` §3.2） |
-| `app.quit` | 任意 → 宿主 | 空 |
+| `capture.request` | 任意插件/UI（托盘菜单、`--capture`）→ 流水线 | 空；v1 忽略负载 |
+| `capture.done` | 流水线 → 所有订阅者 | JSON：`{"path":"...","width":1920,"height":1080,"processors":2}` |
+| `capture.failed` | 流水线 → 所有订阅者 | JSON：`{"stage":"capture","reason":"..."}`；`stage` = `"capture"` / `"save"` |
+| `settings.open` | 托盘（`plugins/tray`）→ 设置页 | 空 |
+| `config.applied` | 宿主 → 所有插件 | 空（设置页一次批量提交完成，见 `document/SETTINGS.md`） |
+| `plugins.changed` | 宿主 → 所有 | JSON：插件启停结果（字段见 `document/SETTINGS.md` §3.2）；一次启停可能发多条（级联启用） |
+| `lists.add` | 插件 → 宿主 | JSON：`{"list":"...","owner":"<插件 id>","items":[...]}`；运行期贡献列表条目，见 `document/LISTS.md` §3.1 |
+| `lists.remove` | 插件 → 宿主 | JSON：`{"list":"...","owner":"...","ids":["..."]}`；`ids` 省略 = 撤回该 owner 全部，见 `document/LISTS.md` §3.2 |
+| `lists.update` | 消费方（设置页）→ 宿主 | JSON：`{"list":"config_list","tag":"...","changes":[{"owner","id","value"}]}`；仅 `config_list`，见 `document/LISTS.md` §3.3 |
+| `lists.commit` | 消费方（设置页）→ 宿主 | JSON：`{"list":"config_list","tag":"..."}`；仅 `config_list`，落盘，见 `document/LISTS.md` §3.4 |
+| `lists.updated` | 宿主 → 所有 | JSON：`{"list":"config_list","tag":"...","results":[{"owner","id","ok","reason"}],"error"?}`；写值/提交结果，失败也回，见 `document/LISTS.md` §3.5 |
+| `lists.changed` | 宿主 → 所有 | JSON：`{"list":"<list id>"}`；列表内容变化的唯一通知，同轮合并、每 list 一条，见 `document/LISTS.md` §3.6 |
+| `app.quit` | 任意 → 宿主 | 空；宿主收到后退出主循环 |
 
 **匹配规则**：精确匹配；`"capture.*"` 匹配该前缀下所有主题；`"*"` 匹配全部。
 同一个 `callback` 用多个模式订阅时，会按每个匹配的订阅各回调一次（不是去重）。
 第三方扩展用自己的前缀（如 `acme.sharpen.*`），别占用 `shot.*`。
 
+`capture.*` 的完整数据流、阶段失败语义与 `--capture` 退出码见 `document/CAPTURE.md`；
+本文只记主题约定，不重复长篇。
+
+`lists.*` 是"列表协议"的主题组：**读**走宿主服务 `shot.host.plugin_lists` 拿 JSON 快照，
+**写**走上面这些事件。完整的负载 schema、owner 校验、排序规则与刷新时机见
+`document/LISTS.md`；改列表协议要同步改那份文档的登记表，不要只改这里。
+
 ## 5. 生命周期与限制
 
 - 插件必须在 **`deinit` 返回前退订**（`unsubscribe(user)`）；卸载后宿主不再回调。
 - 单条负载上限 **64 KiB**；队列上限 **4096** 条，满时 publish 返回 -1（丢弃，不阻塞）。
-- **大对象不进总线**：截图帧走单独的 frame/surface 服务，总线上只传 id 与元数据。
+- **大对象不进总线**：`capture.done` 只带路径与尺寸，画面数据走单独的 frame/surface 服务
+  （见 `document/CAPTURE.md` §3）；列表内容也不塞进事件——事件里只放 list id 与条目 JSON，
+  完整快照用 `list_json` 读（见 `document/LISTS.md` §8）。
 - 请求-应答：负载里带 `request_id`，应答发到 `<topic>.reply`（约定，不是硬机制）。
 - 事件名/主题在接收方收到前一直有效（宿主已拷贝），接收方不需要自己再拷。
 
@@ -94,3 +110,4 @@ bus.publish("capture.request", payload);
 - [ ] `deinit` 返回前调用了 `unsubscribe`？
 - [ ] publish 返回值检查了（队列满会丢事件）？
 - [ ] 新增的宿主服务能力已在 `document/ABI_POLICY.md` 登记？
+- [ ] 新增/修改的是列表协议（`lists.*` / 新 list id）？→ 同步 `document/LISTS.md` 的登记表与 schema。

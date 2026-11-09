@@ -10,7 +10,7 @@
 plugins/example_processor/
 ├── CMakeLists.txt                      # 只做三件事：找到 shot_add_plugin、声明源文件、声明元数据
 ├── metadata.json                       # 插件清单：构建期被贴到 DLL 尾部
-├── include/example_processor/
+├── include/
 │   └── processors.hpp                  # 行寻址工具 + PluginEntry 结构 + 两个插件的声明
 ├── src/
 │   ├── plugin_entry.cpp                # 唯一的导出符号 shot_module_entry + 索引目录
@@ -57,6 +57,24 @@ cmake --build build
 6. **元数据贴尾**：`shot_add_plugin()` 在链接后把 `metadata.json` 追加到 DLL 尾部，
    用 `plugin_api.h` 里的 `PLUGIN_META_START_MARKER` / `PLUGIN_META_END_MARKER` 分隔。
    标记字面量只有契约头那一份，构建脚本在构建期直接读头文件取宏值。
+
+## 运行期贡献：给托盘加一条命令
+
+示例插件还演示了「插件不碰宿主 UI 代码、也不新增 ABI 结构体，就能往宿主里加东西」：
+
+- `example.invert` 实例化时（`src/plugin_entry.cpp` 的 `create_instance`）向事件总线
+  发布一条 `lists.add` 事件，往 `tray_command_list` 里声明一个条目
+  「示例：截屏（示例插件）」，点击时发布 `capture.request`。
+- `owner` 必须等于发布者插件 id（`example.invert`）：宿主按它校验来源，并在插件被
+  禁用/卸载时自动清理这条贡献，所以禁用 `example_processor` 后菜单项会消失、
+  重新启用后回来。
+- 托盘插件完全不认识这条命令，它只是把宿主聚合出来的 `tray_command_list` 渲染成菜单；
+  点击后发布的 `capture.request` 和 core 自带的「截屏」走同一条采集流水线。
+- 一个 DLL 里有两个插件，但这条贡献只属于 `example.invert`；DLL 内的 `static` 标记
+  保证只发一次。标记在实例销毁时清掉，DLL 重载后也会自然重置，所以启停
+  `example.invert`（哪怕 `example.grayscale` 还在、DLL 没卸载）都能重新声明。
+
+数据形状（有哪些字段、谁排序）不进 ABI，协议见 `document/LISTS.md`。
 
 ## 加一个自己的插件
 

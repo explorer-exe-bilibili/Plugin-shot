@@ -9,7 +9,6 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
-#include "hostConfigCatalog.h"
 #include "hostServices.h"
 
 namespace {
@@ -79,23 +78,7 @@ bool HostPluginRegistry::hasPending() const {
     return !m_pending.empty();
 }
 
-bool HostPluginRegistry::findInstalled(const std::string& pluginId,
-                                       Plugin::InstalledPlugin& out) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_current == nullptr) {
-        return false;
-    }
-    for (const Plugin::InstalledPlugin& record : *m_current) {
-        if (record.id == pluginId) {
-            out = record;
-            return true;
-        }
-    }
-    return false;
-}
-
-bool HostPluginRegistry::applyPending(Plugin::PluginManager& manager,
-                                      HostConfigCatalog& catalog) {
+bool HostPluginRegistry::applyPending(Plugin::PluginManager& manager) {
     std::map<std::string, bool> pending;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -105,39 +88,67 @@ bool HostPluginRegistry::applyPending(Plugin::PluginManager& manager,
         return false;
     }
 
-    // 真正的生命周期操作只能在 main 线程做；调用方已持生命周期锁，这里不再加锁。
-    std::vector<Outcome> outcomes;
-    outcomes.reserve(pending.size());
-    bool enabledAny = false;
+    // 操作前快照：启用会做依赖级联，被级联的 provider 也会改状态；只有对比前后
+    // 状态才能一条不漏地通知设置页（级联启用是"一次点击、多条变化"）。
+    const std::vector<Plugin::InstalledPlugin> before = manager.getInstalledPlugins();
+
+    std::map<std::string, std::string> outcomes;  // 被请求的 id -> 拒绝/失败原因
     for (const auto& [pluginId, enabled] : pending) {
         std::string reason;
-        const bool ok = manager.setPluginEnabled(pluginId, enabled, reason);
-        if (ok && enabled) {
-            enabledAny = true;
+        manager.setPluginEnabled(pluginId, enabled, reason);
+        if (!reason.empty()) {
+            outcomes[pluginId] = reason;
         }
-        outcomes.push_back(Outcome{pluginId, enabled, reason});
     }
-
-    // SETTINGS.md §3.1：重新启用后把该插件的已存配置再灌回去。
-    // applyStoredLocked 的约定是"调用方持生命周期锁"，这里的调用方就是 HostRuntime。
-    if (enabledAny) {
-        catalog.applyStoredLocked();
-    }
-
     refresh();
 
-    // 状态以"处理后的真实记录"为准：禁用被依赖拒绝时插件仍是 LOADED，
-    // 启用失败时记录是 FAILED。契约里 enabled 的含义是"已启用/已加载"。
-    for (const Outcome& outcome : outcomes) {
-        Plugin::InstalledPlugin record;
-        const bool found = findInstalled(outcome.id, record);
-        const bool enabledAfter = found && record.state == SHOT_PLUGIN_STATE_LOADED;
-        const uint32_t state = found
-            ? record.state
-            : (outcome.requested ? SHOT_PLUGIN_STATE_FAILED : SHOT_PLUGIN_STATE_DISABLED);
-        publishChanged(outcome.id, enabledAfter, state, outcome.reason);
+    std::map<std::string, Plugin::InstalledPlugin> previous;
+    for (const Plugin::InstalledPlugin& record : before) {
+        previous[record.id] = record;
     }
-    return true;
+    std::map<std::string, Plugin::InstalledPlugin> current;
+    // 本轮是否真有插件被（含级联）启用：对比前后 loaded 状态，而不是只看被请求
+    // 的 id —— 级联启用的 provider 不在 pending 里，同样需要回灌已存配置。
+    bool enabledAny = false;
+    for (const Plugin::InstalledPlugin& record : manager.getInstalledPlugins()) {
+        current[record.id] = record;
+        if (!record.loaded) {
+            continue;
+        }
+        const auto old = previous.find(record.id);
+        if (old == previous.end() || !old->second.loaded) {
+            enabledAny = true;
+        }
+    }
+
+    std::size_t published = 0;
+    for (const auto& [pluginId, record] : current) {
+        const auto old = previous.find(pluginId);
+        const bool changed = old == previous.end() || old->second.state != record.state ||
+                             old->second.loaded != record.loaded;
+        const auto reasonIt = outcomes.find(pluginId);
+        // 被请求的 id 优先用请求结果的原因（拒绝/失败）；级联出来的变化用记录里的
+        // 失败原因（成功时为空串）。
+        const std::string reason = reasonIt != outcomes.end()
+            ? reasonIt->second
+            : (record.state == SHOT_PLUGIN_STATE_FAILED ? record.reason : std::string());
+        if (!changed && reasonIt == outcomes.end()) {
+            continue;  // 状态没变、也不是被请求的 id：不发
+        }
+        publishChanged(pluginId, record.state == SHOT_PLUGIN_STATE_LOADED, record.state, reason);
+        ++published;
+    }
+    // 防御：被请求的 id 在处理后的快照里找不到（例如记录被移除），也要给设置页一条
+    // 失败通知，不能让它一直等。
+    for (const auto& [pluginId, reason] : outcomes) {
+        if (current.find(pluginId) == current.end()) {
+            publishChanged(pluginId, false, SHOT_PLUGIN_STATE_FAILED, reason);
+            ++published;
+        }
+    }
+    spdlog::info("HostPluginRegistry: 应用 {} 条启停请求，发布 {} 条 plugins.changed",
+                 pending.size(), published);
+    return enabledAny;
 }
 
 void HostPluginRegistry::publishChanged(const std::string& pluginId, bool enabled,

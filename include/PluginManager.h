@@ -172,6 +172,62 @@ class PluginManager {
      */
     std::string findDependentLocked(const Record& target) const;
 
+    /**
+     * @brief 加锁把依赖里的 provider 名字解析成插件记录 id。
+     *
+     * 先按插件 id 精确匹配，再按 metadata 的 provides 名字匹配（如 "opencv"）。
+     * @param[in] name requires 里的提供者名字（不含版本运算符）。
+     * @return 提供者记录的 id；没有匹配时返回空串。
+     */
+    std::string findProviderIdLocked(const std::string& name) const;
+
+    /**
+     * @brief 启用单个插件（不做依赖级联）。
+     *
+     * 包 DLL 还在就只重新 create，不在就重新 LoadLibrary + 校验 + init。所有插件
+     * 回调（init / create / module->destroy）都在数据锁之外执行；本函数不写禁用列表。
+     *
+     * @param[in]  id     插件 id。
+     * @param[out] reason 失败原因；成功时清空。
+     * @return true = 已加载（或本来就加载着）；false = 加载失败，记录被标成 FAILED。
+     */
+    bool enableOne(const std::string& id, std::string& reason);
+
+    /**
+     * @brief 禁用单个插件：依赖检查 → UI deinit → 销毁实例 → 按需卸载 DLL。
+     *
+     * 被已加载插件依赖时直接拒绝（v1 不做级联禁用）。插件回调全部在数据锁之外
+     * 执行；本函数不写禁用列表，由调用方统一持久化。
+     *
+     * @param[in]  id     插件 id。
+     * @param[out] reason 拒绝/失败原因；成功时清空。
+     * @return true = 已禁用（或本来就被禁用）；false = 被依赖拒绝或没有这个插件。
+     */
+    bool disableOne(const std::string& id, std::string& reason);
+
+    /**
+     * @brief 启用级联入口：先递归启用 metadata requires 里的提供者，再启用自己。
+     *
+     * 跳过 core（宿主自身）；按 record.id / record.meta.provides 匹配提供者；
+     * 深度优先 + visited 防环。没有 provider 记录的名字静默跳过（插件未安装）。
+     *
+     * @param[in]  id     要启用的插件 id。
+     * @param[out] reason 失败原因；依赖启用失败时写"依赖 X 启用失败：…"。
+     * @return true = 该插件及其依赖都已启用；false = 任一环节失败。
+     */
+    bool enableWithDependencies(const std::string& id, std::string& reason);
+
+    /**
+     * @brief enableWithDependencies 的深度优先实现。
+     *
+     * @param[in]     id      当前要启用的插件 id。
+     * @param[in,out] visited 已访问的 id：防依赖成环，也避免同一个 provider 重复启用。
+     * @param[out]    reason  失败原因。
+     * @return true = 当前插件（含其依赖）已启用。
+     */
+    bool enableDependenciesRecursive(const std::string& id, std::vector<std::string>& visited,
+                                     std::string& reason);
+
     /** @brief 加锁把实例从 m_instances / m_plugins 摘掉。
      *        不销毁实例：调用方的 shared_ptr 还持有它，销毁点由调用方决定。 */
     void eraseInstanceLocked(const std::shared_ptr<PluginBase>& instance);
@@ -265,15 +321,21 @@ public:
     /**
      * @brief 运行期启用/禁用一个插件（热卸载 / 重新加载）。
      *
-     * 只允许在宿主 main 线程调用。禁用顺序：依赖检查 → UI 插件 post
-     * "host.shutdown" + deinit → 销毁实例 → 包内没有实例了才 shutdown 模块并
-     * 释放 DLL → 更新禁用列表。启用走反方向：包 DLL 还在就只重新 create，
-     * 不在就重新 LoadLibrary + 校验 + init。
+     * 只允许在宿主 main 线程调用。**启用会做依赖级联**：先按 metadata 的 requires
+     * 递归把提供者（如 opencv.provider）启用成功，再启用目标插件；任一依赖失败则
+     * 整条失败，reason 里写明是哪个依赖失败。**禁用不做级联**：被已加载插件依赖时
+     * 直接拒绝。
+     *
+     * 禁用顺序：依赖检查 → UI 插件 post "host.shutdown" + deinit → 销毁实例 →
+     * 包内没有实例了才 shutdown 模块并释放 DLL。启用走反方向：包 DLL 还在就只
+     * 重新 create，不在就重新 LoadLibrary + 校验 + init。
      *
      * @param[in]  id      插件 id。
-     * @param[in]  enabled true = 启用，false = 禁用。
+     * @param[in]  enabled true = 启用（含级联启用依赖），false = 禁用。
      * @param[out] reason  失败原因；成功时清空。
      * @return true = 状态已切换（或本来就是目标状态）；false = 被拒绝/加载失败。
+     * @note 级联/禁用结果会写回宿主配置的 `plugins.disabled`（内存），落盘由
+     *       HostRuntime 在 tick 末尾统一做。
      */
     bool setPluginEnabled(const std::string& id, bool enabled, std::string& reason);
 

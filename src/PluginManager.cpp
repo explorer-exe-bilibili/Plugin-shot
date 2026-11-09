@@ -14,7 +14,9 @@
 #include <spdlog/spdlog.h>
 
 #include "PluginInstances/ImageProcessor.h"
+#include "PluginInstances/ImageSaver.h"
 #include "PluginInstances/LibProvider.h"
+#include "PluginInstances/ScreenCapture.h"
 #include "PluginInstances/UIProvider.h"
 #include "config.h"
 #include "hostServices.h"
@@ -305,6 +307,28 @@ PluginManager::CreatedPlugin PluginManager::createPlugin(const std::shared_ptr<D
             return created;  // provider 析构会触发 module->destroy，不泄漏实例
         }
         created.instance = std::move(provider);
+        return created;
+    }
+
+    // 采集与保存能力都是"两个函数缺一不可"：只实现一半的插件按缺能力处理。
+    const auto* screenCaptureOps = (query == nullptr)
+        ? nullptr
+        : static_cast<const ShotScreenCaptureV1*>(query(instance, SHOT_IFACE_SCREEN_CAPTURE, 1));
+    if (screenCaptureOps != nullptr &&
+        SHOT_HAS_FIELD(screenCaptureOps, ShotScreenCaptureV1, capture) &&
+        screenCaptureOps->describe != nullptr && screenCaptureOps->capture != nullptr) {
+        created.instance = std::make_shared<ScreenCaptureInstance>(
+            dll, module, instance, id, displayName, version, screenCaptureOps);
+        return created;
+    }
+
+    const auto* imageSaverOps = (query == nullptr)
+        ? nullptr
+        : static_cast<const ShotImageSaverV1*>(query(instance, SHOT_IFACE_IMAGE_SAVER, 1));
+    if (imageSaverOps != nullptr && SHOT_HAS_FIELD(imageSaverOps, ShotImageSaverV1, save) &&
+        imageSaverOps->save != nullptr) {
+        created.instance = std::make_shared<ImageSaverInstance>(
+            dll, module, instance, id, displayName, version, imageSaverOps);
         return created;
     }
 
@@ -688,73 +712,80 @@ bool PluginManager::setPluginEnabled(const std::string& id, bool enabled, std::s
         return false;
     }
 
-    if (!enabled) {
-        // ---- 禁用：依赖检查 → deinit → 销毁实例 → 包内没实例了才卸载 DLL ----
-        std::shared_ptr<PluginBase> instance;
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            Record* record = findRecordLocked(id);
-            if (record == nullptr) {
-                reason = "没有这个插件";
+    const bool ok = enabled ? enableWithDependencies(id, reason) : disableOne(id, reason);
+    // 级联可能"启用了一半依赖后失败"：此刻内存里的禁用列表已经变了（成功的那几个
+    // 已从列表移除），所以无论成败都写回一次，避免 Config 里留着其实已启用的 id。
+    // 真正的落盘由 HostRuntime 在 tick 末尾统一做。
+    persistDisabledList();
+    return ok;
+}
+
+bool PluginManager::disableOne(const std::string& id, std::string& reason) {
+    // ---- 禁用：依赖检查 → deinit → 销毁实例 → 包内没实例了才卸载 DLL ----
+    std::shared_ptr<PluginBase> instance;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        Record* record = findRecordLocked(id);
+        if (record == nullptr) {
+            reason = "没有这个插件";
+            return false;
+        }
+        if (record->info.state == SHOT_PLUGIN_STATE_DISABLED) {
+            return true;  // 已经是禁用状态：幂等
+        }
+        if (record->info.state == SHOT_PLUGIN_STATE_LOADED) {
+            // 被依赖的插件不允许单独禁用（v1 直接拒绝，不做级联禁用）。
+            const std::string dependent = findDependentLocked(*record);
+            if (!dependent.empty()) {
+                reason = "被 " + dependent + " 依赖";
                 return false;
             }
-            if (record->info.state == SHOT_PLUGIN_STATE_DISABLED) {
-                return true;  // 已经是禁用状态：幂等
-            }
-            if (record->info.state == SHOT_PLUGIN_STATE_LOADED) {
-                // 被依赖的插件不允许单独禁用（v1 直接拒绝，不做级联禁用）。
-                const std::string dependent = findDependentLocked(*record);
-                if (!dependent.empty()) {
-                    reason = "被 " + dependent + " 依赖";
-                    return false;
-                }
-                instance = findLoadedInstanceLocked(id);
-            }
+            instance = findLoadedInstanceLocked(id);
         }
-
-        if (instance != nullptr) {
-            // 与 unloadAll 顺序一致：先投 shutdown 通知，再 deinit（插件停线程、销窗口）。
-            // 这里故意在生命周期锁之外 deinit：UI 插件的窗口线程可能在等配置目录的
-            // 生命周期锁，持锁等它退出会互相等待。SETTINGS.md 也约定入口 UI 插件不启停。
-            if (const auto uiProvider = std::dynamic_pointer_cast<UIProvider>(instance)) {
-                uiProvider->postToPlugin(makeShutdownEvent());
-                if (!uiProvider->deinit()) {
-                    spdlog::warn("Plugin {} deinit reported failure; unloading anyway", id);
-                }
-            }
-        }
-
-        std::shared_ptr<DllHandler> dllToRelease;
-        const ShotModule* moduleToShutdown = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            Record* record = findRecordLocked(id);
-            if (instance != nullptr) {
-                eraseInstanceLocked(instance);
-                if (record != nullptr) {
-                    detachModuleIfUnusedLocked(record->info.dllPath, dllToRelease,
-                                               moduleToShutdown);
-                }
-            }
-            if (record != nullptr) {
-                record->info.state = SHOT_PLUGIN_STATE_DISABLED;
-                record->info.loaded = false;
-                record->info.reason.clear();
-            }
-            addDisabledLocked(id);
-        }
-        // 实例析构会调 module->destroy：必须在 shutdown 与 FreeLibrary 之前、且在锁外完成。
-        instance.reset();
-        if (moduleToShutdown != nullptr && moduleToShutdown->shutdown != nullptr) {
-            moduleToShutdown->shutdown();
-        }
-        dllToRelease.reset();  // 最后一个句柄释放后 LoadLibrary 计数归零，DLL 才真的卸载
-
-        persistDisabledList();
-        spdlog::info("Plugin disabled: {}", id);
-        return true;
     }
 
+    if (instance != nullptr) {
+        // 与 unloadAll 顺序一致：先投 shutdown 通知，再 deinit（插件停线程、销窗口）。
+        // 这里故意在生命周期锁之外 deinit：UI 插件的窗口线程可能在等配置目录的
+        // 生命周期锁，持锁等它退出会互相等待。SETTINGS.md 也约定入口 UI 插件不启停。
+        if (const auto uiProvider = std::dynamic_pointer_cast<UIProvider>(instance)) {
+            uiProvider->postToPlugin(makeShutdownEvent());
+            if (!uiProvider->deinit()) {
+                spdlog::warn("Plugin {} deinit reported failure; unloading anyway", id);
+            }
+        }
+    }
+
+    std::shared_ptr<DllHandler> dllToRelease;
+    const ShotModule* moduleToShutdown = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        Record* record = findRecordLocked(id);
+        if (instance != nullptr) {
+            eraseInstanceLocked(instance);
+            if (record != nullptr) {
+                detachModuleIfUnusedLocked(record->info.dllPath, dllToRelease, moduleToShutdown);
+            }
+        }
+        if (record != nullptr) {
+            record->info.state = SHOT_PLUGIN_STATE_DISABLED;
+            record->info.loaded = false;
+            record->info.reason.clear();
+        }
+        addDisabledLocked(id);
+    }
+    // 实例析构会调 module->destroy：必须在 shutdown 与 FreeLibrary 之前、且在锁外完成。
+    instance.reset();
+    if (moduleToShutdown != nullptr && moduleToShutdown->shutdown != nullptr) {
+        moduleToShutdown->shutdown();
+    }
+    dllToRelease.reset();  // 最后一个句柄释放后 LoadLibrary 计数归零，DLL 才真的卸载
+
+    spdlog::info("Plugin disabled: {}", id);
+    return true;
+}
+
+bool PluginManager::enableOne(const std::string& id, std::string& reason) {
     // ---- 启用：包 DLL 还在就只重新 create；不在就重新 LoadLibrary + 校验 + init ----
     std::uint32_t index = 0;
     std::string dllPath;
@@ -768,7 +799,7 @@ bool PluginManager::setPluginEnabled(const std::string& id, bool enabled, std::s
             return false;
         }
         if (record->info.state == SHOT_PLUGIN_STATE_LOADED) {
-            return true;  // 已经是启用状态：幂等
+            return true;  // 已经加载：幂等成功（级联里对已加载的 provider 走这里）
         }
         index = record->index;
         dllPath = record->info.dllPath;
@@ -815,10 +846,78 @@ bool PluginManager::setPluginEnabled(const std::string& id, bool enabled, std::s
         removeDisabledLocked(id);
         registerInstanceLocked(dllPath, plugin.instance);
     }
-    persistDisabledList();
     spdlog::info("Plugin enabled: {}", id);
     return true;
 }
+
+bool PluginManager::enableWithDependencies(const std::string& id, std::string& reason) {
+    // visited 跨整棵依赖树共享：既防 metadata 成环，也保证同一个 provider 只启用一次。
+    std::vector<std::string> visited;
+    return enableDependenciesRecursive(id, visited, reason);
+}
+
+bool PluginManager::enableDependenciesRecursive(const std::string& id,
+                                                std::vector<std::string>& visited,
+                                                std::string& reason) {
+    if (std::find(visited.begin(), visited.end(), id) != visited.end()) {
+        return true;  // 当前依赖链已经处理过（同时兜住成环）
+    }
+    visited.push_back(id);
+
+    // 锁内只读数据：目标是否已加载、以及它 requires 的提供者 id 列表。
+    // 解析 provider 时要查整张记录表，所以只能在持锁期间做。
+    std::vector<std::string> providers;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const Record* record = findRecordLocked(id);
+        if (record == nullptr) {
+            reason = "没有这个插件";
+            return false;
+        }
+        if (record->info.state == SHOT_PLUGIN_STATE_LOADED) {
+            return true;  // 已加载：依赖在它加载时就满足了，不用再级联
+        }
+        if (record->hasMeta) {
+            for (const PluginRequirement& requirement : record->meta.requireList) {
+                if (requirement.getName() == "core") {
+                    continue;  // core 是宿主自身，没有实体可以启用
+                }
+                const std::string providerId = findProviderIdLocked(requirement.getName());
+                if (!providerId.empty()) {
+                    providers.push_back(providerId);
+                }
+                // 找不到提供者说明它没装/元数据已变；交给 enableOne 自己按现状尝试，
+                // 不在这里判失败（与启动期"元数据只是声明"的宽松策略一致）。
+            }
+        }
+    }
+
+    // 深度优先：先把每个 provider（以及它自己的依赖）启用成功，再启用自己。
+    // 插件代码（LoadLibrary/create/init）全部在锁外执行，reason 逐层带上来源。
+    for (const std::string& providerId : providers) {
+        std::string providerReason;
+        if (!enableDependenciesRecursive(providerId, visited, providerReason)) {
+            reason = "依赖 " + providerId + " 启用失败：" + providerReason;
+            return false;
+        }
+    }
+    return enableOne(id, reason);
+}
+
+std::string PluginManager::findProviderIdLocked(const std::string& name) const {
+    for (const Record& record : m_records) {
+        if (record.info.id == name) {
+            return record.info.id;
+        }
+        for (const std::string& provided : record.meta.provides) {
+            if (provided == name) {
+                return record.info.id;
+            }
+        }
+    }
+    return {};
+}
+
 
 bool PluginManager::isPluginEnabled(const std::string& id) const {
     std::lock_guard<std::mutex> lock(m_mutex);

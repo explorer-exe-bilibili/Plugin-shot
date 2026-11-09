@@ -8,15 +8,17 @@
 namespace settings_ui {
 
 /**
- * @brief 设置页：把宿主的配置目录与插件注册表读成本地模型，并渲染 ImGui 表单。
+ * @brief 设置页：把宿主的配置列表与插件注册表读成本地模型，并渲染 ImGui 表单。
  *
  * 数据来源是宿主服务（不直接调用其它插件）：
- *   · `shot.host.plugin_config` —— 索引 0 是宿主设置（id "core"），其余是实现了
- *     shot.configurable 的插件；声明来自 ShotConfigDesc，值一律是字符串；
+ *   · `shot.host.plugin_lists` —— `config_list` 是宿主聚合的 JSON 快照：按提供者
+ *     （`owner`，`core` 是宿主自己）分组，每项对应一份配置声明；值一律是字符串；
  *   · `shot.host.plugin_registry` —— 已安装插件清单（含禁用/加载失败的）与异步启停。
  *
  * 编辑模型是"本地副本 + 应用/取消"（document/SETTINGS.md §4）：拖滑块只改本地值，
- * 点「应用」才逐条 set_value / set_enabled 并 save，点「取消」直接丢弃。
+ * 点「应用」后先发布 `lists.update` 写入、再发布 `lists.commit` 落盘，结果由
+ * `lists.updated` / `config.applied` 通知回来；插件启停走注册表，结果由
+ * `plugins.changed` 通知回来。点「取消」直接丢弃本地修改。
  *
  * @note 所有成员函数都只能在 SettingsWindow 的 UI 线程上调用：模型里存着 ImGui
  *       编辑缓冲，不是线程安全的。
@@ -38,10 +40,10 @@ public:
     SettingsPanel& operator=(const SettingsPanel&) = delete;
 
     /**
-     * @brief 全量重读配置目录与插件注册表，重建本地模型。
+     * @brief 全量重读配置列表与插件注册表，重建本地模型。
      *
-     * 打开窗口、`config.applied`、`plugins.changed` 都会走到这里。声明字符串由
-     * 提供者插件持有，插件被热卸载后就失效，所以这里一律拷成本地副本。
+     * 打开窗口、`settings.open` 都会走到这里；刷新时按 owner+id 合并回尚未应用的
+     * 本地修改（见 mergeDirtyValues），不会把用户编了一半的值冲掉。
      *
      * @param[in] host 宿主服务表；可为 nullptr（老宿主），此时模型置空并显示降级提示。
      */
@@ -55,20 +57,22 @@ public:
     void render();
 
     /**
-     * @brief 提交本地修改：脏配置项逐条 set_value、变化的启停逐条 set_enabled、再 save。
+     * @brief 提交本地修改：发布 lists.update 写入脏配置项、lists.commit 落盘，
+     *        再登记插件启停。
      *
-     * 有启停变更时进入"应用中…"，等宿主的 `plugins.changed` 到达后由
-     * onPluginsChanged() 结束等待（带超时兜底）。配置项被插件拒绝时留在原地标红。
+     * 提交是事件驱动的（document/LISTS.md）：写值结果由 onListsUpdated() 处理，
+     * 落盘结果由 onConfigApplied() 结束，启停由 onPluginsChanged() 结束；每一步都有
+     * 超时兜底。被拒绝的配置项留在原地标红并保持脏标记，不中断其它项的提交。
      */
     void apply();
 
-    /** @brief 丢弃全部未应用的编辑，回到最近一次基线（不写插件、不落盘）。 */
+    /** @brief 丢弃全部未应用的编辑，回到最近一次基线（不写宿主、不落盘）。 */
     void cancel();
 
     /** @brief 把所有配置值改成声明里的默认值；仍然要用户点「应用」才写回。 */
     void restoreDefaults();
 
-    /** @brief 收到 `config.applied`：以插件当前值为新基线重建模型。 */
+    /** @brief 收到 `config.applied`：结束保存等待，并以宿主当前值为新基线刷新配置区。 */
     void onConfigApplied();
 
     /**
@@ -77,6 +81,22 @@ public:
      * @param[in] payload 宿主发的 JSON（格式见 document/SETTINGS.md §3.2）；可为空。
      */
     void onPluginsChanged(std::string_view payload);
+
+    /**
+     * @brief 收到 `lists.changed`：`list` 是 config_list 时重建配置区（保留本地修改）。
+     *
+     * @param[in] payload JSON `{"list":"config_list"}`；为空时按配置列表处理。
+     */
+    void onListsChanged(std::string_view payload);
+
+    /**
+     * @brief 收到 `lists.updated`：按同 tag 匹配本次提交，逐项更新基线 / 标红被拒绝项，
+     *        然后进入 lists.commit 阶段。
+     *
+     * @param[in] payload JSON `{"list":"config_list","tag":"...","results":[...]}`；
+     *                    保存失败时是 `{"tag":"...","error":"..."}`。
+     */
+    void onListsUpdated(std::string_view payload);
 
 private:
     struct Impl;

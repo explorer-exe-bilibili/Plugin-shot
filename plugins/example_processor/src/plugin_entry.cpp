@@ -7,7 +7,11 @@
 //     因此这里完全不需要知道有几种插件类型。
 //
 // 宿主拿到的 instance 是一个不透明指针：插件自己分配、自己释放。
+//
+// 实例创建路径还演示"运行期贡献"：example.invert 实例化时发一次 lists.add，
+// 让宿主托盘多出一条示例命令——数据形状不进 ABI，见下方 publish_tray_command。
 
+#include <atomic>
 #include <cstdint>
 #include <iterator>
 #include <new>
@@ -29,6 +33,49 @@ constexpr std::uint32_t kEntryCount = static_cast<std::uint32_t>(std::size(kEntr
 
 using example_processor::PluginInstance;
 
+// ---- 运行期贡献：给托盘加一条命令 ----
+//
+// 插件完全不碰托盘代码，也不新增 ABI 结构体：托盘菜单是宿主聚合出来的
+// tray_command_list，插件只在实例化时发一条 lists.add 事件声明自己的条目，
+// 由宿主校验、排序后给托盘渲染；点击时托盘发布 capture.request，
+// 和 core 自带的「截屏」走同一条采集流水线。
+//
+// owner 必须等于发布者插件 id（宿主按它校验，并在插件被禁用/卸载时按它清理贡献），
+// 这里的 "example.invert" 就是 invert.cpp 里 kInvert.id 的值。
+const char kListsAddTopic[] = "lists.add";
+const char kTrayCommandPayload[] = R"json({
+    "list": "tray_command_list",
+    "owner": "example.invert",
+    "items": [
+        {
+            "id": "example.capture",
+            "label": "示例：截屏（示例插件）",
+            "event": "capture.request",
+            "data": "",
+            "order": 20
+        }
+    ]
+})json";
+
+// 一个 DLL 里有两个插件，但这条贡献只属于 example.invert，别发两遍：
+// 用 DLL 内的 static 标记保证只发一次。DLL 重载后 static 自然归零，
+// 所以重新启用插件时会重新声明；宿主在卸载时已经按 owner 清掉了旧贡献。
+static std::atomic<bool> trayCommandPublished{false};
+
+void publish_tray_command(const ShotHostServices* host) {
+    bool expected = false;
+    if (!trayCommandPublished.compare_exchange_strong(expected, true)) {
+        return;
+    }
+    shot::EventBus bus(host);
+    if (!bus.publish(kListsAddTopic, kTrayCommandPayload)) {
+        // 老宿主没有事件总线、或队列满：菜单项没了不致命，安静降级即可。
+        shot::Logger(host).warn("lists.add 发布失败（无事件总线或队列满），托盘示例命令不可用");
+        return;
+    }
+    shot::Logger(host).info("发布 lists.add：托盘命令「示例：截屏（示例插件）」");
+}
+
 void* create_instance(std::uint32_t index, const ShotHostServices* host) {
     if (index >= kEntryCount) {
         return nullptr;
@@ -49,6 +96,12 @@ void* create_instance(std::uint32_t index, const ShotHostServices* host) {
     // 演示"插件向宿主请求服务"：用 shot::Logger 报一句自己的 id。
     // 老宿主可能没有 log 字段，shot::Logger 内部已经做了降级，这里不用再手写判空。
     shot::Logger(host).info(entry->id);
+
+    // 运行期贡献只属于 example.invert（同一个 DLL 里的 grayscale 不需要）。
+    // 用 entry 指针判断而不是再写一遍 id 字符串。
+    if (entry == &example_processor::kInvert) {
+        publish_tray_command(host);
+    }
     return instance;
 }
 
@@ -59,6 +112,12 @@ void destroy_instance(void* handle) {
     }
     if (instance->entry->destroy) {
         instance->entry->destroy(instance->state);
+    }
+    // 包内只禁用 example.invert 时 DLL 不会卸载（example.grayscale 还在用同一个 DLL），
+    // 光靠"DLL 重载归零"会让重新启用后的 lists.add 不再发出、托盘项回不来。
+    // 所以实例销毁时也把标记清掉：宿主禁用时已按 owner 清掉旧贡献，重新 create 再声明。
+    if (instance->entry == &example_processor::kInvert) {
+        trayCommandPublished.store(false);
     }
     delete instance;
 }
