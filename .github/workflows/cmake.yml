@@ -1,0 +1,177 @@
+# ============================================================================
+#  GitHub Actions — 跨平台构建（CMake presets + vcpkg 清单模式 + Ninja）
+#
+#  结构参考 random_name/.github/workflows/Cmake.yml，按本仓库（CMake >= 3.21、
+#  vcpkg 清单模式、Ninja、插件工程、Windows-first）简化。
+#
+#  ── 已验证的平台 / 配置（真实 CI 结果驱动，随修复进展更新）──────────────
+#   [ ] Linux   ubuntu-latest  / GCC        / x64-linux   / Ninja / Release
+#   [ ] macOS   macos-latest   / AppleClang / arm64-osx   / Ninja / Release
+#   [ ] Windows windows-latest / MSVC       / x64-windows / Ninja / Release
+#       （Windows job 保留在矩阵里，非"必须绿"；Linux + macOS 是准入门槛）
+#
+#  ── 构建约定 ────────────────────────────────────────────────────────────
+#   · 配置：`cmake --preset release`，产物目录 build/<hostSystemName>（Linux /
+#     Darwin / Windows），即 build/<platform>/bin/Plugin-shot[.exe]。
+#   · vcpkg：清单模式，baseline 见 vcpkg-configuration.json。CI 里 clone 一份
+#     vcpkg 到 $VCPKG_ROOT 并 bootstrap，preset 用 $env{VCPKG_ROOT} 找工具链；
+#     依赖产物与源码下载目录用 actions/cache 缓存（命中后 configure 几乎瞬时）。
+#   · 冒烟：无头执行 `Plugin-shot --help`（在打开日志/插件/GUI 之前就返回，
+#     所以 Linux/macOS runner 不需要 X server / 显示器）。
+#   · Linux 系统依赖：X11/OpenGL（glfw3）+ GTK3/dbus（nativefiledialog-extended），
+#     按实际报错逐步补齐。
+#
+#  ── 可选裁剪（OpenCV 让 CI 太慢时）─────────────────────────────────────
+#   在 configure 步骤追加 -DSHOT_ENABLE_OPENCV=OFF 可跳过依赖 OpenCV 的插件
+#   （plugins/opencv_provider；默认 ON，本地构建行为不变）。
+# ============================================================================
+name: CMake CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+
+    strategy:
+      # 一个平台失败不取消其它平台：CI 结果要能同时看到 Linux/macOS/Windows。
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux / gcc / x64-linux
+            os: ubuntu-latest
+            platform: Linux
+            triplet: x64-linux
+          - name: macOS / clang / arm64-osx
+            os: macos-latest
+            platform: Darwin
+            triplet: arm64-osx
+          - name: Windows / msvc / x64-windows
+            os: windows-latest
+            platform: Windows
+            triplet: x64-windows
+
+    env:
+      # preset（CMakePresets.json）用 $env{VCPKG_ROOT} 拼 vcpkg 工具链路径。
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_TARGET_TRIPLET: ${{ matrix.triplet }}
+      VCPKG_DISABLE_METRICS: "1"
+      # 源码构建 OpenCV 时限制并发，避免 runner 内存被并行的编译单元吃满。
+      VCPKG_MAX_CONCURRENCY: "3"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------------
+      #  1. 系统依赖
+      # ---------------------------------------------------------------------
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config autoconf automake libtool libtool-bin \
+            curl zip unzip tar git nasm yasm \
+            libgl1-mesa-dev libglu1-mesa-dev libegl1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libxext-dev libxkbcommon-dev libwayland-dev \
+            libgtk-3-dev libdbus-1-dev gettext
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # macOS runner 自带 Clang / CMake；Ninja 缺失时补装。
+          if ! command -v ninja >/dev/null 2>&1; then
+            brew install ninja
+          fi
+
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # ---------------------------------------------------------------------
+      #  2. vcpkg（清单模式的底层工具）：clone 到 $VCPKG_ROOT 并 bootstrap。
+      #     必须在 manifest install 之前完成，否则工具链文件不存在。
+      # ---------------------------------------------------------------------
+      - name: Set up vcpkg (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eux
+          if [ ! -x "$VCPKG_ROOT/vcpkg" ]; then
+            rm -rf "$VCPKG_ROOT"
+            # 注意：不要 --depth 1 —— vcpkg 需要用 vcpkg-configuration.json 里的
+            # builtin-baseline 提交号（历次 master 上的提交），浅克隆里可能没有。
+            git clone --quiet https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+            "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+          fi
+          "$VCPKG_ROOT/vcpkg" version
+
+      - name: Set up vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:VCPKG_ROOT/vcpkg.exe")) {
+            Remove-Item -Recurse -Force "$env:VCPKG_ROOT" -ErrorAction SilentlyContinue
+            git clone --quiet https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+            & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+          }
+          & "$env:VCPKG_ROOT/vcpkg.exe" version
+
+      # ---------------------------------------------------------------------
+      #  3. 缓存：已安装依赖 + 源码下载目录（放在 vcpkg 就绪之后恢复，
+      #     这样 downloads 目录不会挡住 clone）。
+      # ---------------------------------------------------------------------
+      - name: Restore vcpkg cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/${{ matrix.platform }}/vcpkg_installed
+            ${{ env.VCPKG_ROOT }}/downloads
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-v1-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ matrix.triplet }}-v1-
+
+      # ---------------------------------------------------------------------
+      #  4. 配置 + 构建（Release，Ninja）
+      # ---------------------------------------------------------------------
+      - name: Configure (CMake preset release)
+        shell: bash
+        run: |
+          cmake --preset release -DVCPKG_TARGET_TRIPLET="$VCPKG_TARGET_TRIPLET"
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build --preset release
+
+      # ---------------------------------------------------------------------
+      #  5. 冒烟测试：--help 在 GUI/插件/日志初始化之前返回，可无头执行。
+      # ---------------------------------------------------------------------
+      - name: Smoke test (Plugin-shot --help)
+        shell: bash
+        run: |
+          set -eux
+          BIN="build/${{ matrix.platform }}/bin"
+          ls -la "$BIN"
+          if [ -d "$BIN/plugins" ]; then ls -la "$BIN/plugins"; fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$BIN/Plugin-shot.exe" --help
+          else
+            "./$BIN/Plugin-shot" --help
+          fi
