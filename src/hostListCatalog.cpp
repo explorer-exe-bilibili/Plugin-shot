@@ -218,8 +218,9 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
         {"id", "region.capture"},
         {"label", "区域截屏"},
         {"event", "capture.request"},
-        // region 的具体坐标由以后交互选区填进负载；现在先发 mode=region，
-        // 采集流水线会把它当成"区域采集"的入口（缺 region 时退化为全屏并记日志）。
+        // 这条只是"请开始框选"的入口：mode=region 且不带 region，采集流水线会忽略它
+        // （不抓屏、不落盘），由 plugins/region_selector 弹出覆盖层；框选确认后它会再发
+        // 一条带 region 坐标的 capture.request，那才是真正要裁剪采集的请求。
         {"data", R"json({"mode":"region"})json"},
         {"order", 15},
         {"separator", false},
