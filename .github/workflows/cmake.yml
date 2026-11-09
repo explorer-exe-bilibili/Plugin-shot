@@ -11,6 +11,12 @@
 #         opencv_provider 全部产出 .so）  `Plugin-shot --help` ✅（exit 0）
 #         无头 `Plugin-shot --capture` ✅ 验证到 dlopen 加载 4 个插件、
 #         贴尾 metadata 解析、OpenCV provider 报 4.12.0、事件总线/退出路径。
+#         另外用 `git archive HEAD` 在 ext4 上按本 workflow 的 preset 流程
+#         （干净 checkout + `cmake --preset release` + `cmake --build --preset
+#         release`）重跑了一遍以模拟真实 CI：configure/build/--help 全绿。
+#         该模拟顺带抓到并修复了 NTFS 大小写不敏感掩盖的 include 大小写问题
+#         （git 跟踪名 include/PluginManager.h → include/pluginManager.h，
+#          否则 Linux ext4 上 #include "pluginManager.h" 找不到、宿主一半 TU 编不过）。
 #       （screen_capture/tray/clipboard/hotkey/region_selector 是 Windows 实现，
 #        非 Windows 由各自 CMakeLists 主动跳过，不产出伪实现。）
 #   [ ] macOS   macos-latest   / AppleClang / arm64-osx   / Ninja / Release
