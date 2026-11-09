@@ -15,8 +15,9 @@ namespace core {
     /**
      * @brief 解析当前可执行文件路径并写入 appPath。
      *
-     * Windows 用 GetModuleFileNameA，Linux 读 /proc/self/exe；
-     * 结果会去掉末尾的路径分隔符。
+     * Windows 用 GetModuleFileNameA，Linux 读 /proc/self/exe，
+     * macOS 用 _NSGetExecutablePath + realpath；结果会去掉末尾的路径分隔符。
+     * 解析失败时 appPath 保持空串（调用方需自行容忍）。
      */
     void getAppPath();
 

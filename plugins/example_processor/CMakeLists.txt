@@ -12,6 +12,17 @@
 
 set(SHOT_PLUGIN_NAME example_processor)
 
+# SHOT_ENABLE_OPENCV=OFF 时跳过依赖 OpenCV 的插件（CI/无 OpenCV 机器裁剪用；默认 ON）。
+# 本插件虽然只用标准库处理像素，但 metadata.json 声明了 "opencv>=4.0.0" 运行时依赖，
+# 没有 OpenCV 时它没有完整可运行的意义，所以和 opencv_provider 一起跳过。
+if(DEFINED SHOT_ENABLE_OPENCV AND NOT SHOT_ENABLE_OPENCV)
+    if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+        set(SHOT_PLUGIN_SKIPPED TRUE PARENT_SCOPE)
+    endif()
+    message(STATUS "example_processor：SHOT_ENABLE_OPENCV=OFF，当前构建跳过")
+    return()
+endif()
+
 # 独立构建时才自成一个 CMake 项目；被宿主 add_subdirectory 时不重复声明。
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_minimum_required(VERSION 3.20)

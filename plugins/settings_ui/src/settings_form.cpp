@@ -7,6 +7,7 @@
 // PATH 项的"浏览…"通过 settings_dialog.cpp 调 nativefiledialog-extended；本文件不
 // 直接依赖任何平台 API，对话框不可用时把提示写在配置项旁边、用户可手输路径。
 
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <system_error>

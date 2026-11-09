@@ -4,11 +4,29 @@
 #  结构参考 random_name/.github/workflows/Cmake.yml，按本仓库（CMake >= 3.21、
 #  vcpkg 清单模式、Ninja、插件工程、Windows-first）简化。
 #
-#  ── 已验证的平台 / 配置（真实 CI 结果驱动，随修复进展更新）──────────────
-#   [ ] Linux   ubuntu-latest  / GCC        / x64-linux   / Ninja / Release
+#  ── 已验证的平台 / 配置 ────────────────────────────────────────────────
+#   [x] Linux   ubuntu-latest  / GCC        / x64-linux   / Ninja / Release
+#       在 WSL Ubuntu 24.04 + GCC 13.3（与 ubuntu-latest 等价工具链）实测通过：
+#         configure ✅  build ✅（宿主 + settings_ui/image_saver/example_processor/
+#         opencv_provider 全部产出 .so）  `Plugin-shot --help` ✅（exit 0）
+#         无头 `Plugin-shot --capture` ✅ 验证到 dlopen 加载 4 个插件、
+#         贴尾 metadata 解析、OpenCV provider 报 4.12.0、事件总线/退出路径。
+#       （screen_capture/tray/clipboard/hotkey/region_selector 是 Windows 实现，
+#        非 Windows 由各自 CMakeLists 主动跳过，不产出伪实现。）
 #   [ ] macOS   macos-latest   / AppleClang / arm64-osx   / Ninja / Release
-#   [ ] Windows windows-latest / MSVC       / x64-windows / Ninja / Release
-#       （Windows job 保留在矩阵里，非"必须绿"；Linux + macOS 是准入门槛）
+#       仅完成代码级跨平台修复（base.cpp 的 _NSGetExecutablePath 分支等）；
+#       GitHub Actions 尚未实际跑到该 job，等账号恢复后由本 workflow 验证。
+#   [x] Windows windows-latest / MSVC       / x64-windows / Ninja / Release
+#       本地 Windows（VS2022 MSVC + Ninja + vcpkg x64-windows 依赖）在隔离目录
+#       build/ci-verify-win 回归构建通过：宿主 + settings_ui/image_saver/
+#       example_processor/opencv_provider 全部编译链接成功，0 警告 0 错误。
+#       本 workflow 的 Windows job 保留在矩阵里，非"必须绿"（Linux + macOS 是准入门槛）。
+#
+#  ⚠ 账号状态备注：写下这段时，仓库所属账号的 GitHub Actions 被 billing 锁定，
+#    job 在 0 秒内失败并提示 "The job was not started because your account is
+#    locked due to a billing issue."（不是 workflow 语法问题）。账号解锁后
+#    推一次 / workflow_dispatch 即可得到真实 CI 结果；Linux 的结论来自本地
+#    WSL 完整构建，步骤与下面 workflow 一一对应。
 #
 #  ── 构建约定 ────────────────────────────────────────────────────────────
 #   · 配置：`cmake --preset release`，产物目录 build/<hostSystemName>（Linux /
@@ -18,12 +36,16 @@
 #     依赖产物与源码下载目录用 actions/cache 缓存（命中后 configure 几乎瞬时）。
 #   · 冒烟：无头执行 `Plugin-shot --help`（在打开日志/插件/GUI 之前就返回，
 #     所以 Linux/macOS runner 不需要 X server / 显示器）。
-#   · Linux 系统依赖：X11/OpenGL（glfw3）+ GTK3/dbus（nativefiledialog-extended），
-#     按实际报错逐步补齐。
+#   · Linux 系统依赖：X11/OpenGL（glfw3 端口编译需要）+ autotools 工具链
+#     （vcpkg 用 autotools 构建 dbus/libxcrypt 等）。nativefiledialog-extended 的
+#     vcpkg 端口在 Linux 用 NFD_PORTAL=ON（dbus 由 vcpkg 源码构建），所以
+#     libgtk-3-dev/libdbus-1-dev 不是必装项。清单按实际报错逐条补齐。
 #
 #  ── 可选裁剪（OpenCV 让 CI 太慢时）─────────────────────────────────────
 #   在 configure 步骤追加 -DSHOT_ENABLE_OPENCV=OFF 可跳过依赖 OpenCV 的插件
-#   （plugins/opencv_provider；默认 ON，本地构建行为不变）。
+#   （opencv_provider / example_processor；默认 ON，本地构建行为不变）。
+#   注意：vcpkg 清单里的 opencv4 仍会安装（清单模式不支持按选项剔除依赖），
+#   该开关只裁剪插件目标的编译/链接。
 # ============================================================================
 name: CMake CI
 
@@ -81,13 +103,25 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update -qq
+          # 说明（按 WSL Ubuntu 24.04 + GCC13 实际构建报错逐条补齐）：
+          #  · autoconf/autoconf-archive/automake/libtool/libltdl-dev/bison/flex/gperf/
+          #    gettext/autopoint —— vcpkg 用 autotools 构建的移植依赖（dbus/libxcrypt 等）；
+          #  · python3-venv —— libsystemd 端口在 configure 阶段要建 venv；
+          #  · X11/OpenGL dev 库 —— glfw3 端口编译需要（X11/Xrandr/Xinerama/Xcursor/Xi/
+          #    Xext/xkbcommon/wayland）；
+          #  · nasm/yasm —— libjpeg-turbo 的 SIMD 汇编；
+          #  · nativefiledialog-extended 的 vcpkg 端口在 Linux 用 NFD_PORTAL=ON，
+          #    依赖由 vcpkg 自己源码构建的 dbus，所以系统 libgtk-3-dev/libdbus-1-dev
+          #    实际上不是必装项（装了也无害）。
           sudo apt-get install -y --no-install-recommends \
-            build-essential ninja-build pkg-config autoconf automake libtool libtool-bin \
-            curl zip unzip tar git nasm yasm \
+            build-essential ninja-build pkg-config git curl zip unzip tar \
+            autoconf autoconf-archive automake libtool libtool-bin libltdl-dev \
+            bison flex gperf gettext autopoint python3-venv \
+            nasm yasm \
             libgl1-mesa-dev libglu1-mesa-dev libegl1-mesa-dev \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
             libxext-dev libxkbcommon-dev libwayland-dev \
-            libgtk-3-dev libdbus-1-dev gettext
+            libselinux1-dev libpam0g-dev
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'

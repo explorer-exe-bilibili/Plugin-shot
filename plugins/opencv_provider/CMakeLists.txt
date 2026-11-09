@@ -11,6 +11,17 @@
 
 set(SHOT_PLUGIN_NAME opencv_provider)
 
+# SHOT_ENABLE_OPENCV=OFF 时跳过本插件（CI/无 OpenCV 机器裁剪用；默认 ON，
+# 本地构建行为不变）。注意：vcpkg 清单模式不支持按选项剔除依赖，
+# opencv4 仍会安装；本开关只裁剪插件目标的编译/链接。
+if(DEFINED SHOT_ENABLE_OPENCV AND NOT SHOT_ENABLE_OPENCV)
+    if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+        set(SHOT_PLUGIN_SKIPPED TRUE PARENT_SCOPE)
+    endif()
+    message(STATUS "opencv_provider：SHOT_ENABLE_OPENCV=OFF，当前构建跳过")
+    return()
+endif()
+
 # 独立构建时才自成一个 CMake 项目；被宿主 add_subdirectory 时不重复声明。
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_minimum_required(VERSION 3.20)

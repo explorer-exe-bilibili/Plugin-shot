@@ -43,6 +43,14 @@ set(VERSION_H_IN                  "${INC_DIR}/version.h.in")
 # --- 可选特性 ------------------------------------------------
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# 依赖 OpenCV 的插件开关（默认 ON，本地构建行为不变）：
+#   ON  —— 构建 opencv_provider（链接 OpenCV 的示例）与 example_processor（运行时声明
+#          opencv 依赖的示例插件）。
+#   OFF —— 跳过这两个插件目标，供 CI / 无 OpenCV 的机器裁剪构建时间。
+# 注意：vcpkg 清单里的 opencv4 仍然会被安装（清单模式不支持按选项剔除依赖），
+#       本开关只裁剪插件目标的编译/链接。
+option(SHOT_ENABLE_OPENCV "Build plugins that depend on OpenCV (opencv_provider / example_processor)" ON)
+
 # --- Windows 图标与资源文件 -----------------------------------
 set(APP_ICON                      "${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.ico")
 set(APP_RC_IN                     "${CMAKE_CURRENT_SOURCE_DIR}/app.rc.in")
@@ -520,7 +528,7 @@ if(SHOT_PLUGIN_PROJECTS)
         get_filename_component(_plugin_name "${_plugin_dir}" NAME)
         add_subdirectory("${_plugin_dir}" "${CMAKE_BINARY_DIR}/plugins/${_plugin_name}")
         if(SHOT_PLUGIN_SKIPPED)
-            message(STATUS "插件工程 ${_plugin_name} 跳过（当前平台不支持）")
+            message(STATUS "插件工程 ${_plugin_name} 跳过（平台不支持或 SHOT_ENABLE_OPENCV=OFF）")
             unset(SHOT_PLUGIN_SKIPPED)
         else()
             message(STATUS "插件工程 ${_plugin_name} -> ${PLUGINS_OUTPUT_DIR}")
