@@ -101,6 +101,28 @@ namespace HostServices {
      * 回调里 publish 的新事件会进入下一轮，不会在本次分发里重入。
      */
     void dispatchEvents();
+
+    /**
+     * @brief 阻塞等待下一条事件或待处理的主线程工作（只允许宿主 main 线程调用）。
+     *
+     * main 循环不再用 16ms 轮询：没有工作可做时阻塞在这里；任何线程 publish /
+     * post_to_host / requestMainThreadWork 都会唤醒它。兜底超时只用于防御漏唤醒，
+     * 正常情况下主循环完全由事件驱动。
+     *
+     * @param[in] timeoutMs 兜底超时（毫秒）；<= 0 表示只检查不等待。
+     * @return true = 被事件 / 主线程工作唤醒；false = 超时（可以继续下一轮）。
+     * @note 只由宿主 main 线程调用；其它线程调用会打乱等待标志，不属于支持用法。
+     */
+    bool waitForActivity(std::int32_t timeoutMs);
+
+    /**
+     * @brief 登记"有主线程工作要做"并唤醒 main 循环（任意线程可调）。
+     *
+     * 典型场景：HostPluginRegistry::setEnabled 只登记 pending 就返回，真正执行在
+     * main 线程的 tick 里；那条路径不发事件，所以必须显式唤醒，否则要等兜底超时。
+     */
+    void requestMainThreadWork();
+
     /**
      * @brief 读一个配置项到调用方缓冲区。
      * @param[in] ctx 未使用。

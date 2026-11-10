@@ -1,13 +1,16 @@
 # 宿主事件总线（`shot.host.event_bus`）
 
-插件之间、插件与宿主之间的**进程内**消息通道。宿主实现、插件使用，接口定义在
-`include/plugin_api.h` 的 `ShotHostEventBusV1`，插件侧封装是 `shot_plugin_helpers.h`
-里的 `shot::EventBus`。
+**线程之间**（插件线程 ↔ 宿主 main 线程、插件 ↔ 插件、采集 worker ↔ main）的**进程内**
+消息通道。宿主实现、插件使用，接口定义在 `include/plugin_api.h` 的 `ShotHostEventBusV1`，
+插件侧封装是 `shot_plugin_helpers.h` 里的 `shot::EventBus`。
 
 ## 1. 为什么需要它
 
 "万物皆插件"下没有 Qt 的 signal/slot 可用，插件之间也不能直接互调（跨 DLL 只能走
-宿主）。总线让它们通过**主题字符串**解耦：发送方不知道谁在听，接收方不知道谁发的。
+宿主）。注意区分两条通道：**宿主调用插件能力是直接函数调用**（同一个线程上一次调用，
+例如 worker 线程上的 `image_processor` 链共享同一张 `ShotImage`，不经过总线）；
+**需要跨线程 / 跨插件通知时才走总线**——总线通过**主题字符串**解耦：发送方不知道谁
+在听，接收方不知道谁发的，订阅回调统一在宿主 main 线程执行。
 
 它同时补上了旧的 `broadcast_event`：那条路径只把事件塞进宿主队列、没有订阅者；
 现在 `post_to_host` 只投给宿主，`broadcast_event` 等价于 `publish`，总线投给所有订阅者。
@@ -26,11 +29,14 @@
 ## 3. 线程模型
 
 ```
-任意插件线程 --publish--> [宿主队列] --宿主 main 循环 dispatchEvents()--> 订阅回调
+任意插件线程 --publish--> [宿主队列 + 唤醒标志] --宿主 main 循环阻塞等待--> dispatchEvents() --> 订阅回调
 ```
 
-- **publish 任意线程可调**：只加锁入队，不做分发、不阻塞。采集流水线的 `capture.done` /
-  `capture.failed` 就是由**工作线程**发布的，但订阅回调仍然只在 main 线程执行。
+- **publish 任意线程可调**：只加锁入队 + 唤醒 main 线程，不做分发、不阻塞。采集流水线的
+  `capture.done` / `capture.failed` 就是由**工作线程**发布的，但订阅回调仍然只在 main 线程执行。
+- **宿主 main 循环是事件驱动阻塞等待**：没有事件、也没有待处理的主线程工作时，main 线程
+  阻塞在 `HostServices::waitForActivity()`（condition_variable）上，不再 16ms 轮询；
+  `publish` / `post_to_host` / 插件启停请求都会立即唤醒它（1s 超时只是防漏唤醒的兜底）。
 - **回调只在宿主分发线程（main 线程）执行**：顺序确定、不需要再同步。
 - **回调里规则**：不要阻塞、不要做耗时任务；`publish` 会排到下一轮（不会重入）；
   `subscribe` / `unsubscribe` 安全（回调在锁外执行）。
@@ -49,6 +55,8 @@
 | `capture.failed` | 流水线 → 所有订阅者 | JSON：`{"stage":"capture","reason":"..."}`；`stage` = `"capture"` / `"save"` |
 | `settings.open` | 托盘（`plugins/tray`）→ 设置页 | 空 |
 | `config.applied` | 宿主 → 所有插件 | 空（设置页一次批量提交完成，见 `document/SETTINGS.md`） |
+| `hotkey.suspend` | 设置页（`plugins/settings_ui`）→ 热键插件（`plugins/hotkey`） | 空；开始"按组合键录入"前发布，热键插件据此撤销全部全局注册（否则用户按到当前生效的组合键会先触发真实动作，例如立刻截一张图） |
+| `hotkey.resume` | 设置页 → 热键插件 | 空；录入结束（确认 / Esc / 清空）后发布，热键插件按**当前配置**重新注册（幂等；暂停期间收到 `config.applied` 只撤销不注册） |
 | `plugins.changed` | 宿主 → 所有 | JSON：插件启停结果（字段见 `document/SETTINGS.md` §3.2）；一次启停可能发多条（级联启用） |
 | `lists.add` | 插件 → 宿主 | JSON：`{"list":"...","owner":"<插件 id>","items":[...]}`；运行期贡献列表条目，见 `document/LISTS.md` §3.1 |
 | `lists.remove` | 插件 → 宿主 | JSON：`{"list":"...","owner":"...","ids":["..."]}`；`ids` 省略 = 撤回该 owner 全部，见 `document/LISTS.md` §3.2 |

@@ -246,6 +246,9 @@ int32_t HostPluginRegistry::setEnabled(void* /*ctx*/, const char* pluginId, int3
     }
     // 只登记，立刻返回：真正的卸载/加载在 main 线程下一轮 tick 执行。
     registry->m_pending[id] = (enabled != 0);
+    // 主循环现在阻塞等待事件（见 HostServices::waitForActivity）；启停请求不走
+    // 事件总线，必须显式唤醒 main 线程，否则要等兜底超时才执行。
+    HostServices::requestMainThreadWork();
     return 0;
 }
 

@@ -1,6 +1,8 @@
 #include "hostServices.h"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -28,6 +30,27 @@ static std::mutex eventMutex;
 // 插件侧等级（SHOT_LOG_*）到 spdlog 等级的映射；越界值按 INFO 兜底。
 // 只在本 TU 使用，按 STYLE.md §6.7 的例外放进匿名命名空间。
 namespace {
+
+// ---- main 循环阻塞等待（对应 HostServices::waitForActivity）--------------------
+//
+// 主循环没有事件可分发时阻塞在这里，避免 16ms 空转。醒来的条件只有两类：
+// 事件总线 / 旧事件队列有新数据，或者宿主自己登记了"有主线程工作"（插件启停）。
+// 用独立的 mutex + 标志而不复用 busMutex：发布路径只置标志 + notify，不需要
+// 在总线锁里等待，也不会和 dispatchEvents 的队列交换互相纠缠。
+std::mutex mainWakeMutex;
+std::condition_variable mainWakeCv;
+bool mainWakePending = false;
+
+/**
+ * @brief 置"main 线程有活"标志并唤醒等待方（任意线程可调）。
+ */
+void notifyMainThread() {
+    {
+        std::lock_guard<std::mutex> lock(mainWakeMutex);
+        mainWakePending = true;
+    }
+    mainWakeCv.notify_one();
+}
 
 spdlog::level::level_enum toSpdlogLevel(int32_t level) {
     switch (level) {
@@ -138,6 +161,8 @@ int32_t HostServices::postToHost(void* /*ctx*/, const ShotEvent* ev) {
         std::lock_guard<std::mutex> lock(eventMutex);
         g_eventQueue.push(std::move(event));
     }
+    // 旧事件队列同样由 main 循环排空，入队后也要唤醒。
+    notifyMainThread();
 
     const std::string line =
         "[host] received event " + std::string(ev->name) + " (" + std::to_string(ev->data_len) + " bytes)";
@@ -190,6 +215,7 @@ int32_t HostServices::eventBusPublish(void* /*ctx*/, const char* topic, const vo
         }
         pendingEvents.push_back(std::move(event));
     }
+    notifyMainThread();
     return 0;
 }
 
@@ -242,6 +268,25 @@ void HostServices::dispatchEvents() {
             }
         }
     }
+}
+
+void HostServices::requestMainThreadWork() {
+    notifyMainThread();
+}
+
+bool HostServices::waitForActivity(std::int32_t timeoutMs) {
+    std::unique_lock<std::mutex> lock(mainWakeMutex);
+    if (!mainWakePending && timeoutMs > 0) {
+        // predicate 写在 wait_for 里：被 notify 时只会在标志真的置位后返回，
+        // 不会因为虚假唤醒提前返回。
+        mainWakeCv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                            [] { return mainWakePending; });
+    }
+    if (!mainWakePending) {
+        return false;  // 兜底超时：只防漏唤醒，正常路径不会走到这里
+    }
+    mainWakePending = false;
+    return true;
 }
 
 int32_t HostServices::hostGetConfig(void* /*ctx*/, const char* key, char* buf, uint32_t buf_size) {

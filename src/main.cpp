@@ -1,10 +1,8 @@
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <system_error>
-#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -193,7 +191,7 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // 常驻主循环：事件分发 → 异步插件启停/配置落盘 → 让出 CPU。
+            // 常驻主循环：事件分发 → 异步插件启停/配置落盘 → 阻塞等待下一条事件。
             // 退出由 app.quit 事件驱动：HostRuntime 订阅它并置 quitRequested()。
             while (!runtime.quitRequested()) {
                 // 每轮先把事件总线里排队的消息分发给订阅者；回调跑在 main 线程上。
@@ -203,8 +201,14 @@ int main(int argc, char** argv) {
                 while (!Host::g_eventQueue.empty()) {
                     Host::g_eventQueue.pop();
                 }
-                // TODO: 主循环仍是 16ms 轮询；事件总线支持阻塞等待后改成真正的事件等待。
-                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                // app.quit 在上一轮 dispatch 里可能已经置了退出标志：先检查再阻塞，
+                // 否则要白等一次兜底超时才退出。
+                if (runtime.quitRequested()) {
+                    break;
+                }
+                // 没有工作就阻塞等待：publish / post_to_host / requestMainThreadWork
+                // 都会唤醒；1s 只是防漏唤醒的兜底，正常路径不再空转轮询。
+                Host::HostServices::waitForActivity(1000);
             }
             spdlog::info("Quit requested, shutting down");
         }
