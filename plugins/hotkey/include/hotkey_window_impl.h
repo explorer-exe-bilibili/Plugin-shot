@@ -44,6 +44,10 @@ inline constexpr char kTopicCaptureRequest[] = "capture.request";
 inline constexpr char kTopicSettingsOpen[] = "settings.open";
 /** @brief 订阅：设置页应用后宿主发布空负载的 config.applied，触发热键重注册。 */
 inline constexpr char kTopicConfigApplied[] = "config.applied";
+/** @brief 订阅：设置页开始录入组合键（空负载），请求撤掉全部全局注册。 */
+inline constexpr char kTopicHotkeySuspend[] = "hotkey.suspend";
+/** @brief 订阅：设置页结束录入（空负载），请求按当前配置恢复注册。 */
+inline constexpr char kTopicHotkeyResume[] = "hotkey.resume";
 
 /** @brief 区域截屏的 capture.request 负载（固定 JSON 字面量，不需要 JSON 库）。 */
 inline constexpr char kRegionCapturePayload[] = R"json({"mode":"region"})json";
@@ -59,6 +63,13 @@ inline constexpr char kEventHostShutdown[] = "host.shutdown";
 inline constexpr UINT kMsgReapply = WM_APP + 1;
 /** @brief stop() 请求退出消息循环（窗口与热键统一在线程收尾做）。 */
 inline constexpr UINT kMsgQuit = WM_APP + 2;
+/**
+ * @brief 设置页请求暂停/恢复全局热键注册（收到 hotkey.suspend / hotkey.resume）。
+ *
+ * 消息只负责唤醒热键线程；权威的期望状态在 Impl::suspendPending / suspendValue 里，
+ * 这样"暂停→恢复"两条紧挨着的通知最终一定落到恢复（最后一次请求生效）。
+ */
+inline constexpr UINT kMsgSetSuspend = WM_APP + 3;
 
 // ---------------------------------------------------------------------------
 //  注册表
@@ -99,6 +110,8 @@ struct HotkeyWindow::Impl {
     HWND hwnd = nullptr;               /**< 隐藏消息窗口；WM_HOTKEY 与唤醒消息都投给它。 */
     bool acceptingEvents = false;      /**< start 拉起线程后为 true；stop 一开始就置 false。 */
     bool reapplyPending = false;       /**< 收到过重注册请求（热键线程取走并清零）。 */
+    bool suspendPending = false;       /**< 收到过暂停/恢复请求（热键线程取走并清零）。 */
+    bool suspendValue = false;         /**< 与 suspendPending 成对：true = 暂停，false = 恢复。 */
 
     // ---- start() 与热键线程之间"窗口建好了没有"的握手 ----
     std::mutex readyMutex;             /**< 保护 ready / failed。 */
@@ -112,6 +125,7 @@ struct HotkeyWindow::Impl {
 
     // ---- 热键注册表（只在热键线程上访问） ----
     RegisteredHotkey hotkeys[kHotkeyCount]; /**< 下标 0/1/2 = 截屏 / 区域截屏 / 打开设置。 */
+    bool suspended = false; /**< true = 设置页正在录入组合键：全部注册已撤销，不重新注册。 */
 
     // ---- 生命周期与窗口线程（hotkey_window.cpp / hotkey_window_message.cpp） ----
     void run();
@@ -130,6 +144,23 @@ struct HotkeyWindow::Impl {
      * 注册与撤销始终在同一个线程、且不与消息分发竞争。
      */
     void requestReapply();
+
+    /**
+     * @brief 任意线程可调：请求暂停/恢复全部全局热键注册。
+     *
+     * 设置页录入组合键时会发 hotkey.suspend（撤掉注册，避免用户按下的"旧组合键"
+     * 先触发真实动作），录入结束后发 hotkey.resume 恢复。这里只置标记 + PostMessage，
+     * RegisterHotKey / UnregisterHotKey 仍然只在热键线程上执行。
+     *
+     * @param[in] suspend true = 暂停（撤销全部注册），false = 恢复（按当前配置注册）。
+     */
+    void requestSuspend(bool suspend);
+
+    /**
+     * @brief 热键线程上执行：暂停（撤销全部注册）或恢复（按当前配置重新注册）。
+     * @param[in] suspend true = 暂停，false = 恢复；重复调用是幂等的。
+     */
+    void setSuspended(bool suspend);
 
     // ---- 热键注册与事件发布（hotkey_window_message.cpp） ----
     void applyHotkeys();

@@ -33,13 +33,14 @@ plugins/settings_ui/
     ├── settings_panel.cpp          # SettingsPanel 公共接口转发 + render() 顶层框架
     ├── settings_model.cpp          # config_list JSON 解析 + 模型刷新 + 跨文件共用的值解析/格式化工具
     ├── settings_form.cpp           # 操作条 + 配置节 + 7 种 kind 的控件渲染
+    ├── settings_hotkey.cpp         # STRING + options="hotkey" 的"按组合键录入"控件（模态弹窗 + suspend/resume）
     ├── settings_plugin_table.cpp   # 插件管理表渲染
     └── settings_apply.cpp          # 应用状态机（lists.update / commit）、取消 / 恢复默认、事件 / 等待超时
 ```
 
 公共头一个类一个（`SettingsWindow` / `SettingsPanel` 各占一个），`*_impl.h` 与
 `settings_dialog.h` 是**内部头**：只被本插件的 `.cpp` 包含。`.cpp` 按关注点拆分
-（模型 / 表单 / 插件表 / 提交、生命周期 / 图形 / 几何 / 对话框），每个文件都能一句话
+（模型 / 表单 / 热键录入 / 插件表 / 提交、生命周期 / 图形 / 几何 / 对话框），每个文件都能一句话
 说清职责（`STYLE.md` §6.8）。
 
 ## 2. 构建
@@ -99,8 +100,9 @@ POSIX 未验证的具体点（都留了代码里的 `// TODO:`）：
 | `lists.changed` | `list == "config_list"` 时重建配置区：按 owner+id 把未应用的本地修改合并回去，不丢用户正在编辑的值 |
 | `lists.updated` | 写值结果：按同 `tag` 匹配本次提交；`ok=false` 的项标红显示 `reason`，然后自动进入 `lists.commit` |
 | `plugins.changed` | 整表重新枚举注册表与配置列表（节可能增删），把负载里的 `reason` 显示在对应行，结束"应用中…" |
+| 点击热键项的「录入…」/ 结束录入 | 发布 `hotkey.suspend` / `hotkey.resume`（空负载）：让 hotkey 插件撤销 / 恢复全局注册，避免录入时按到旧组合键先触发真实动作（见 §4.1） |
 | 窗口跨屏拖动 | GLFW `content scale` 回调置脏标记 → 下一帧从默认样式基线重算 `ScaleAllSizes` + `FontScaleMain`（运行中 150% ↔ 100% 自动重缩放，不累积）；`settings.open` 恢复几何到另一块屏时也会先按目标屏 DPI 重建，第一帧就是对的 |
-| X / Esc | 只隐藏窗口：点 X 清掉 GLFW 的 should-close 标记，Esc 由键盘回调置位后统一 `glfwHideWindow`；线程、窗口、GL 上下文全部保留 |
+| X / Esc | 只隐藏窗口：点 X 清掉 GLFW 的 should-close 标记，Esc 由键盘回调置位后统一 `glfwHideWindow`；线程、窗口、GL 上下文全部保留（正在录入热键时 Esc 先取消录入，见 §4.1） |
 | `host.shutdown` / `deinit` | 先退订事件总线，再让事件循环退出并 `join` UI 线程，最后销毁窗口、终止 GLFW |
 
 窗口几何在每次隐藏（以及宿主退出时窗口仍开着）时写进**宿主配置**的
@@ -127,7 +129,7 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | `BOOL` | Checkbox | `"1"` / `"0"` |
 | `INT` / `FLOAT` | Slider + Input（用 `min/max/step`，越界 clamp，非法输入回退） | 十进制字符串 |
 | `ENUM` | Combo（`options` 按 `\|` 切） | 选项字符串 |
-| `STRING` | InputText | 原样 |
+| `STRING` | InputText；`options` 是 `"hotkey"` 时换成"当前组合键 + 录入…"（见 §4.1） | 原样 / 规范化组合键 |
 | `COLOR` | ColorEdit4 + hex 输入 | 统一存 `#RRGGBBAA`，读取兼容 `#RRGGBB` / `R,G,B,A` |
 | `PATH` | InputText + `浏览…`（nativefiledialog-extended） | 原样 |
 | 未知 kind | 灰色"不支持的配置类型"，不崩 | —— |
@@ -157,6 +159,30 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 复选框置灰——禁用入口插件等于把当前设置页一起卸载，`document/SETTINGS.md` §3.1 明确
 这一行由设置页负责置灰，宿主不加特判。
 
+### 4.1 热键组合录入（`options == "hotkey"`）
+
+`kind == STRING` 且描述符 `options` 为 `"hotkey"`（大小写不敏感）的配置项（目前是 hotkey
+插件的 `capture_hotkey` / `region_hotkey` / `settings_hotkey`）不再显示文本框，而是：
+
+1. 行内显示当前组合键（空值显示「（未设置）」）+「录入…」按钮；
+2. 点按钮弹一个**模态窗**独占键盘（鼠标与键盘导航都被挡在弹窗外，其它控件不响应），
+   提示按 `[Ctrl+][Alt+][Shift+][Win+]<A-Z|0-9|F1..F12>`；
+3. 按下合法组合后写成**规范化文本**（修饰键固定顺序 `Ctrl+Alt+Shift+Win`；小键盘数字按
+   `0-9` 算）写回 `item.value`，仍然要点「应用」才提交（走 §4 的脏标记 / 基线流程）；
+4. Esc 取消（值不变）；Backspace / Delete 清空，存空串——语义是"这个动作不设热键"：
+   hotkey 插件解析时按"热键为空"warn 跳过该项，不报错、也不让插件失败；
+5. 录入期间发布 `hotkey.suspend`、结束/取消时发布 `hotkey.resume`，让 hotkey 插件撤掉 /
+   恢复全局注册，避免按下旧组合键触发真实动作；hotkey 插件未加载或宿主没有事件总线时
+   安静降级（录入照常可用，只是不能避免触发已注册热键，日志记 WARN）；
+6. 录入中关窗 / 隐藏 / 宿主退出：窗口层取消录入并补发 `hotkey.resume`（`resume` 幂等；
+   漏发会让热键永久停在暂停状态）。
+
+边界：**没有修饰键的裸键允许录入**（`F9`、裸字母都合法，语法归 hotkey 插件），但会拦截
+正常输入，控件下方用提示行说明（用户配置责任，不擅自改）。**旧配置里的非法值原样显示、
+设置页不做语法校验**——解析器只有 hotkey 插件一份（`hotkey_binding.h`），再写一份会漂移；
+注册时非法值只 warn 跳过。`F1..F12` 支持；`F13+`、方向键、空格等不在语法范围内，弹窗里
+提示"不支持的按键"并继续等待。
+
 ## 5. 为什么这么设计
 
 | 决定 | 理由 |
@@ -175,6 +201,9 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | 几何存宿主配置，`io.IniFilename = nullptr` | 不在插件目录/工作目录旁边生成 `imgui.ini`；几何属于用户界面状态，不占用任何插件配置节 |
 | 几何恢复 clamp 计入窗口边框、且边框按**目标显示器** DPI 取 | 先把隐藏窗口搬进目标显示器再 `glfwGetWindowFrameSize`（真机实测 setPos 返回时已同步更新），否则 150% 创建、100% 恢复会拿错边框；实测主屏 L11/T45/R11/B11、副屏 L8/T31/R8/B8 |
 | 原生对话框只经 `settings_dialog` 一个模块 | 平台差异与库生命周期收在一处；设置页模型不需要知道窗口句柄 |
+| 热键录入用 `STRING + options="hotkey"`，不新增 kind / ABI | `options` 已经是"给设置页的交互提示"（PATH 就这么用）；新增一种控件只改设置页，插件只需在描述符写一个字符串（数据形状不进 ABI） |
+| 录入用模态弹窗而不是行内按键捕获 | ImGui 模态窗天然独占鼠标与键盘导航，满足"录入期间其它控件不响应"；行内状态要自己挡导航焦点，容易误触别的控件 |
+| 结束录入一定发 `hotkey.resume`（含关窗 / 宿主退出） | 漏发会让 hotkey 插件的全局热键永久停在暂停状态；`resume` 是幂等的，多发明发都安全 |
 
 ## 6. 降级行为
 
@@ -194,6 +223,9 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | OpenGL < 3.0 或 shader 创建失败 | `init` 返回失败并记 ERROR；宿主按"这个 UI 插件初始化失败"处理，其余功能不受影响 |
 | GLFW 初始化 / 建窗口失败 | `init` 返回失败并记 ERROR；宿主照常运行 |
 | 所有读取失败 | 不抛异常：`shot::PluginLists` / `shot::PluginRegistry` 在服务缺失时返回空结果 |
+| hotkey 插件未加载 / 宿主没有事件总线 | 发布的 `hotkey.suspend` / `hotkey.resume` 没有订阅者或直接失败（记 WARN）；录入控件照常可用，只是按下已注册热键仍可能触发真实动作 |
+| 录入中窗口被关闭 / 宿主退出 | 窗口层取消录入并补发 `hotkey.resume`，热键不会停在暂停状态 |
+| 旧配置里是非法热键字符串 | 原样显示、不做校验；重新录入一次即被规范化覆盖（解析仍归 hotkey 插件，注册时 warn 跳过） |
 
 ## 7. 刻意不做的事
 
@@ -206,6 +238,7 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | 自己写各平台窗口层 | GLFW 已经把这层做稳了；再写一份只会多三份平台代码 |
 | 生成 `imgui.ini` / `imgui_log.txt` | 窗口几何进宿主配置；日志走宿主日志服务 |
 | 链接 spdlog | 插件只能通过 `host->log`（`shot::Logger`）写日志（`STYLE.md` §6.4） |
+| 在设置页校验热键字符串语法 | 解析器只有 hotkey 插件一份（`hotkey_binding.h`），再实现一份会漂移；设置页只产出规范化文本，非法旧值原样显示 |
 
 ## 8. 检查清单
 
@@ -221,3 +254,5 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 - [ ] 平台 / 图形库类型仍然只出现在内部头 `settings_window_impl.h` 与窗口相关 `.cpp` 里（公共头不含 `<GLFW/glfw3.h>`）？
 - [ ] `metadata.json` 的 `interfaces` 与 `query_interface` 的实际回答一致（只有 `shot.ui_provider`）？
 - [ ] 改了 `lists.*` / `plugins.changed` / `settings.open` 的语义？→ 同步 `document/LISTS.md`、`document/SETTINGS.md`、`document/EVENT_BUS.md`
+- [ ] 新增 `options` 语义 / 控件类型？→ 同步 `document/LISTS.md` §5.1、`document/SETTINGS.md` §6 与本文件 §4
+- [ ] 热键录入在窗口隐藏 / 宿主退出时补发 `hotkey.resume`（录入是跨帧状态）？

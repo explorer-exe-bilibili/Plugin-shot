@@ -6,6 +6,7 @@
 //
 // PATH 项的"浏览…"通过 settings_dialog.cpp 调 nativefiledialog-extended；本文件不
 // 直接依赖任何平台 API，对话框不可用时把提示写在配置项旁边、用户可手输路径。
+// STRING 项里 options == "hotkey" 的走"按组合键录入"控件，实现在 settings_hotkey.cpp。
 
 #include <cmath>
 #include <filesystem>
@@ -120,7 +121,7 @@ void SettingsPanel::Impl::renderProviderSection(ProviderSection& section) {
                 ImGui::TableSetupColumn("配置项", ImGuiTableColumnFlags_WidthFixed, 200.0f);
                 ImGui::TableSetupColumn("值", ImGuiTableColumnFlags_WidthStretch);
                 for (ConfigItem& item : section.items) {
-                    renderConfigItem(item);
+                    renderConfigItem(item, section.id);
                 }
                 ImGui::EndTable();
             }
@@ -132,7 +133,7 @@ void SettingsPanel::Impl::renderProviderSection(ProviderSection& section) {
     ImGui::PopID();
 }
 
-void SettingsPanel::Impl::renderConfigItem(ConfigItem& item) {
+void SettingsPanel::Impl::renderConfigItem(ConfigItem& item, const std::string& owner) {
     const ConfigDesc& desc = item.desc;
     ImGui::PushID(desc.key.c_str());
     ImGui::TableNextRow();
@@ -149,7 +150,7 @@ void SettingsPanel::Impl::renderConfigItem(ConfigItem& item) {
 
     ImGui::TableNextColumn();
     // 控件自己把新值写回 item.value；这里只关心它画完，不需要"变没变"的返回值。
-    renderItemControl(item);
+    renderItemControl(item, owner);
 
     ImGui::SameLine();
     if (ImGui::SmallButton("恢复默认")) {
@@ -174,7 +175,7 @@ void SettingsPanel::Impl::renderConfigItem(ConfigItem& item) {
 }
 
 // 返回 true = 这一帧控件改了值（值已经写回 item.value）。
-bool SettingsPanel::Impl::renderItemControl(ConfigItem& item) {
+bool SettingsPanel::Impl::renderItemControl(ConfigItem& item, const std::string& owner) {
     const ConfigDesc& desc = item.desc;
     switch (desc.kind) {
         case SHOT_CONFIG_KIND_BOOL: {
@@ -259,6 +260,12 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item) {
             return false;
         }
         case SHOT_CONFIG_KIND_STRING: {
+            // options == "hotkey" 的 STRING 是热键组合：渲染"当前组合键 + 录入…"控件，
+            // 而不是普通文本框（options 语义见 document/LISTS.md §5.1、SETTINGS.md §6）。
+            if (isHotkeyDesc(desc)) {
+                renderHotkeyControl(item, owner);
+                return false;
+            }
             ImGui::SetNextItemWidth(320.0f);
             return ImGui::InputText("##string", &item.value);
         }

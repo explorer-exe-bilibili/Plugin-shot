@@ -35,7 +35,8 @@ class HotkeyConfig;
  *   - start() 返回 true 时热键线程已就绪、配置里的热键已注册（非法/被占用的项
  *     只 warn 跳过，不影响 start 成功）；
  *   - 订阅 config.applied：设置页应用后重新解析配置并重注册（先全部
- *     UnregisterHotKey，再逐项注册）；
+ *     UnregisterHotKey，再逐项注册）；订阅 hotkey.suspend / hotkey.resume：
+ *     设置页录入组合键时暂停（撤销全部注册）/ 恢复（按当前配置重新注册）；
  *   - 收到 WM_HOTKEY 只发布对应事件，不直接调用任何插件；
  *   - stop() 退订事件总线、撤掉全部热键、让消息循环退出、join 线程；返回前
  *     窗口、热键与线程都已不存在——宿主热卸载/退出都靠它把资源收干净。

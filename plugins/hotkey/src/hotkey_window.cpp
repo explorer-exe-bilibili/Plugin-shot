@@ -2,10 +2,10 @@
 //
 // 线程模型（对应 document/EVENT_BUS.md）：
 //   · 宿主只调 init / deinit / post_to_plugin，从不接触 HWND；
-//   · 事件总线回调运行在宿主分发线程上，只置"需要重注册"标记 + PostMessage，
+//   · 事件总线回调运行在宿主分发线程上，只置"需要重注册 / 需要暂停"标记 + PostMessage，
 //     解析与 RegisterHotKey / UnregisterHotKey 全部在热键线程上执行；
-//   · start 先订阅 config.applied 再起线程：订阅之后到达的通知不会漏，
-//     线程还没就绪时只置 pending，窗口建好后统一处理；
+//   · start 先订阅 config.applied / hotkey.suspend / hotkey.resume 再起线程：订阅之后
+//     到达的通知不会漏，线程还没就绪时只置 pending，窗口建好后统一处理；
 //   · stop 顺序：拒绝新投递 → 让热键线程撤掉全部注册并退出消息循环 → join →
 //     退订事件总线。返回时热键、窗口与线程一定都已经收干净。
 
@@ -39,7 +39,11 @@ bool HotkeyWindow::start(const ShotHostServices* host, HotkeyConfig* config) {
         m_impl->acceptingEvents = true;
         m_impl->hwnd = nullptr;
         m_impl->reapplyPending = false;
+        m_impl->suspendPending = false;
+        m_impl->suspendValue = false;
     }
+    // suspended 只在热键线程上读写；这里线程还没起来（stop 已 join 过），可以直接复位。
+    m_impl->suspended = false;
     {
         std::lock_guard<std::mutex> lock(m_impl->readyMutex);
         m_impl->ready = false;
@@ -49,12 +53,21 @@ bool HotkeyWindow::start(const ShotHostServices* host, HotkeyConfig* config) {
     m_impl->config = config;
 
     // 先订阅再起线程：订阅之后到达的 config.applied 会被接住，不会因为线程没就绪而丢。
+    // hotkey.suspend / hotkey.resume 是设置页录入组合键时的"暂停/恢复"握手（见
+    // plugins/settings_ui 的录入控件）：一个主题失败不影响另外两个，退订按 user 一次清掉。
     shot::EventBus bus(host);
     if (bus.available()) {
-        m_impl->busSubscribed =
+        bool subscribedAny =
             bus.subscribe(kTopicConfigApplied, &Impl::onBusEvent, m_impl.get());
-        if (!m_impl->busSubscribed) {
-            shot::Logger(host).warn("[hotkey] 订阅 config.applied 失败，改配置后不会自动重注册");
+        subscribedAny =
+            bus.subscribe(kTopicHotkeySuspend, &Impl::onBusEvent, m_impl.get()) || subscribedAny;
+        subscribedAny =
+            bus.subscribe(kTopicHotkeyResume, &Impl::onBusEvent, m_impl.get()) || subscribedAny;
+        m_impl->busSubscribed = subscribedAny;
+        if (!subscribedAny) {
+            shot::Logger(host).warn(
+                "[hotkey] 订阅事件失败（config.applied / hotkey.suspend / hotkey.resume），"
+                "配置变化与设置页录入都不会自动生效");
         }
     } else {
         // 旧版宿主没有事件总线：热键仍然按配置注册，只是"应用配置后自动生效"不可用；

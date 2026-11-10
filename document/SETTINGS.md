@@ -225,6 +225,8 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
 | 主题 | 方向 | 负载 |
 | --- | --- | --- |
 | `settings.open` | 托盘（`plugins/tray`）→ 设置页 | 空 |
+| `hotkey.suspend` | 设置页 → hotkey | 空；开始"按组合键录入"时发布，hotkey 插件撤销全部全局注册（见 §6） |
+| `hotkey.resume` | 设置页 → hotkey | 空；结束/取消录入时发布，hotkey 插件按当前配置恢复注册 |
 | `lists.update` | 设置页 → 宿主 | JSON，见 §2 与 `document/LISTS.md` §3.3 |
 | `lists.commit` | 设置页 → 宿主 | JSON，见 §2 与 `document/LISTS.md` §3.4 |
 | `lists.updated` | 宿主 → 所有 | JSON：`{"list","tag","results":[{"owner","id","ok","reason"}],"error"?}` |
@@ -274,7 +276,7 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
 | BOOL | Checkbox | `"1"` / `"0"` |
 | INT / FLOAT | Slider + Input（用 `min/max/step`，越界 clamp） | 十进制字符串 |
 | ENUM | Combo（`options` 按 `\|` 切） | 选项字符串 |
-| STRING | InputText | 原样 |
+| STRING | InputText；`options == "hotkey"` 时换成"当前组合键 + 录入…"（见下方热键约定） | 原样 / 规范化组合键 |
 | COLOR | ColorEdit4 + hex 输入 | `"#RRGGBB"` 或 `"R,G,B,A"`（统一成 `#RRGGBBAA` 存盘） |
 | PATH | InputText + "浏览…"（对话框类型见下方约定） | 原样 |
 | 未知 kind | 跳过并显示灰色"不支持的配置类型" | —— |
@@ -283,6 +285,20 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
   `"directory"`（也接受 `"dir"` / `"folder"`）弹"选择文件夹"，`"file"` 弹"打开文件"，
   空或其它值则按当前值推断（当前值是已存在目录时选目录，否则选文件）。保存目录这类配置项
   必须写 `"directory"`，否则默认值为空时会弹成选文件。
+- **热键组合的录入控件**：`kind == STRING` 且描述符 `options == "hotkey"`（大小写不敏感）时，
+  设置页不再画文本框，而是显示当前组合键 + 「录入…」按钮。点按钮弹一个**模态窗**独占键盘
+  （其它控件不响应），按下 `[Ctrl+][Alt+][Shift+][Win+]<A-Z|0-9|F1..F12>` 就把**规范化文本**
+  （修饰键固定顺序 `Ctrl+Alt+Shift+Win`；小键盘数字按 `0-9` 算）写回本地缓冲——仍然走
+  §4 的"本地编辑 + 应用"流程，不会立刻写宿主。Esc 取消（值不变）；Backspace / Delete
+  清空：空串的语义是**"这个动作不设热键"**，hotkey 插件解析时按"热键为空" warn 跳过该项，
+  不报错、也不让插件失败。裸键（无修饰键，如 `F9` 或裸字母）语法合法、允许录入，但会
+  拦截正常输入，界面用提示行说明（用户配置责任，设置页不擅自改）。录入期间设置页发布
+  `hotkey.suspend`、结束/取消时发布 `hotkey.resume`，让 hotkey 插件撤掉/恢复全局注册，
+  避免按下旧组合键先触发真实动作（比如立刻截一张图）；hotkey 插件未加载或宿主没有事件
+  总线时安静降级（录入照常可用，只是不能避免触发已注册热键，日志记 WARN）。旧配置里的
+  非法值**原样显示、不做语法校验**——解析仍归 hotkey 插件，注册时非法只 warn 跳过；重新
+  录入一次即被规范化覆盖。录入中关窗/隐藏/宿主退出时，窗口层取消录入并补发
+  `hotkey.resume`（漏发会让热键永久停在暂停状态）。
 - **每项**：label + 悬停 `tooltip` + "恢复默认"小按钮（写 `default_value` 到本地副本）。
 - **状态**：脏标记（没有脏项时"应用"置灰）；`lists.updated` 里 `ok=false` 的项标红
   "写入失败：reason"并保留脏标记；插件已被卸载 → 该节灰掉；窗口位置/大小存宿主配置的
@@ -346,6 +362,8 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
       没有同步写接口？
 - [ ] 改了列表协议（`config_list` 字段、`lists.*` 负载）？→ 同步 `document/LISTS.md`
       登记表与 §3、`document/EVENT_BUS.md` §4、本文件、相关插件 `README.md`
+- [ ] 给 `ShotConfigDesc::options` 新增了语义（如 `"hotkey"`）？→ 同步 `document/LISTS.md`
+      §5.1 与本文件 §6 的控件映射表，以及提供方/消费方插件的 `README.md`
 - [ ] 改了两个宿主服务之一？→ 同步 `include/plugin_api.h`、`document/ABI_POLICY.md`
       登记表与布局锚点、`SHOT_ABI_MINOR`、各插件 `metadata.json` 的 `abi.minor`
 - [ ] 涉及插件卸载？→ 插件 `deinit` 里停线程、退订总线、销毁窗口了吗？

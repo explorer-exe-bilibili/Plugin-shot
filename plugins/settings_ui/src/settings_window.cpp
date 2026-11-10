@@ -92,6 +92,11 @@ void SettingsWindow::Impl::run() {
 
     messageLoop();
 
+    // 宿主退出 / 热卸载会让事件循环直接结束：录入会话可能还开着，补一次 resume
+    // （hotkey 插件那时可能已经卸载，发布到总线是安静的空操作；但漏发会让它的
+    // 全局热键一直不注册）。
+    panel.cancelHotkeyCapture();
+
     // 事件循环已退出（stop 或 host.shutdown）。宿主退出时窗口可能还开着，顺手把几何存下来，
     // 下次打开才能恢复到同样的位置（正常关窗时 hideWindow 已经存过一次）。
     if (visible) {
@@ -281,6 +286,9 @@ void SettingsWindow::Impl::hideWindow() {
     if (window == nullptr) {
         return;
     }
+    // 录入中关窗：必须先结束录入补发 hotkey.resume，否则 hotkey 插件会一直停在
+    // 暂停状态（全局热键在 resume 之前都不会注册）。
+    panel.cancelHotkeyCapture();
     // 关闭（X / Esc）只隐藏：线程、窗口、GL 上下文都保留，下次 settings.open 直接显示。
     saveGeometry();
     glfwHideWindow(window);
@@ -313,9 +321,11 @@ void SettingsWindow::Impl::onKey(GLFWwindow* glfwWindow, int key, int /*scancode
     if (self == nullptr) {
         return;
     }
-    // Esc 只隐藏窗口；文本框正在输入时把 Esc 让给 ImGui（取消输入而不是关窗）。
+    // Esc 只隐藏窗口；文本框正在输入 / 正在录入热键时把 Esc 让给 ImGui
+    // （取消输入 / 取消录入，而不是把整个设置页藏起来）。
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS &&
-        ImGui::GetCurrentContext() != nullptr && !ImGui::GetIO().WantTextInput) {
+        ImGui::GetCurrentContext() != nullptr && !ImGui::GetIO().WantTextInput &&
+        !self->panel.isCapturingHotkey()) {
         self->escHideRequested = true;  // 回调里只置位，隐藏动作放到事件循环里做
     }
 }

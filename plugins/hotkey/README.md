@@ -7,6 +7,10 @@
 
 默认：`Ctrl+Alt+S` 截屏、`Ctrl+Alt+A` 区域截屏、`Ctrl+Alt+O` 打开设置。
 
+三个热键项的描述符带 `options="hotkey"`：设置页据此把它们渲染成"显示当前组合键 + 录入…"
+的控件（按一次组合键即可录入，不用手输字符串，见 `document/SETTINGS.md` §6 与
+`plugins/settings_ui/README.md` §4.1）。值语法、解析与存值都不受这个标记影响。
+
 ## 1. 目录
 
 ```
@@ -77,6 +81,10 @@ cmake --build build
 值一律用字符串表达；存盘键是 `hotkey.main/<key>`（宿主负责落盘与启动回灌，见
 `document/SETTINGS.md`）。不认识的 key 返回负值且不改变状态。
 
+三个热键项的 `ShotConfigDesc::options` 写 `"hotkey"`：设置页据此把 STRING 渲染成
+"当前组合键 + 录入…"控件（`document/LISTS.md` §5.1、`document/SETTINGS.md` §6）。
+`options` 只是给设置页的交互提示，值语法 / 解析 / 存值完全不变。
+
 修改流程：设置页改值 → 宿主 `lists.update` 转调 `set_config` → 热键线程重新解析并注册
 → `lists.commit` 落盘后宿主发 `config.applied`，再幂等重注册一次。启动时宿主
 `apply_stored` 直接 `set_config`（不发 `config.applied`），插件同样会重注册，所以已存
@@ -116,8 +124,18 @@ cmake --build build
 `plugins/region_selector/`）；热键只负责在 `capture.request` 上带 `{"mode":"region"}`
 字段，不假设区域怎么产生、由谁完成选择。
 
-订阅：只订阅 `config.applied`（用于重注册），回调跑在宿主分发线程上，只置 pending +
-`PostMessage` 唤醒热键线程，不做解析、不碰 Win32。
+订阅（回调都跑在宿主分发线程上，只置 pending + `PostMessage` 唤醒热键线程，不做解析、
+不碰 Win32）：
+
+| 主题 | 负载 | 处理 |
+| --- | --- | --- |
+| `config.applied` | 空 | 请求重注册：先 `UnregisterHotKey` 全部，再按当前配置逐项注册 |
+| `hotkey.suspend` | 空 | 设置页开始录入组合键：撤销全部注册（暂停）；暂停期间 `set_config` / `config.applied` 只撤销、不注册 |
+| `hotkey.resume` | 空 | 设置页结束录入：按**当前配置**恢复注册（不是复用旧注册表）；重复的 `resume` 是幂等的 |
+
+`hotkey.suspend` / `hotkey.resume` 是**设置页**（`plugins/settings_ui`）在"按组合键录入"
+期间发的：录入时用户按下的可能正是当前生效的组合键，不撤销的话会先触发真实动作（比如
+立刻截一张图）。本插件只提供"撤/按配置恢复"这两个动作，不认识设置页的 UI 细节。
 
 ## 6. 生命周期与线程模型
 
@@ -126,6 +144,7 @@ cmake --build build
 | `init(self, host)` | 订阅 `config.applied` → 起热键线程 → 建隐藏消息窗口 → 按当前配置注册热键 → 返回 `0` 时窗口/线程已就绪 |
 | `WM_HOTKEY` | 按热键 id 找到动作，发布对应事件（热键线程上执行） |
 | `config.applied` / `set_config` | 置"需要重注册"标记 + `PostMessage`；热键线程**先 `UnregisterHotKey` 全部、再逐项注册** |
+| `hotkey.suspend` / `hotkey.resume` | 置"暂停/恢复"标记 + `PostMessage`；热键线程撤销全部注册 / 按当前配置重新注册（`RegisterHotKey` 仍然只在热键线程上） |
 | `post_to_plugin`（`host.shutdown`） | 直接走 `stop()`（幂等；deinit 里的 stop 变成空操作） |
 | `deinit(self)` | 拒绝新投递 → 线程撤销全部热键 → 退出消息循环 → `join` → 退订事件总线 |
 | 宿主退出 / 热卸载 | 先投 `host.shutdown` 再 `deinit`，两条路径都收敛到同一个 `stop()` |
@@ -156,6 +175,8 @@ DLL 卸载消失，不注销的话禁用→启用会踩悬空 `WndProc`（`plugi
 | 某个热键字符串非法 | 记 WARN 说明原因并跳过该项，其它热键照常注册，插件启动不失败 |
 | 某个热键被其它程序占用 | 记 WARN（含系统错误码与提示）并跳过该项，不影响其它键 |
 | `enabled = "0"` | 撤销全部注册并记 INFO；线程与窗口保留，改成 `"1"` 应用后立即重新注册 |
+| 设置页录入组合键（`hotkey.suspend` / `resume`） | 撤销全部注册 / 按当前配置恢复，两侧都记 INFO；暂停期间 `set_config` / `config.applied` 只撤销、不注册 |
+| 设置页未加载 / 被禁用 | 没有 `hotkey.suspend` / `resume` 的发布者：热键照常注册；录入控件也不会出现（它属于设置页） |
 | 注册失败导致一个热键都没有 | 插件仍正常运行（窗口/线程在），用户改配置应用即可恢复，不用重启宿主 |
 | `apply_stored` 在启动时推送已存配置 | `set_config` 回调请求重注册（该阶段没有 `config.applied`，不能只等事件） |
 | 窗口类注册/清理失败 | `init` 返回失败，宿主按"这个 UI 插件初始化失败"处理，其余功能不受影响 |
@@ -171,7 +192,7 @@ DLL 卸载消失，不注销的话禁用→启用会踩悬空 `WndProc`（`plugi
 | 自动占用/替换冲突热键 | 冲突只 warn 跳过，不静默换键——用户必须知道自己的配置没生效 |
 | 轮询键盘状态 | `RegisterHotKey` 由系统投递 `WM_HOTKEY`，轮询既费 CPU 又不可靠 |
 | 自己写配置文件 | 配置声明交给 `shot.configurable`，落盘与启动回灌归宿主（`document/SETTINGS.md` §2） |
-| 热键编辑器控件 | 设置页按 STRING 渲染即可；专门的录制控件属于设置页的 UI 增强，不是热键插件的职责 |
+| 在插件里实现热键录制 UI | 录入控件属于设置页（跨 DLL 不能互调）；本插件只提供 `hotkey.suspend` / `hotkey.resume` 钩子，UI 与文本规范化都在设置页（`plugins/settings_ui/src/settings_hotkey.cpp`） |
 
 ## 10. 检查清单
 
@@ -184,3 +205,5 @@ DLL 卸载消失，不注销的话禁用→启用会踩悬空 `WndProc`（`plugi
 - [ ] 事件主题与负载符合 `document/EVENT_BUS.md` §4，且不假设订阅方一定存在？
 - [ ] 窗口类在线程退出前注销，禁用→启用可以反复加载？
 - [ ] 没有把配置值自己写进文件、没有新增 ABI 依赖？
+- [ ] `hotkey.suspend` / `hotkey.resume` 的订阅在 `start` 建立、`deinit` 退订，撤销/注册都在热键线程上？
+- [ ] 暂停期间 `set_config` / `config.applied` 只撤销、不注册，`resume` 后按**当前配置**恢复？

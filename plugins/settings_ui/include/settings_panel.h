@@ -24,8 +24,8 @@ namespace settings_ui {
  *       编辑缓冲，不是线程安全的。
  * @note 宿主服务不可用时安静降级成"空模型 + 提示文本"，不抛异常。
  * @note 实现拆在 src/settings_model.cpp（模型）、settings_form.cpp（表单）、
- *       settings_plugin_table.cpp（插件管理表）、settings_apply.cpp（提交与事件），
- *       共享的私有状态在内部头 settings_panel_impl.h。
+ *       settings_hotkey.cpp（热键组合录入）、settings_plugin_table.cpp（插件管理表）、
+ *       settings_apply.cpp（提交与事件），共享的私有状态在内部头 settings_panel_impl.h。
  */
 class SettingsPanel {
 public:
@@ -71,6 +71,26 @@ public:
 
     /** @brief 把所有配置值改成声明里的默认值；仍然要用户点「应用」才写回。 */
     void restoreDefaults();
+
+    /**
+     * @brief 放弃进行中的热键录入（窗口隐藏 / 宿主退出时由窗口层调用）。
+     *
+     * 录入期间设置页会发布 `hotkey.suspend` 让 hotkey 插件撤掉全部全局注册；窗口被
+     * 隐藏或关闭时必须补发 `hotkey.resume`，否则热键会一直处于暂停状态。
+     * 没有进行中的录入时是空操作。
+     *
+     * @note 只允许 UI 线程调用（与其它成员一致）。
+     */
+    void cancelHotkeyCapture();
+
+    /**
+     * @brief 是否正在等待用户按下新的热键组合。
+     *
+     * 窗口的 Esc 处理用它决定"Esc 是取消录入还是隐藏窗口"；录入期间键盘由设置页独占。
+     *
+     * @return true = 录入中。
+     */
+    bool isCapturingHotkey() const;
 
     /** @brief 收到 `config.applied`：结束保存等待，并以宿主当前值为新基线刷新配置区。 */
     void onConfigApplied();

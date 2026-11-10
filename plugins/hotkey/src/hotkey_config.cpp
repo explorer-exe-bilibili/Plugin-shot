@@ -7,6 +7,10 @@
 //   · region_hotkey    → 同上
 //   · settings_hotkey  → 同上
 //
+//  三个热键项的 ShotConfigDesc.options 写 "hotkey"：设置页据此把 STRING 渲染成
+//  "按组合键录入"控件（document/LISTS.md §5.1、document/SETTINGS.md §6）。
+//  options 只是给设置页的约定，值语法 / 解析 / 存值都不变。
+//
 // 线程模型：set_config 可能在宿主任意线程上被调用（init 的 apply_stored、设置页
 // 应用），热键线程同时可能正在读这三个值做重注册；所以字符串用 mutex 保护、
 // 布尔开关用 std::atomic，读侧永远拿到完整值。
@@ -45,7 +49,7 @@ const ShotConfigDesc kConfig[] = {
         .key           = kKeyCaptureHotkey,
         .label         = "截屏热键",
         .default_value = "Ctrl+Alt+S",
-        .options       = nullptr,
+        .options       = "hotkey",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
@@ -57,7 +61,7 @@ const ShotConfigDesc kConfig[] = {
         .key           = kKeyRegionHotkey,
         .label         = "区域截屏热键",
         .default_value = "Ctrl+Alt+A",
-        .options       = nullptr,
+        .options       = "hotkey",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
@@ -69,7 +73,7 @@ const ShotConfigDesc kConfig[] = {
         .key           = kKeySettingsHotkey,
         .label         = "打开设置热键",
         .default_value = "Ctrl+Alt+O",
-        .options       = nullptr,
+        .options       = "hotkey",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,

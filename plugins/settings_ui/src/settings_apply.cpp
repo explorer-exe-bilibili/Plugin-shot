@@ -454,6 +454,8 @@ void SettingsPanel::Impl::restoreDefaults() {
         for (ConfigItem& item : section.items) {
             item.value = defaultValueFor(item.desc);
             item.error.clear();
+            // 控件级临时提示（例如热键录入时的"没有修饰键"）描述的是旧值，随恢复默认一起清掉。
+            item.hint.clear();
             syncColorHex(item);
             ++changed;
         }

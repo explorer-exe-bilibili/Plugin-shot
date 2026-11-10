@@ -74,6 +74,7 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  src/settings_panel.cpp
                  src/settings_model.cpp
                  src/settings_form.cpp
+                 src/settings_hotkey.cpp
                  src/settings_plugin_table.cpp
                  src/settings_apply.cpp
     INCLUDE_DIRS include

@@ -17,9 +17,10 @@
 //    · 写值/提交 = 事件总线上的 lists.update / lists.commit（不再有同步写接口），
 //      结果由 lists.updated / config.applied 回来。
 //
-//  定义按职责拆在四个 .cpp 里：
+//  定义按职责拆在五个 .cpp 里：
 //    settings_model.cpp        —— config_list JSON 解析 / 模型刷新 / 值解析 / 纯值工具
 //    settings_form.cpp         —— 操作条 + 配置节 + 7 种 kind 的控件
+//    settings_hotkey.cpp       —— STRING + options="hotkey" 的"按组合键录入"控件
 //    settings_plugin_table.cpp —— 插件管理表
 //    settings_apply.cpp        —— 应用状态机 / 事件 / 等待超时
 // ============================================================================
@@ -146,6 +147,19 @@ struct PendingConfigChange {
 };
 
 /**
+ * @brief 一次"按组合键录入"会话（定义与实现在 settings_hotkey.cpp）。
+ *
+ * 只在 UI 线程访问。目标配置项用 owner + key 两个字符串标识，而不是 `ConfigItem*`：
+ * 录入期间宿主可能发 `lists.changed` / `plugins.changed` 重建模型，指针会失效，字符串不会。
+ */
+struct HotkeyCapture {
+    bool active = false;   /**< 是否有进行中的录入会话（true 时每帧渲染模态弹窗）。 */
+    std::string owner;     /**< 目标配置项的提供者 id（config_list 的 owner）。 */
+    std::string key;       /**< 目标配置项的配置键（config_list 的 id）。 */
+    std::string hint;      /**< 弹窗内的临时提示（例如按了不受支持的键）；空 = 显示默认说明。 */
+};
+
+/**
  * @brief PATH 配置项的"浏览…"该弹哪种对话框。
  *
  * 描述符里没有独立的"文件/目录"字段（ABI 2.0 不再为数据形状加结构体），所以约定用
@@ -170,6 +184,7 @@ struct SettingsPanel::Impl {
     std::vector<ProviderSection> sections;         // 配置提供者，渲染时 core 固定在最前
     std::vector<ProviderSection> removedSections;  // 上次刷新后消失的提供者：灰掉显示一节
     std::vector<PluginRow> plugins;                // 插件管理表
+    HotkeyCapture hotkeyCapture;                   // 热键录入会话（settings_hotkey.cpp）
 
     bool configUnavailable = false;    // 读不到 config_list（老宿主 / 列表服务缺失 / JSON 坏了）
     std::string configUnavailableReason;  // 降级原因文本，直接显示在配置区顶部
@@ -231,10 +246,56 @@ struct SettingsPanel::Impl {
     void renderActionBar();
     void renderConfigSections();
     void renderProviderSection(ProviderSection& section);
-    void renderConfigItem(ConfigItem& item);
-    bool renderItemControl(ConfigItem& item);
+    void renderConfigItem(ConfigItem& item, const std::string& owner);
+    bool renderItemControl(ConfigItem& item, const std::string& owner);
     void renderPluginTable();
     void renderPluginRow(PluginRow& row);
+
+    // ---- 热键录入控件（settings_hotkey.cpp） ----
+    /**
+     * @brief 画热键录入的模态弹窗；没有进行中的会话时只做一次空查询。
+     *
+     * 在 render() 里每帧调用一次：录入会话可能在配置行的渲染路径之外被刷新/取消，
+     * 弹窗必须始终能被画出来、被取消。
+     */
+    void renderHotkeyCapturePopup();
+
+    /**
+     * @brief 画一行热键控件：当前组合键 + 「录入…」按钮（值由弹窗写回，本函数不改值）。
+     * @param[in,out] item  配置项；只读 value，不写。
+     * @param[in]     owner 该配置项的提供者 id（config_list 的 owner）。
+     */
+    void renderHotkeyControl(ConfigItem& item, const std::string& owner);
+
+    /**
+     * @brief 开始录入：记录目标项并发布 `hotkey.suspend`（让 hotkey 插件撤掉全局注册）。
+     * @param[in] owner 目标配置项的提供者 id。
+     * @param[in] key   目标配置项的配置键。
+     */
+    void beginHotkeyCapture(const std::string& owner, const std::string& key);
+
+    /** @brief 结束录入并发布 `hotkey.resume`（重复调用是空操作）。 */
+    void endHotkeyCapture();
+
+    /**
+     * @brief 判断一个描述符是不是"热键组合"（STRING + options == "hotkey"）。
+     * @param[in] desc 配置项声明。
+     * @return true = 应该渲染录入控件而不是普通文本框。
+     */
+    static bool isHotkeyDesc(const ConfigDesc& desc);
+
+    /**
+     * @brief 扫描本帧按下的键，凑一个可写进配置的组合键。
+     *
+     * 主键范围与 hotkey_binding.h 的语法一致：A-Z、0-9、F1..F12（小键盘数字按数字算）；
+     * 修饰键从 ImGuiIO 的当前状态取，规范化顺序固定为 Ctrl/Alt/Shift/Win。
+     *
+     * @param[out] label       成功时写入规范化文本（如 "Ctrl+Alt+S"）。
+     * @param[out] hasModifier 成功时表示是否带修饰键（裸键允许，但需要提示会拦截输入）。
+     * @param[out] unsupported 本帧按了不支持的键（不是修饰键、也不是可录入的主键）。
+     * @return true = 得到一个可录入的组合；false = 本帧没有可用按键。
+     */
+    static bool scanHotkeyPress(std::string& label, bool& hasModifier, bool& unsupported);
 
     // ---- 提交与事件（settings_apply.cpp） ----
     void apply();

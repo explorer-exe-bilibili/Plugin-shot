@@ -5,6 +5,7 @@
 // 不如建一个永远不显示的窗口（没有 WS_VISIBLE）当消息泵：
 //   · WM_HOTKEY   → 按 id 找到对应动作，往事件总线发布一条事件；
 //   · kMsgReapply → 配置变了：先 UnregisterHotKey 全部，再按新配置逐项注册；
+//   · kMsgSetSuspend → 设置页录入组合键：撤销全部注册（暂停）或按配置恢复；
 //   · kMsgQuit    → stop() 请求退出：撤掉全部注册后退出消息循环；
 //   · WM_DESTROY  → 兜底退出。
 //
@@ -140,6 +141,19 @@ void HotkeyWindow::Impl::run() {
         }
         // 启动时按当前配置注册一次：默认值，或宿主 apply_stored 之后更新的已存值。
         applyHotkeys();
+        // 订阅先于线程就绪：启动期间到达的 hotkey.suspend 只置了 pending（那时还没有窗口
+        // 可以投递消息）。注册完补一次，避免"设置页正在录入、热键却先注册上"。
+        bool suspendPendingNow = false;
+        bool suspendNow = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            suspendPendingNow = suspendPending;
+            suspendNow = suspendValue;
+            suspendPending = false;
+        }
+        if (suspendPendingNow) {
+            setSuspended(suspendNow);
+        }
     }
 
     if (!ok) {
@@ -244,6 +258,23 @@ LRESULT HotkeyWindow::Impl::handleMessage(HWND wnd, UINT msg, WPARAM wparam, LPA
             }
             return 0;
         }
+        case kMsgSetSuspend: {
+            // 一次唤醒可能合并了多条暂停/恢复通知：以共享状态里的"最后一次期望"为准。
+            // 这样 suspend→resume 紧挨着到达时，消息循环处理到第二条时 pending 已是
+            // resume，最终一定回到"按配置注册"（不会停在暂停）。
+            bool pending = false;
+            bool want = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                pending = suspendPending;
+                want = suspendValue;
+                suspendPending = false;
+            }
+            if (pending) {
+                setSuspended(want);
+            }
+            return 0;
+        }
         case kMsgQuit:
             // stop() 请求退出：先撤掉全部注册，再结束消息循环。
             unregisterAllHotkeys();
@@ -270,13 +301,18 @@ void HotkeyWindow::Impl::onBusEvent(void* user, const char* topic, const void* /
     }
     // 回调运行在宿主分发线程上：只做"置 pending + PostMessage 唤醒"，
     // 不解析、不 RegisterHotKey（EVENT_BUS.md §3 的回调规则）。
-    if (std::string_view(topic) != kTopicConfigApplied) {
-        return;  // 只订阅了这一个主题，防御未来改订阅时漏过滤
-    }
+    const std::string_view topicView(topic);
     try {
-        self->requestReapply();
+        if (topicView == kTopicConfigApplied) {
+            self->requestReapply();
+        } else if (topicView == kTopicHotkeySuspend) {
+            self->requestSuspend(true);
+        } else if (topicView == kTopicHotkeyResume) {
+            self->requestSuspend(false);
+        }
+        // 其它主题安静忽略：事件总线是共享的，不认识的主题不是错误。
     } catch (...) {
-        shot::Logger(self->host).warn("[hotkey] 收到 config.applied 后请求重注册失败（内存不足？）");
+        shot::Logger(self->host).warn("[hotkey] 处理事件总线通知失败（内存不足？），已忽略这一条");
     }
 }
 
@@ -296,8 +332,48 @@ void HotkeyWindow::Impl::requestReapply() {
     }
 }
 
+void HotkeyWindow::Impl::requestSuspend(bool suspend) {
+    HWND wnd = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!acceptingEvents) {
+            // 还没启动 / 正在关闭：启动时会按最新配置注册，这里不需要"暂停"。
+            return;
+        }
+        suspendPending = true;
+        suspendValue = suspend;
+        wnd = hwnd;
+    }
+    if (wnd != nullptr && PostMessageW(wnd, kMsgSetSuspend, suspend ? 1 : 0, 0) == 0) {
+        shot::Logger(host).warn("[hotkey] 唤醒热键线程失败（错误码 " +
+                                std::to_string(GetLastError()) + "）");
+    }
+}
+
+void HotkeyWindow::Impl::setSuspended(bool suspend) {
+    if (suspended == suspend) {
+        return;  // 幂等：重复的 suspend/resume 不重复撤/注册
+    }
+    suspended = suspend;
+    if (suspend) {
+        // 立即撤销：设置页已经进入"等待按键"，此刻用户按下的旧组合键不能再触发动作。
+        unregisterAllHotkeys();
+        shot::Logger(host).info("[hotkey] 收到 hotkey.suspend：已撤销全部热键（设置页正在录入组合键）");
+        return;
+    }
+    // 恢复：重新解析当前配置再注册（录入期间配置可能被别处改过，不能复用旧注册表）。
+    shot::Logger(host).info("[hotkey] 收到 hotkey.resume：按当前配置重新注册热键");
+    applyHotkeys();
+}
+
 void HotkeyWindow::Impl::applyHotkeys() {
     unregisterAllHotkeys();
+    if (suspended) {
+        // 录入期间配置可能变化（set_config / config.applied 都会走到这里）：只撤销、不注册。
+        // 恢复时 setSuspended(false) 会重新读配置注册，所以这里不用缓存"待注册"状态。
+        shot::Logger(host).info("[hotkey] 热键处于暂停状态（设置页录入中），跳过注册");
+        return;
+    }
     if (config == nullptr) {
         shot::Logger(host).warn("[hotkey] 没有配置对象，跳过热键注册");
         return;
