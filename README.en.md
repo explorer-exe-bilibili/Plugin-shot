@@ -6,6 +6,9 @@
 > should — load, validate, dispatch; screenshots, image processing, screen
 > recording and every other capability come from plugins.
 
+> **Taking over / handing to an AI agent**: read [`AGENTS.md`](AGENTS.md) first
+> (build, verification, machine setup, known traps), then [`STYLE.md`](STYLE.md) (code style).
+
 ## Design
 
 Keep the core tiny and stable, grow the product through plugins (the same idea as
