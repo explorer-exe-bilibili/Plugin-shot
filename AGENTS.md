@@ -24,9 +24,12 @@
 最小验证（本机路径见 §8）：
 
 ```bash
-# 构建（等价于 cmake --build build/Windows）
-bash build/verify/locked_build.sh                 # 全量
-bash build/verify/locked_build.sh --target tray   # 单个 target
+# 构建（等价于 cmake --build build/Windows，带构建锁）
+bash tools/verify/build.sh                 # 全量
+bash tools/verify/build.sh --target tray   # 单个 target
+
+# 端到端冒烟（在交互桌面上跑，会启动宿主）
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify/smoke_capture.ps1
 ```
 
 ---
@@ -64,7 +67,7 @@ STYLE.md            ★ 代码风格与工程约定（硬约定）
 
 **万物皆插件**：宿主只负责「扫描 → 校验 → 加载 → 调度」，一切能力都在 DLL 里。
 
-```
+```text
 插件 DLL ──(唯一导出符号 shot_module_entry)──► ShotModule{get_info, create, destroy, query_interface}
                                                       │
                           查询能力：shot.image_processor / shot.screen_capture /
@@ -92,13 +95,14 @@ STYLE.md            ★ 代码风格与工程约定（硬约定）
 
 **采集流水线**（`Host::CapturePipeline`，详见 [`document/CAPTURE.md`](document/CAPTURE.md)）：
 
-```
+```text
 capture.request（事件，main 线程入队） → worker 线程：
    screen_capture 抓整屏 → 按 region 裁剪 → 所有 image_processor 依次处理 → image_saver 落盘
    → 发布 capture.done {path,width,height,processors} / capture.failed {stage,reason}
 ```
 
 `capture.request` 负载三态（**别改**）：
+
 - 空 / 非 region → 整屏采集；
 - `{"mode":"region","region":{x,y,width,height}}` → 物理虚拟桌面像素，裁剪采集；
 - `{"mode":"region"}`（无 region）→ **"请开始框选"**，流水线忽略不采集（region_selector 消费）。
@@ -138,6 +142,7 @@ capture.request（事件，main 线程入队） → worker 线程：
 ## 5. 常用修改配方
 
 ### 5.1 给插件加一个配置项
+
 1. 插件内 `ShotConfigDesc` 数组加一项（`kind` 用 `SHOT_CONFIG_KIND_*`）；
 2. `get_config/set_config` 里处理这个 key（不认识的 key 必须返回负值、不影响其它项）；
 3. 值一律字符串；范围类只对 INT/FLOAT 有意义；PATH 项用 `options="directory"` 或 `"file"`
@@ -146,6 +151,7 @@ capture.request（事件，main 线程入队） → worker 线程：
 5. 插件 README 的配置表 + 根 README 状态表（如果是一眼可见的行为）。
 
 ### 5.2 给托盘菜单加一项（插件零代码之外的推荐做法）
+
 在插件 `init/create` 后发布一条事件即可：
 
 ```cpp
@@ -159,6 +165,7 @@ shot::EventBus(host).publish("lists.add", R"json({
 点击时托盘只 `publish(item.event, item.data)`。插件卸载时宿主自动清掉它的贡献。
 
 ### 5.3 新增一类 UI 数据（新 list）
+
 1. 在 `document/LISTS.md` §5.3 登记新 list id + JSON schema；
 2. 提供方用 `lists.add` 注册、变化时（数据变化后由宿主）发 `lists.changed`；
 3. 消费方读 `shot::PluginLists(host).json("<list id>")`；
@@ -166,11 +173,13 @@ shot::EventBus(host).publish("lists.add", R"json({
    （**只允许宿主 main 线程处理**）。
 
 ### 5.4 新建一个插件
+
 照抄 `plugins/image_saver`（最干净的样板）：
 
-```
+```text
 plugins/<name>/{CMakeLists.txt, metadata.json, README.md, include/, src/}
 ```
+
 - `CMakeLists.txt` 用 `shot_add_plugin(<target> METADATA metadata.json SOURCES ... INCLUDE_DIRS include)`
   （Windows-only 插件先判断 `if(NOT WIN32)` → `set(SHOT_PLUGIN_SKIPPED TRUE PARENT_SCOPE)` + `return()`）；
 - `metadata.json`：`abi` 与契约头一致、`interfaces` 必须是契约里真实存在的 id、`requires` 写
@@ -180,6 +189,7 @@ plugins/<name>/{CMakeLists.txt, metadata.json, README.md, include/, src/}
   包装（**前提是有 metadata**）；订阅必须在 `create` 做、`destroy` 里退订。
 
 ### 5.5 新增一种能力（ABI minor +1）
+
 1. `plugin_api.h`：新 interface id 宏 + 新 `...V1` 结构体（末尾定义，带 `struct_size`）
    + 文件末尾布局 `static_assert`；
 2. `SHOT_ABI_MINOR` +1；所有插件 `metadata.json` 的 `abi.minor` 可以不跟（校验只要求 ≤）；
@@ -188,6 +198,7 @@ plugins/<name>/{CMakeLists.txt, metadata.json, README.md, include/, src/}
 5. 新插件实现它并在 README 写清线程/返回码语义。
 
 ### 5.6 UI 插件的热卸载要求（硬要求）
+
 `deinit` 返回前必须：停线程 → 销毁窗口 → **`UnregisterClassW` 注销窗口类**（类属于进程，
 不随 DLL 卸载消失，不注销会在禁用→启用后踩悬空 WndProc，历史上崩过）→ 退订事件总线 →
 join。`host.shutdown` 事件要先响应。
@@ -198,7 +209,7 @@ join。`host.shutdown` 事件要先响应。
 
 ### 6.1 构建
 
-本机已把 vcvars + cmake 包成 `build/verify/build.bat`（**这个目录是 gitignored**，换机器要重建）：
+仓库里已固化构建包装脚本 `tools/verify/build.bat`（vcvars + cmake）与 `tools/verify/build.sh`（加构建锁）：
 
 ```bat
 @echo off
@@ -211,27 +222,35 @@ exit /b %ERRORLEVEL%
 在本会话的 shell 里**不能直接 `cmd //c`**（会被包装吃掉参数），统一用：
 
 ```bash
-powershell.exe -NoProfile -Command "& 'D:\src\repo\plugin-shot\Host\build\verify\build.bat' --target tray 2>&1 | Select-Object -Last 40; exit \$LASTEXITCODE"
+powershell.exe -NoProfile -Command "& 'D:\src\repo\plugin-shot\Host\tools\verify\build.bat' --target tray 2>&1 | Select-Object -Last 40; exit \$LASTEXITCODE"
 ```
 
-`build/verify/locked_build.sh` 只是给上面这条命令加了**构建锁**（多个 agent/终端共用同一个
+`tools/verify/build.sh` 只是给上面这条命令加了**构建锁**（多个 agent/终端共用同一个
 Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自动清理过期锁）。用法：
-`bash build/verify/locked_build.sh [cmake --build 的参数]`，**调用时给足超时**（默认 2 分钟不够，
+`bash tools/verify/build.sh [cmake --build 的参数]`，**调用时给足超时**（默认 2 分钟不够，
 建议 600000ms）。
 
 ### 6.2 冒烟 / e2e 脚本
 
-`build/verify/` 里有大量本轮开发用的验证脚本（**gitignored，换机器会丢**，见 §9 待办）：
+常用验证脚本已固化在 `tools/verify/`（用法与断言语义见 `tools/verify/README.md`）：
 
 | 脚本 | 验证内容 |
 | --- | --- |
-| `run_settings_smoke.ps1` | 启动宿主 `--settings`、找到窗口、截屏（PM-aware） |
-| `tray_verify.ps1` | 托盘菜单三项 + 截屏 + 退出 |
-| `clipboard_verify.ps1` | 截图后剪贴板是否有图（CF_DIB/CF_HDROP） |
-| `run_notify_host_verify.ps1` | 成功/失败/关闭三种气泡场景 |
-| `hotkey_verify.ps1` | 真实按键注入触发三个热键 |
-| `example_lists_verify.ps1` | lists.add 贡献菜单项 → 禁用清理 → 重新启用回补 |
-| `region_verify2.ps1` / `overlay_ghost_probe.ps1` | 区域框选交互与"退出无残影" |
+| `smoke_capture.ps1` | `--capture`：exit 0、日志有 `Capture saved:`、落盘尺寸 = 物理虚拟桌面 |
+| `smoke_settings.ps1` | `--settings`：设置窗口出现、能截到画面、日志有"设置窗口已显示"、无 error |
+| `e2e_hotkey_capture.ps1` | 常驻 + 配置里的截屏热键 → 采集落盘（hotkey + 流水线 + 保存） |
+| `e2e_clipboard.ps1` | 截图后系统剪贴板里有一张图（CF_DIB） |
+
+运行方式（**必须带 `-ExecutionPolicy Bypass`**，原因见 §7 第 15 条）：
+
+```bat
+tools\verify\run.bat smoke_settings.ps1
+:: 或
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify/smoke_settings.ps1
+```
+
+`build/verify/` 里还留着开发期的一次性探针脚本（托盘点击、区域框选、DPI 探针、假宿主
+harness 等），**不入库**，换机器会丢；需要时按同样思路重写一个。
 
 运行宿主的脚本大多会**杀掉已有宿主进程**、写 `config.json`，所以：
 
@@ -274,6 +293,9 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
     `capture.done`（已修，勿回退）。
 14. **config.json 会被多个宿主进程整文件覆盖**：并行跑宿主时测试配置会被互相踩，验证脚本要
     备份/恢复，测完确保 `plugins.disabled` 等恢复原值。
+15. **PowerShell 执行策略会拒跑"新建目录"里的脚本**：本机 `RemoteSigned`，但仓库里新建的
+    `tools/`、`scripts/` 下的 `.ps1` 会被判"not digitally signed"（`build/` 反而不受影响）。
+    统一用 `-ExecutionPolicy Bypass` 启动：`tools\verify\run.bat <script>` 已包好。
 
 ---
 
@@ -302,8 +324,8 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 1. **CI 跑绿**：`.github/workflows/cmake.yml` 已就绪，但 GitHub 账号被 billing 锁定，Actions
    无法启动（`The job was not started because your account is locked due to a billing issue.`）。
    需维护者在 GitHub → Settings → Billing 处理后 `gh run rerun <run-id>`。Linux 构建已在 WSL 实测通过。
-2. **把 `build/verify/` 的关键验证脚本固化进仓库**（现在全在 gitignored 目录，换机器即丢），
-   建议放 `tools/verify/` 并在本文档登记。
+2. ~~把关键验证脚本固化进仓库~~ **已完成**：`tools/verify/`（build + 4 个 e2e，见 §6.2）。
+   可继续把托盘点菜单、区域框选、DPI 探针也整理进去。
 3. **跨屏框选**（`region_selector` TODO）：现在只覆盖鼠标所在显示器，跨屏选择被夹在当前屏。
 4. **光标合成**（`screen_capture` TODO）：`BitBlt/CAPTUREBLT` 不含鼠标指针，截图里没有光标。
 5. **负 origin 多屏**：代码链已复核 + 桩测试通过，但未实机验证（本机两屏都在原点右侧）。
@@ -319,7 +341,7 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 
 - **写作用域不重叠**：每个 agent 只改自己任务列出的文件/目录；跨作用域（契约头、别人的插件、
   根 README/document）先问 Lead。
-- **构建串行**：一律走 `build/verify/locked_build.sh`；构建被别的进程占用（`LNK1104`）是正常现象，
+- **构建串行**：一律走 `tools/verify/build.sh`；构建被别的进程占用（`LNK1104`）是正常现象，
   等它退出重试。
 - **宿主 e2e 串行**：同一时间只允许一个 agent 跑宿主；跑完恢复 `config.json`、删掉自己放进去的
   探针 DLL、确认没有残留 `Plugin-shot.exe`。
@@ -331,7 +353,7 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 ## 11. 交接检查清单（接第一单前）
 
 - [ ] 读过 [`STYLE.md`](STYLE.md) 与本文档
-- [ ] `bash build/verify/locked_build.sh` 能 exit 0（没有就先修构建环境）
+- [ ] `bash tools/verify/build.sh` 能 exit 0（没有就先修构建环境）
 - [ ] 知道配置文件/日志在哪，能跑一次 `Plugin-shot.exe --capture` 并看到落盘
 - [ ] 知道"数据形状不进 ABI"这条铁律，以及 `document/LISTS.md` 在哪
 - [ ] 知道改完代码要同步文档、TODO 只写在代码里、**不自动 push**
