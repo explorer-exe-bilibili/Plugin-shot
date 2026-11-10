@@ -17,8 +17,8 @@ namespace Plugin {
  * 缓冲，再调 capture 让插件往里写像素。插件因此从不分配图像内存，宿主也不
  * 需要跨 DLL 释放任何东西。
  *
- * @warning 两个能力函数都必须在宿主 main 线程上调用（契约把线程模型交给宿主：
- *          它需要为 GDI 抓屏保证线程可用性）；实现不得在返回后保存 dst/data。
+ * @warning 两个能力函数只在**采集流水线的工作线程**上调用（见 document/CAPTURE.md
+ *          §2.1）；同一实例不会被并发调用。实现不得在返回后保存 dst/data。
  */
 class ScreenCaptureInstance : public PluginBase {
     const ShotScreenCaptureV1* m_ops = nullptr;
@@ -46,7 +46,7 @@ public:
      * @param[out] info 成功时填入；进入时 struct_size 由本函数填好。
      * @return 0 = 成功；1 = 当前没有可采集的屏幕；2 = 参数非法（含缺能力函）；
      *         3 = 系统调用失败。
-     * @note 只读调用，不分配内存；回调在宿主 main 线程同步执行。
+     * @note 只读调用，不分配内存；回调在采集流水线的工作线程上同步执行。
      */
     int32_t describe(ShotCaptureInfo& info) const {
         if (m_ops == nullptr || m_ops->describe == nullptr) {

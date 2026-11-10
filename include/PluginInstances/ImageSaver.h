@@ -16,7 +16,8 @@ namespace Plugin {
  * 保存策略（格式、目录布局、编码参数）全部来自插件自己的 shot.configurable
  * 配置项；宿主只传一张处理完的图像和可选的覆盖参数，换一个保存插件不需要改宿主。
  *
- * @warning save 只在宿主 main 线程上调用，同一实例不会被并发调用；实现无需考虑重入。
+ * @warning save 只在**采集流水线的工作线程**上调用（见 document/CAPTURE.md §2.2），
+ *          同一实例不会被并发调用；实现无需考虑重入。
  */
 class ImageSaverInstance : public PluginBase {
     const ShotImageSaverV1* m_ops = nullptr;
@@ -47,7 +48,7 @@ public:
      * @param[out] path      接收最终文件路径（含扩展名，NUL 结尾）的缓冲；不能为空。
      * @param[in]  pathSize  path 的字节数；建议 1024，返回 2 表示缓冲不足。
      * @return 0 = 已落盘；1 = 参数非法；2 = path 缓冲不足；3 = 保存失败。
-     * @note 回调在宿主 main 线程同步执行，返回时文件已经写完。
+     * @note 回调在采集流水线的工作线程上同步执行，返回时文件已经写完。
      */
     int32_t save(const ShotImage& image, const char* directory, const char* basename,
                  char* path, uint32_t pathSize) const {

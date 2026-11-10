@@ -37,7 +37,7 @@ public:
      * @brief 原地处理一张图。
      * @param[in,out] image 待处理图像；按 stride 逐行寻址，stride 可为负。
      * @return true = 插件返回 0；false = 没有 process 或插件返回非 0。
-     * @note 回调在宿主线程同步执行。
+     * @note 回调在采集流水线的工作线程上同步执行（见 document/CAPTURE.md §7）。
      */
     bool process(ShotImage& image) {
         if (m_ops == nullptr || m_ops->process == nullptr) {
