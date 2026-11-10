@@ -68,6 +68,13 @@ CapturePipeline 工作线程（一次只处理一张，整段持宿主生命周�
   `document/SETTINGS.md` §6.1）。
 - **负 origin 未实机验证**：公式全程有符号（`GetSystemMetrics` → 契约 `int32_t` →
   `BitBlt` 的 `int` 源坐标），本机两块屏都在主屏右侧，origin 为 `(0,0)`。
+- **光标合成（可选）**：`plugins/screen_capture` 同时实现 `shot.configurable`，配置项
+  `include_cursor`（BOOL，默认 `"1"`）。开启时插件在 `BitBlt` 之后、读回像素之前用
+  `GetCursorInfo` + `GetIconInfo` + `DrawIconEx` 把**当前**鼠标光标画进整屏位图：屏幕坐标
+  先减 `origin_x/origin_y` 换算成图像坐标、再减图标热点；光标此刻不可见
+  （`CURSOR_SHOWING` 未置位）就不画，部分落在虚拟桌面外时由 `DrawIconEx` 自然裁剪。
+  取光标信息 / 绘制失败只 WARN，**抓屏仍算成功**（`capture` 返回 0，只是没有光标）。
+  配置值在每次抓屏前读一次快照，抓屏期间改设置只影响下一张图。
 - 返回码：`0` 成功；`1` 当前没有可采集的屏幕；`2` 参数非法；`3` 系统调用失败。
   宿主对任何非 0 都发布 `capture.failed`，不会使用 `dst` 的内容。
 - 缺 `describe` 或 `capture` 的实例**不会被包装成采集插件**：加载时按"没有这个
@@ -201,7 +208,7 @@ main 线程                                 worker 线程
     └─ 拷贝负载 + 入队（上限 4，满了丢弃）──▶ 取一条请求
   --capture：captureOnce()                  整段持宿主生命周期锁：
     └─ 放入请求后 wait completion cv          解析 region → 采集 → 裁剪 → 处理 → 保存
-  dispatchEvents()（订阅回调仍在这里）        发布 capture.done/failed（只入队）
+  阻塞等待事件 → dispatchEvents()（订阅回调仍在这里）        发布 capture.done/failed（只入队）
                                             notify completion cv（--capture 的等待方）
   退出：CapturePipeline::stop()
     退订 capture.request → 标记 stopping → 丢弃未开始的排队请求 → join worker
@@ -229,14 +236,14 @@ main 线程                                 worker 线程
 | 不做 | 原因 |
 | --- | --- |
 | 插件侧的"区域采集 / 单显示器采集" | 契约只描述整个虚拟桌面；宿主先抓整屏再按 region 裁剪，插件不感知取景范围 |
-| 光标、多帧动画 | 合成规则因平台/场景而异，先不定义，避免把错误规则固化进 ABI |
+| 多帧动画 / 录屏 | 单帧截图之外的东西不在 v1 契约里定义（光标已经由 `plugins/screen_capture` 的可选合成实现，见 §2.1） |
 | 剪贴板 / 直接复制 | 属于独立插件（`plugins/clipboard`）消费 `capture.done`，和"落盘"是两件事 |
 | 内置图像编辑器 | 编辑器应当是独立插件，通过 `capture.done` + frame 服务取图 |
 | 多 worker / 流水线内并行处理 | 一次只处理一张：内存峰值可控、处理器顺序稳定；并发收益小于复杂度 |
 | 采集中途取消 | v1 没有取消事件；正在执行的那张图会走完（几百毫秒），排队请求可被 `stop` 丢弃 |
 | `--capture` 之外的命令行采集参数 | 区域参数走 `capture.request` 负载；命令行只保留"截一张就走"的最简语义 |
 
-未完成项在代码里以 `// TODO:` 标注（`src/main.cpp`、`src/capturePipeline.cpp`），
+未完成项在代码里以 `// TODO:` 标注（如 `src/capturePipeline.cpp`），
 不进本文档的"计划"。
 
 ## 9. 检查清单

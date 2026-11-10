@@ -49,7 +49,7 @@ std::int32_t ScreenCapture::describe(ShotCaptureInfo* out) const {
     return 0;
 }
 
-std::int32_t ScreenCapture::capture(ShotImage* dst) const {
+std::int32_t ScreenCapture::capture(ShotImage* dst, bool includeCursor) const {
     const shot::Logger log(m_host);
     if (dst == nullptr || !isValidTarget(*dst)) {
         log.error("screen_capture: capture 的目标图不合法（空指针 / 格式 / 尺寸 / stride）");
@@ -69,7 +69,7 @@ std::int32_t ScreenCapture::capture(ShotImage* dst) const {
         return 2;
     }
 
-    if (!GdiDesktopCapture::captureTo(*dst, geometry, log)) {
+    if (!GdiDesktopCapture::captureTo(*dst, geometry, includeCursor, log)) {
         return 3;
     }
     return 0;

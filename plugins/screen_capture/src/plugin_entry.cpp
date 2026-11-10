@@ -5,8 +5,9 @@
 //     plugins[] 顺序一一对应；
 //   · 某个插件"会什么"由它自己的能力目录回答，宿主用 query_interface 逐个询问；
 //   · 宿主拿到的 instance 是一个不透明指针：插件自己分配、自己释放；
-//   · 能力函数表、插件状态对象与插件身份证都放在这个文件——它才是"入口"，
-//     采集实现文件不混 ABI 代码（STYLE.md §6.8）。
+//   · 能力函数表（采集 + 配置）与插件身份证都放在这个文件——它才是"入口"，
+//     采集实现文件不混 ABI 代码（STYLE.md §6.8）；实例状态类型因为两个能力
+//     回调都要用，放内部头 screen_capture_state.h。
 //
 // 匿名命名空间里的函数都是 ABI 回调 / 模块表回调：签名由契约固定，只能是自由函数
 // （STYLE.md §6.7 的合法例外）。
@@ -15,9 +16,11 @@
 #include <iterator>
 #include <new>
 
+#include "capture_settings.h"
 #include "plugin_api.h"
 #include "plugin_entry.h"
 #include "screen_capture.h"
+#include "screen_capture_state.h"
 #include "shot_plugin_helpers.h"
 
 namespace {
@@ -141,13 +144,6 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 namespace screen_capture {
 namespace {
 
-/** @brief 插件状态：一个采集能力对象，构造时绑定宿主服务表。 */
-struct ScreenCaptureState {
-    explicit ScreenCaptureState(const ShotHostServices* host) noexcept : capture(host) {}
-
-    ScreenCapture capture;
-};
-
 void* create_state() { return new (std::nothrow) ScreenCaptureState(g_hostServices); }
 
 void destroy_state(void* self) { delete static_cast<ScreenCaptureState*>(self); }
@@ -172,7 +168,8 @@ std::int32_t capture_screen(void* self, ShotImage* dst) {
         return 2;
     }
     try {
-        return state->capture.capture(dst);
+        // 配置快照在这里读一次：抓屏期间用户再改 include_cursor 也只影响下一张图。
+        return state->capture.capture(dst, state->settings.includeCursor());
     } catch (...) {
         // capture 里的分配用 new (std::nothrow)，理论上也不抛；边界兜底仍然要有。
         return 3;
@@ -183,15 +180,24 @@ const ShotScreenCaptureV1 kScreenOps = SHOT_OPS(ShotScreenCaptureV1,
                                                 .describe = &describe_screen,
                                                 .capture  = &capture_screen);
 
+// 配置能力：声明 include_cursor，宿主据此生成设置页条目并在启动时回灌已存值。
+// 回调实现与配置描述在 capture_settings.cpp（一个能力一个 .cpp）。
+const ShotConfigurableV1 kConfigOps = SHOT_OPS(ShotConfigurableV1,
+                                               .get_config_count = &capture_config_count,
+                                               .get_config_desc  = &capture_config_desc,
+                                               .get_config       = &capture_config_get,
+                                               .set_config       = &capture_config_set);
+
 const ShotIfaceEntry kIfaces[] = {
     { SHOT_IFACE_SCREEN_CAPTURE, 1, &kScreenOps },
+    { SHOT_IFACE_CONFIGURABLE, 1, &kConfigOps },
     { nullptr, 0, nullptr },
 };
 
 }  // namespace
 
 const PluginEntry kScreenCapture = {
-    "screen_capture.main", "Screen Capture", "0.1.0", &create_state, &destroy_state, kIfaces,
+    "screen_capture.main", "Screen Capture", "0.2.0", &create_state, &destroy_state, kIfaces,
 };
 
 }  // namespace screen_capture

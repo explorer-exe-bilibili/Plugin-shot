@@ -5,6 +5,7 @@
 //   GetDC(NULL)                    拿屏幕 DC（覆盖整个虚拟桌面）
 //   CreateCompatibleDC/Bitmap      建内存 DC + 与屏幕同格式的位图
 //   BitBlt(SRCCOPY|CAPTUREBLT)     把屏幕像素拷到位图，源坐标 = 虚拟桌面左上角
+//   DrawIconEx                     可选：把当前鼠标光标叠到位图上（BitBlt 不含光标）
 //   GetDIBits(32bpp, biHeight < 0) 按 top-down BGRA 读回像素
 //   alpha 置 255                   屏幕 DC 没有 alpha，留 0 会让 PNG 整张透明
 //   按 dst->stride 逐行写           stride 可负 / 可大于 width*4，绝不假设连续
@@ -20,10 +21,12 @@
 
 #include "screen_capture_impl.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <new>
 
@@ -118,7 +121,7 @@ bool GdiDesktopCapture::queryGeometry(ShotCaptureInfo& info, shot::Logger log) {
 }
 
 bool GdiDesktopCapture::captureTo(const ShotImage& dst, const ShotCaptureInfo& target,
-                                  shot::Logger log) {
+                                  bool includeCursor, shot::Logger log) {
     // 调用方（ScreenCapture）已经保证尺寸一致；这里只按"C++ 里不信任入参"再兜一层。
     const int width = target.width;
     const int height = target.height;
@@ -162,14 +165,16 @@ bool GdiDesktopCapture::captureTo(const ShotImage& dst, const ShotCaptureInfo& t
 
     // 源坐标用虚拟桌面左上角：主屏左上角不一定是 (0,0)，左侧或上方的副屏会让
     // origin 为负；BitBlt 的源坐标就是系统坐标，负坐标也照常工作。
-    // CAPTUREBLT 把分层窗口一起抓进来（否则被遮挡的层窗口会丢内容）。
-    // TODO: 光标合成：BitBlt/CAPTUREBLT 都不会把鼠标光标画进结果，v1 契约也不描述
-    // 光标位置；等 ABI 追加光标语义后再用 GetCursorInfo + DrawIconEx 叠加（要做热点
-    // 坐标与 DPI 换算，不能直接画在 (0,0)）。
+    // CAPTUREBLT 把分层窗口一起抓进来（否则被遮挡的层窗口会丢内容），但它和
+    // SRCCOPY 都不含鼠标光标，所以光标要在位图读回之前单独画上去。
     bool ok = BitBlt(memoryDc, 0, 0, width, height, screenDc, target.origin_x, target.origin_y,
                      SRCCOPY | CAPTUREBLT) != 0;
     if (!ok) {
         logFailure(log, "BitBlt", GetLastError());
+    } else if (includeCursor) {
+        // 必须画在 BitBlt 之后、GetDIBits 之前：此时位图还选在 memoryDc 里，
+        // DrawIconEx 直接改的就是接下来要读回的像素。
+        composeCursor(memoryDc, target, log);
     }
 
     // GetDIBits 要求位图没有被任何 DC 选中：先把原来的选中对象放回去。
@@ -183,6 +188,56 @@ bool GdiDesktopCapture::captureTo(const ShotImage& dst, const ShotCaptureInfo& t
     DeleteDC(memoryDc);
     ReleaseDC(nullptr, screenDc);
     return ok;
+}
+
+void GdiDesktopCapture::composeCursor(HDC memoryDc, const ShotCaptureInfo& target,
+                                      shot::Logger log) {
+    CURSORINFO cursor = {};
+    cursor.cbSize = sizeof(CURSORINFO);  // 不填 cbSize，GetCursorInfo 会直接失败
+    if (GetCursorInfo(&cursor) == 0) {
+        logFailure(log, "GetCursorInfo", GetLastError());
+        return;
+    }
+    // 光标此刻不可见（全屏视频/锁屏/远程会话/程序主动隐藏）：截图里本来就不该有光标。
+    if ((cursor.flags & CURSOR_SHOWING) == 0) {
+        return;
+    }
+
+    ICONINFO icon = {};
+    if (GetIconInfo(cursor.hCursor, &icon) == 0) {
+        logFailure(log, "GetIconInfo", GetLastError());
+        return;
+    }
+
+    // 图像坐标 = 屏幕坐标 - 虚拟桌面原点：ptScreenPos 是系统坐标，origin 可能非零、
+    // 甚至为负。两个数都是 int，但相减/减热点仍用 int64 做中间结果，避免极端坐标
+    // （多屏摆出几万像素）下先溢出再取绝对值。
+    const std::int64_t imageX = static_cast<std::int64_t>(cursor.ptScreenPos.x) - target.origin_x;
+    const std::int64_t imageY = static_cast<std::int64_t>(cursor.ptScreenPos.y) - target.origin_y;
+    // DrawIconEx 要的是图标左上角，ptScreenPos 是热点位置，必须减去热点偏移：
+    // 箭头光标的热点是 (0,0)，但 I 型/十字光标不是，不减会整体画偏。
+    const std::int64_t drawX = imageX - static_cast<std::int64_t>(icon.xHotspot);
+    const std::int64_t drawY = imageY - static_cast<std::int64_t>(icon.yHotspot);
+    // Win32 只收 int 坐标：把 64 位中间结果夹进 int 范围再传，不让窄化转换产生未定义行为。
+    const int drawLeft = static_cast<int>(std::clamp<std::int64_t>(
+        drawX, std::numeric_limits<int>::min(), std::numeric_limits<int>::max()));
+    const int drawTop = static_cast<int>(std::clamp<std::int64_t>(
+        drawY, std::numeric_limits<int>::min(), std::numeric_limits<int>::max()));
+
+    // width/height 传 0 = 使用系统默认图标尺寸；DI_NORMAL 同时应用 XOR 掩码与彩色图标。
+    if (DrawIconEx(memoryDc, drawLeft, drawTop, cursor.hCursor, 0, 0, 0, nullptr, DI_NORMAL) == 0) {
+        logFailure(log, "DrawIconEx", GetLastError());
+    }
+
+    // GetIconInfo 成功时返回的掩码/彩色位图由调用方释放；hCursor 本身是系统光标，
+    // 不归我们释放。无论 DrawIconEx 成功与否都必须释放，否则每次抓屏漏两个 GDI 对象，
+    // 长时间常驻截图会累积。
+    if (icon.hbmMask != nullptr) {
+        DeleteObject(icon.hbmMask);
+    }
+    if (icon.hbmColor != nullptr) {
+        DeleteObject(icon.hbmColor);
+    }
 }
 
 bool GdiDesktopCapture::copyPixels(HDC deviceDc, HBITMAP bitmap, const ShotImage& dst,

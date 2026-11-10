@@ -17,8 +17,10 @@ namespace screen_capture {
  * origin_x/origin_y 是内容左上角在系统坐标里的位置（主屏左上角不一定是 (0,0)，
  * 左侧或上方的副屏会让 origin 为负）。
  *
- * @note 线程模型：宿主只在 main 线程上同步调用这两个函数，同一实例不会被并发调用；
- *       实现不保存任何跨调用的屏幕状态，下一次调用从头读系统状态。
+ * @note 线程模型：宿主在采集流水线的 worker 线程上同步调用这两个函数（见
+ *       document/CAPTURE.md §2.1），同一实例不会被并发调用；实现不保存任何跨调用
+ *       的屏幕状态，下一次调用从头读系统状态。配置项（include_cursor）的状态不放在
+ *       本类里，见 CaptureSettings。
  */
 class ScreenCapture {
 public:
@@ -50,18 +52,24 @@ public:
     std::int32_t describe(ShotCaptureInfo* out) const;
 
     /**
-     * @brief 把整个虚拟桌面写进宿主提供的 BGRA8 图。
+     * @brief 把整个虚拟桌面写进宿主提供的 BGRA8 图，可顺带合成鼠标光标。
      * @param[in,out] dst 宿主填好 data/width/height/stride/channels/pixel_format 的图；
      *                 插件只能写像素、不得改结构体字段，也不能为 nullptr。
+     * @param[in] includeCursor 是否把**当前**鼠标光标画进结果（热点与虚拟桌面原点
+     *                 都在插件内换算成图像坐标）；这是 shot.configurable 的
+     *                 include_cursor，由调用方传入而不是本类保存——配置可能在别的
+     *                 线程改写，状态归 CaptureSettings。
      * @return 0 = 成功；1 = 当前没有可采集的屏幕；2 = dst 参数不合法（空指针、
      *         不是 BGRA8 / 4 通道、stride 装不下一行、尺寸与当前虚拟桌面不一致）；
      *         3 = 系统调用失败（已通过宿主日志写明是哪一步）。
      * @note 目标尺寸必须与 describe 报的一致。describe 与 capture 是两次独立调用，
      *       中间换分辨率 / 拔显示器都会让两者不一致；这时返回 2，绝不按错的尺寸写像素。
+     * @note 光标合成是"锦上添花"：取不到光标信息（光标已隐藏、GetIconInfo 失败等）
+     *       只写 warn 日志，抓屏本身照常成功，返回 0。
      * @warning 按 dst->stride 逐行写（stride 可以为负，表示自底向上）；只写每行前
      *          width*4 字节，行尾填充保持宿主原值。
      */
-    std::int32_t capture(ShotImage* dst) const;
+    std::int32_t capture(ShotImage* dst, bool includeCursor) const;
 
 private:
     /**

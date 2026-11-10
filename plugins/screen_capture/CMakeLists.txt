@@ -1,9 +1,11 @@
 # ============================================================================
-#  screen_capture —— 屏幕采集插件（"shot.screen_capture"）
+#  screen_capture —— 屏幕采集插件（"shot.screen_capture" + "shot.configurable"）
 #
 #  两段式能力：describe 报告整个虚拟桌面的几何，capture 把 BGRA8 像素写进
 #  宿主自己分配的缓冲——插件因此从不分配图像内存，也没有跨 DLL 的所有权问题。
-#  实现全部是 Windows GDI（GetDC + BitBlt + GetDIBits），所以只在 Windows 上构建。
+#  另声明一个配置项 include_cursor（是否把鼠标光标合成进截图）。
+#  实现全部是 Windows GDI（GetDC + BitBlt + GetDIBits + DrawIconEx），所以只在
+#  Windows 上构建。
 #
 #  构建方式一（宿主仓库内）：
 #    根 CMakeLists 用 file(GLOB plugins/*/CMakeLists.txt) 自动纳入本工程，
@@ -44,12 +46,13 @@ if(NOT COMMAND shot_add_plugin)
 endif()
 
 # 只链接两个系统库；没有第三方依赖，插件不链接 spdlog（日志走宿主服务）。
-#   gdi32  —— BitBlt / CreateCompatibleDC / GetDIBits / GDI 对象
-#   user32 —— GetDC / GetSystemMetrics / ReleaseDC
+#   gdi32  —— BitBlt / CreateCompatibleDC / GetDIBits / DeleteObject 等 GDI 对象
+#   user32 —— GetDC / GetSystemMetrics / GetCursorInfo / GetIconInfo / DrawIconEx
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
     SOURCES      src/plugin_entry.cpp
                  src/screen_capture.cpp
+                 src/capture_settings.cpp
                  src/gdi_desktop_capture.cpp
     INCLUDE_DIRS include
     LINK_LIBRARIES

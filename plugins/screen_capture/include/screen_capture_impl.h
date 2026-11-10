@@ -57,17 +57,34 @@ public:
 
     /**
      * @brief 把整个虚拟桌面抓进 dst（BGRA8，尺寸必须与 target 一致）。
-     * @param[in] dst    目标图像；调用方已校验过 data/width/height/stride/channels。
-     * @param[in] target 当前几何，提供 BitBlt 的源坐标与宽高。
-     * @param[in] log    宿主日志；失败时就地写明是哪一步失败及 GetLastError()。
+     * @param[in] dst           目标图像；调用方已校验过 data/width/height/stride/channels。
+     * @param[in] target        当前几何，提供 BitBlt 的源坐标、宽高与光标合成的原点。
+     * @param[in] includeCursor 为 true 时在 BitBlt 之后把当前鼠标光标画进位图。
+     * @param[in] log           宿主日志；失败时就地写明是哪一步失败及 GetLastError()。
      * @return true = 成功；false = 系统调用失败（已写日志）。
      * @warning 只写像素，不修改 dst 的任何结构体字段。
-     * @note 内部同样会临时提升线程 DPI 上下文：BitBlt 的源坐标必须和 queryGeometry
-     *       读到的几何在同一套物理像素坐标系里。
+     * @note 内部同样会临时提升线程 DPI 上下文：BitBlt 的源坐标、GetCursorInfo 的
+     *       屏幕坐标必须和 queryGeometry 读到的几何在同一套物理像素坐标系里。
      */
-    static bool captureTo(const ShotImage& dst, const ShotCaptureInfo& target, shot::Logger log);
+    static bool captureTo(const ShotImage& dst, const ShotCaptureInfo& target, bool includeCursor,
+                          shot::Logger log);
 
 private:
+    /**
+     * @brief 把当前鼠标光标画进内存 DC 里已经抓好的整屏位图。
+     *
+     * BitBlt / CAPTUREBLT 都不含鼠标指针，所以抓完屏后单独叠加。坐标全程是物理像素：
+     * GetCursorInfo 的 ptScreenPos 与 describe 的 origin 在同一套系统坐标里，
+     * 图像坐标 = ptScreenPos - (origin_x, origin_y)，再减去图标热点才是 DrawIconEx
+     * 要的左上角（箭头热点是 (0,0)，但 I 型/十字光标不是，不减会整体画偏）。
+     *
+     * @param[in] memoryDc 已选中整屏位图的内存 DC；画完不影响后续 GetDIBits。
+     * @param[in] target   当前几何，提供虚拟桌面原点（可能为负）。
+     * @param[in] log      宿主日志；取光标信息或 DrawIconEx 失败只 warn，不判抓屏失败。
+     * @note 光标只是"锦上添花"：画不上也要把干净的桌面图交出去，所以没有返回码。
+     */
+    static void composeCursor(HDC memoryDc, const ShotCaptureInfo& target, shot::Logger log);
+
     /**
      * @brief 用 GetDIBits 把位图读成 BGRA 并写进 dst，最后把 alpha 置 255。
      * @param[in] deviceDc 已创建、用于识别设备的 DC（内存 DC 即可）。
