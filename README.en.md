@@ -43,9 +43,10 @@ current main line.
 | Single entry point `shot_module_entry` + self-describing module table | ✅ working |
 | Multiple plugins per DLL (`plugin_count` + `create(index)` + `get_info`) | ✅ working |
 | Capability query `query_interface("shot.image_processor", 1)` | ✅ working |
-| Screen capture `shot.screen_capture` (`plugins/screen_capture`, GDI over the virtual desktop in **physical pixels**; mixed-DPI dual-screen 3584x1600 verified; Windows only) | ✅ working (`document/CAPTURE.md`) |
+| Screen capture `shot.screen_capture` (`plugins/screen_capture`, GDI over the virtual desktop in **physical pixels**; optional mouse-cursor compositing via the `include_cursor` config item, on by default; mixed-DPI dual-screen 3584x1600 verified; Windows only) | ✅ working (`document/CAPTURE.md`) |
 | Image saving `shot.image_saver` (`plugins/image_saver`, PNG/JPEG plus four config items) | ✅ working (`document/CAPTURE.md`) |
 | Capture → process → save pipeline (**worker thread + bounded queue of 4 + lifecycle lock for the whole run**; `capture.request` / `capture.done` / `capture.failed`) | ✅ working (`document/CAPTURE.md`) |
+| Host main loop (event-driven **blocking wait**, no 16 ms polling; `publish` / `post_to_host` / plugin enable-disable requests wake it) | ✅ working (`document/EVENT_BUS.md` §3) |
 | Region capture (`capture.request` with a valid `region`: the host grabs the full screen and crops it in physical virtual-desktop pixels, clamped; `plugins/region_selector` selection overlay; the no-region selection-trigger request is ignored by the pipeline and never captured; Windows only) | ✅ working (`document/CAPTURE.md` §3.1) |
 | Generic plugin type `PluginType::Generic` (only `shot.configurable` + subscriptions in `create`; loaded only when metadata declares it) | ✅ working (`document/SETTINGS.md` §3.3) |
 | Host event bus `shot.host.event_bus` (topic publish / subscribe) | ✅ working (`document/EVENT_BUS.md`) |
@@ -59,7 +60,7 @@ current main line.
 | Tray entry `plugins/tray` (menu driven by `tray_command_list`: four core items + plugin contributions; icon defaults to the host's named resource `IDI_ICON1`, `icon` accepts a `.ico`; Windows only) | ✅ working |
 | Notification plugin `plugins/notify` (success/failure balloons via a hidden placeholder icon; config items `enabled` / `show_on_success` / `show_on_error` / `sound`; Windows only) | ✅ working |
 | Clipboard plugin `plugins/clipboard` (subscribes to `capture.done` → CF_DIB / optional CF_HDROP; config items `enabled` / `also_file_drop`; Windows only) | ✅ working |
-| Global hotkey plugin `plugins/hotkey` (defaults Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`; invalid hotkeys are warned and skipped; Windows only) | ✅ working |
+| Global hotkey plugin `plugins/hotkey` (defaults Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`; the settings window records a new combo by key press (`options="hotkey"`, temporarily unregistering global hotkeys via `hotkey.suspend/resume` while recording); invalid hotkeys are warned and skipped; Windows only) | ✅ working |
 | Mixed-DPI multi-monitor capture (physical virtual desktop 3584x1600; per-call thread DPI context fallback; negative origin not verified on real hardware) | ✅ working (`document/CAPTURE.md` §2.1) |
 | Settings-window DPI (dual-screen 150%+100%: live rescale while dragging across monitors, geometry clamped to the target screen's DPI, non-accumulating; other DPI mixes / 3+ screens unverified) | ✅ working (`document/SETTINGS.md` §6.1) |
 | Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--help` | ✅ working |
@@ -125,6 +126,8 @@ current main line.
 │   ├── AppendPluginMeta.cmake  # appends metadata.json to the DLL tail
 │   ├── prune_output_dir.cmake  # prunes output dirs (no pdb/ilk/exp/lib)
 │   └── ...                     # runtime dependency layout, SDK export, pre-link kill
+├── tools/
+│   └── verify/                 # on-device verification: build wrapper with a build lock + capture/settings/hotkey/clipboard e2e
 └── sdk/                    # offline SDK produced by export_sdk (not committed, see .gitignore)
 ```
 
@@ -146,6 +149,11 @@ cmake --build build/Windows --target export_sdk
 cmake --preset release -DVCPKG_TARGET_TRIPLET=x64-linux   # triplet depends on the platform
 cmake --build --preset release
 ```
+
+On the Windows dev machine the vcvars + cmake steps are wrapped by `bash tools/verify/build.sh`
+(a build lock serializes multiple terminals / agents; `--target <t>` builds a single target).
+The on-device e2e scripts and their run discipline are documented in
+[`tools/verify/README.md`](tools/verify/README.md).
 
 Optional `-DSHOT_ENABLE_OPENCV=OFF` skips the plugins that depend on OpenCV
 (`opencv_provider` / `example_processor`) for faster CI or OpenCV-less environments; default `ON`.
@@ -201,7 +209,8 @@ template and PNG format; directory/format/quality/filename are `plugins/image_sa
 items editable in the settings window. Results are shown as system notifications by
 `plugins/notify` and copied to the clipboard by `plugins/clipboard` (both can be toggled in the
 settings window); `plugins/hotkey` triggers the same capture / region capture / open-settings
-actions with `Ctrl+Alt+S` / `Ctrl+Alt+A` / `Ctrl+Alt+O` by default (all configurable).
+actions with `Ctrl+Alt+S` / `Ctrl+Alt+A` / `Ctrl+Alt+O` by default (all configurable; the
+settings window records a new combo by pressing it, no manual typing).
 
 `--capture` logs `Capture saved: <path>` and exits 0 on success; it exits 1 on failure
 (capture/save failure, missing plugin, full request queue) and 2 on unknown arguments. The

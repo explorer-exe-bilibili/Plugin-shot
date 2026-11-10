@@ -75,6 +75,7 @@
 | 插件目录 | snake_case，**目录名 = CMake 目标名 = DLL 名 = 命名空间名** | `plugins/example_processor/` → `example_processor.dll` → `namespace example_processor` |
 | 插件源文件 | snake_case，一个能力一个文件 | `src/plugin_entry.cpp` `src/grayscale.cpp` `src/invert.cpp` |
 | CMake 模块 | 新文件用 snake_case | `cmake/copy_runtime_deps.cmake` `cmake/ShotPlugin.cmake`（既有 PascalCase 保持不动） |
+| 本地验证脚本（不入库产物） | snake_case；`.ps1` 一律 UTF-8 带 BOM（PowerShell 5.1 才认中文），公共函数进 `common.ps1` 不复制粘贴 | `tools/verify/build.sh` `tools/verify/common.ps1` `tools/verify/smoke_capture.ps1` |
 
 > 文件命名就按上表的层来选，不要发明第四种拼法。`include/PluginInstances/base.h` 是唯一的小写文件名例外，保留不动。
 > 头文件粒度按 §6.8：**一个类一个头文件**；`shot_plugin_helpers.h` 这类汇总头自身不声明类，只 include

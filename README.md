@@ -37,9 +37,10 @@
 | 单入口 `shot_module_entry` + 自描述模块表（`struct_size` 约定） | ✅ 可用 |
 | 一 DLL 多插件（`plugin_count` + `create(index)` + `get_info`） | ✅ 可用 |
 | 能力查询 `query_interface("shot.image_processor", 1)` | ✅ 可用 |
-| 屏幕采集 `shot.screen_capture`（`plugins/screen_capture`，GDI 抓虚拟桌面**物理像素**；混合 DPI 双屏实测 3584x1600；仅 Windows） | ✅ 可用（`document/CAPTURE.md`） |
+| 屏幕采集 `shot.screen_capture`（`plugins/screen_capture`，GDI 抓虚拟桌面**物理像素**；可选把鼠标光标合成进截图（`include_cursor` 配置，默认开）；混合 DPI 双屏实测 3584x1600；仅 Windows） | ✅ 可用（`document/CAPTURE.md`） |
 | 图像保存 `shot.image_saver`（`plugins/image_saver`，PNG / JPEG + 四个配置项） | ✅ 可用（`document/CAPTURE.md`） |
 | 采集 → 处理 → 保存流水线（**工作线程 + 有界队列 4 + 整段持生命周期锁**；`capture.request` / `capture.done` / `capture.failed`） | ✅ 可用（`document/CAPTURE.md`） |
+| 宿主主循环（事件驱动**阻塞等待**，无 16ms 轮询；`publish` / `post_to_host` / 插件启停都会唤醒） | ✅ 可用（`document/EVENT_BUS.md` §3） |
 | 区域截图（`capture.request` 带合法 `region`，宿主抓整屏后按物理虚拟桌面像素裁剪、越界夹取；`plugins/region_selector` 框选覆盖层；无 region 的框选触发请求由流水线忽略、不采集；仅 Windows） | ✅ 可用（`document/CAPTURE.md` §3.1） |
 | 通用插件类型 `PluginType::Generic`（只声明 `shot.configurable` + `create` 里订阅事件；有 metadata 才兜底加载） | ✅ 可用（`document/SETTINGS.md` §3.3） |
 | 宿主事件总线 `shot.host.event_bus`（主题发布 / 订阅） | ✅ 可用（`document/EVENT_BUS.md`） |
@@ -53,7 +54,7 @@
 | 托盘入口 `plugins/tray`（`tray_command_list` 数据驱动菜单：core 四项 + 插件贡献；图标默认宿主命名资源 `IDI_ICON1`，可用 `icon` 换 `.ico`；仅 Windows） | ✅ 可用 |
 | 通知插件 `plugins/notify`（截屏成功/失败气泡，隐藏占位图标；配置 enabled / show_on_success / show_on_error / sound；仅 Windows） | ✅ 可用 |
 | 剪贴板插件 `plugins/clipboard`（订阅 `capture.done` → CF_DIB / 可选 CF_HDROP；配置 enabled / also_file_drop；仅 Windows） | ✅ 可用 |
-| 全局热键插件 `plugins/hotkey`（默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`；非法热键 warn 跳过；仅 Windows） | ✅ 可用 |
+| 全局热键插件 `plugins/hotkey`（默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`；设置页用「按组合键录入」设置（`options="hotkey"`，录入期间经 `hotkey.suspend/resume` 临时撤销全局注册）；非法热键 warn 跳过；仅 Windows） | ✅ 可用 |
 | 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
 | 命令行 `--capture`（工作线程 + 退出前派发一轮事件）/ `--settings` / `--help` | ✅ 可用 |
@@ -118,6 +119,8 @@
 │   ├── AppendPluginMeta.cmake  # 把 metadata.json 贴到 DLL 尾部
 │   ├── prune_output_dir.cmake  # 产物目录剪枝（不留 pdb/ilk/exp/lib/基础依赖 DLL）
 │   └── ...                     # 运行时依赖布局、SDK 导出、链接前杀进程
+├── tools/
+│   └── verify/                 # 真机验证：带构建锁的 build 包装 + capture/settings/热键/剪贴板 e2e
 └── sdk/                    # export_sdk 生成的离线 SDK（不入库，见 .gitignore）
 ```
 
@@ -139,6 +142,10 @@ cmake --build build/Windows --target export_sdk
 cmake --preset release -DVCPKG_TARGET_TRIPLET=x64-linux   # triplet 按平台填
 cmake --build --preset release
 ```
+
+Windows 本机还把 vcvars + cmake 包成了便利脚本：`bash tools/verify/build.sh`（带构建锁，
+多终端 / 多 agent 共用构建目录时串行；`--target <t>` 只构建一个 target）。真机 e2e 冒烟
+脚本与运行纪律见 [`tools/verify/README.md`](tools/verify/README.md)。
 
 可选开关 `-DSHOT_ENABLE_OPENCV=OFF` 跳过依赖 OpenCV 的插件（`opencv_provider` /
 `example_processor`），用于 CI 提速或没有 OpenCV 的环境；默认 `ON`。
@@ -188,7 +195,8 @@ cd build/Windows/bin && ./Plugin-shot.exe --help     # 打印用法
 目录/格式/质量/文件名都是 `plugins/image_saver` 的配置项，可在设置页修改。截屏结果由
 `plugins/notify` 弹系统通知、`plugins/clipboard` 把图片写进系统剪贴板（两者都可在设置页
 开关）；`plugins/hotkey` 默认用 `Ctrl+Alt+S` / `Ctrl+Alt+A` / `Ctrl+Alt+O` 触发同样的
-截屏 / 区域截屏 / 打开设置，全部热键可在设置页改。
+截屏 / 区域截屏 / 打开设置，全部热键可在设置页改（热键项用「录入…」按一次组合键录入，
+不用手输字符串）。
 
 `--capture` 成功时日志打印 `Capture saved: <path>`、退出码 `0`；失败（采集/保存/插件缺失/
 请求队列满）退出码 `1`，未知参数 `2`。一次性模式在退出前会**派发一轮事件**，所以剪贴板/

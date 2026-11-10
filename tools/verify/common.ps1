@@ -257,13 +257,26 @@ function Invoke-MouseDrag([int]$FromX, [int]$FromY, [int]$ToX, [int]$ToY, [int]$
 #endregion
 
 #region 配置
+# 备份时记下"原本有没有配置文件"：本来没有的话，恢复时必须删掉本次运行生成的配置，
+# 否则第一次运行的默认值会被下一次脚本当成"已存在"，旧的测试值又会被恢复回来。
+$script:ConfigAbsentMarker = Join-Path $script:OutDir "config.backup.absent"
+
 function Backup-Config {
+    Remove-Item $script:ConfigAbsentMarker -Force -ErrorAction SilentlyContinue
     if (Test-Path $script:ConfigPath) {
         Copy-Item $script:ConfigPath $script:ConfigBackup -Force
+    } else {
+        Remove-Item $script:ConfigBackup -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType File -Force $script:ConfigAbsentMarker | Out-Null
     }
 }
 
 function Restore-Config {
+    if (Test-Path $script:ConfigAbsentMarker) {
+        Remove-Item $script:ConfigPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $script:ConfigAbsentMarker -Force -ErrorAction SilentlyContinue
+        return
+    }
     if (Test-Path $script:ConfigBackup) {
         Copy-Item $script:ConfigBackup $script:ConfigPath -Force
     }

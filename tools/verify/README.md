@@ -19,15 +19,18 @@
 | --- | --- | --- |
 | `build.sh` / `build.bat` | 加构建锁后构建宿主 + 全部插件（`build.sh --target <t>` 可只构建一个） | 无 |
 | `smoke_capture.ps1` | `--capture` 一次性截屏：exit 0、日志有 `Capture saved:`、落盘尺寸 = 物理虚拟桌面 | 采集/保存插件 |
+| `smoke_cursor_capture.ps1` | 抓屏合成鼠标光标：光标在两个已知位置各截一张，断言两次图在对应位置附近像素不同、尺寸 = 物理虚拟桌面 | screen_capture（`include_cursor`） |
 | `smoke_settings.ps1` | `--settings`：设置窗口出现、可见、能截到画面、日志无 error | settings_ui |
-| `e2e_hotkey_capture.ps1` | 常驻 + `Ctrl+Alt+S` → 采集落盘（hotkey + 流水线 + 保存 串联） | hotkey/screen_capture/image_saver |
+| `e2e_hotkey_capture.ps1` | 常驻 + 配置里的截屏热键 → 采集落盘（hotkey + 流水线 + 保存 串联） | hotkey/screen_capture/image_saver |
 | `e2e_clipboard.ps1` | 截图后系统剪贴板里有一张图（CF_DIB） | clipboard |
 
 统一约定：
 
 - 所有脚本都会 **先 `Stop-Host`**（杀掉已有的 `Plugin-shot.exe`）并**备份/恢复**
   `%LOCALAPPDATA%\screen-shot\config.json`；异常中断时手动跑一次 `Restore-Config`
-  或把 `build\verify\config.backup.json` 拷回去。
+  或把 `build\verify\config.backup.json` 拷回去。备份时原本没有 `config.json` 会写
+  `config.backup.absent` 标记，恢复时**删掉本次运行生成的那份**——否则默认值会被下一次
+  脚本当成"已存在"，旧的测试值又被恢复回来。
 - 产物（截图、`config.backup.json`）统一落 `build\verify\`（gitignored）。
 - 脚本用 `Check <名字> <条件>` 打 `[PASS]/[FAIL]`，结尾打印 `结果：N/M 通过`，
   有失败时 exit 1。

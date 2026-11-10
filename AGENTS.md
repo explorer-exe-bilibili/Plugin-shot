@@ -58,6 +58,7 @@ plugins/            10 个插件工程，各自独立 CMakeLists + metadata.json
   notify             截图结果气泡（Windows）
 document/           设计文档（改代码必须同步，见 §4）
 cmake/              构建规则（ShotPlugin.cmake / ValidatePluginMeta.cmake / export_sdk.cmake …）
+tools/verify/       真机验证脚本（带构建锁的 build 包装 + e2e 冒烟，见 tools/verify/README.md）
 STYLE.md            ★ 代码风格与工程约定（硬约定）
 ```
 
@@ -80,7 +81,7 @@ STYLE.md            ★ 代码风格与工程约定（硬约定）
 | 服务 id | 作用 |
 | --- | --- |
 | `shot.host.config` | 宿主普通键值配置（低频，如窗口几何） |
-| `shot.host.event_bus` | 进程内主题发布/订阅（**插件间唯一的通信方式**） |
+| `shot.host.event_bus` | 进程内主题发布/订阅（**跨线程通信的唯一方式**） |
 | `shot.host.plugin_lists` | **通用列表服务**：按 list id 返回 JSON 快照（只读） |
 | `shot.host.plugin_registry` | 已安装插件清单 + 异步启停（热卸载） |
 | `shot.host.board_msg` | 旧广播接口（保留，新代码用事件总线） |
@@ -91,7 +92,10 @@ STYLE.md            ★ 代码风格与工程约定（硬约定）
    定义一个新 **list id + JSON schema**，插件用 `lists.add` 注册、`lists.changed` 通知、
    `lists.update` 写值、`lists.commit` 提交。**不要新增 ABI 结构体或宿主服务**。
    详见 [`document/LISTS.md`](document/LISTS.md)。
-2. **插件之间不直接互调**，只通过事件总线发事件；宿主不硬编码任何插件的能力细节。
+2. **跨线程通信只走事件总线**：宿主按加载顺序直接调用插件能力（同一 worker 线程上的
+   `image_processor` 链共享同一张 `ShotImage`，不经过总线），插件之间不直接互调；
+   需要通知其它线程/插件时发事件，订阅回调只在宿主 main 线程执行。宿主不硬编码任何
+   插件的能力细节。
 
 **采集流水线**（`Host::CapturePipeline`，详见 [`document/CAPTURE.md`](document/CAPTURE.md)）：
 
@@ -146,7 +150,8 @@ capture.request（事件，main 线程入队） → worker 线程：
 1. 插件内 `ShotConfigDesc` 数组加一项（`kind` 用 `SHOT_CONFIG_KIND_*`）；
 2. `get_config/set_config` 里处理这个 key（不认识的 key 必须返回负值、不影响其它项）；
 3. 值一律字符串；范围类只对 INT/FLOAT 有意义；PATH 项用 `options="directory"` 或 `"file"`
-   指定"浏览…"弹哪种对话框（不写则按当前值推断）；
+   指定"浏览…"弹哪种对话框（不写则按当前值推断）；STRING 项可以写 `options="hotkey"`，
+   设置页会把它渲染成"当前组合键 + 录入…"控件（见 `document/SETTINGS.md` §6）；
 4. 什么都不用改宿主：它会自动出现在 `config_list` → 设置页出现一节。
 5. 插件 README 的配置表 + 根 README 状态表（如果是一眼可见的行为）。
 
@@ -237,6 +242,7 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 | 脚本 | 验证内容 |
 | --- | --- |
 | `smoke_capture.ps1` | `--capture`：exit 0、日志有 `Capture saved:`、落盘尺寸 = 物理虚拟桌面 |
+| `smoke_cursor_capture.ps1` | 抓屏合成鼠标光标：光标两个位置各截一张，比对对应区域像素差异且尺寸 = 物理虚拟桌面 |
 | `smoke_settings.ps1` | `--settings`：设置窗口出现、能截到画面、日志有"设置窗口已显示"、无 error |
 | `e2e_hotkey_capture.ps1` | 常驻 + 配置里的截屏热键 → 采集落盘（hotkey + 流水线 + 保存） |
 | `e2e_clipboard.ps1` | 截图后系统剪贴板里有一张图（CF_DIB） |
@@ -296,6 +302,11 @@ harness 等），**不入库**，换机器会丢；需要时按同样思路重�
 15. **PowerShell 执行策略会拒跑"新建目录"里的脚本**：本机 `RemoteSigned`，但仓库里新建的
     `tools/`、`scripts/` 下的 `.ps1` 会被判"not digitally signed"（`build/` 反而不受影响）。
     统一用 `-ExecutionPolicy Bypass` 启动：`tools\verify\run.bat <script>` 已包好。
+16. **cmd 批处理括号块里的 `%VAR%` 在整块解析时展开**：`tools/verify/build.bat` 曾把
+    vcvars 调用包在 `if not defined VCINSTALLDIR ( ... call "%VSPATH%\..." )` 里，for 循环
+    set 的 `VSPATH` 在解析整块时还是空串 → vcvars 从未执行 → 所有编译报
+    `C1083: 无法打开包括文件: "cstdint"`。修复：改用 `goto` 流程，别把 `set`/`call`
+    包进括号块（或 `setlocal EnableDelayedExpansion` + `!VAR!`）。
 
 ---
 
@@ -321,17 +332,25 @@ harness 等），**不入库**，换机器会丢；需要时按同样思路重�
 
 ## 9. 当前 backlog（按优先级）
 
-1. **CI 跑绿**：`.github/workflows/cmake.yml` 已就绪，但 GitHub 账号被 billing 锁定，Actions
-   无法启动（`The job was not started because your account is locked due to a billing issue.`）。
-   需维护者在 GitHub → Settings → Billing 处理后 `gh run rerun <run-id>`。Linux 构建已在 WSL 实测通过。
-2. ~~把关键验证脚本固化进仓库~~ **已完成**：`tools/verify/`（build + 4 个 e2e，见 §6.2）。
+1. **CI 跑绿（进行中）**：billing 已解除（维护者确认），最近的 run 已真实执行：Windows job ✅，
+   Linux / macOS 在 configure 阶段失败，根因是 `vcpkg-configuration.json` 的 builtin-baseline
+   指向维护者 fork 上的合并提交（CI fresh clone 里没有该对象，vcpkg `git show` 失败）——已改成
+   上游 microsoft/vcpkg 上的等价提交 `44819aa…`（`versions/baseline.json` 内容一致，端口版本不变）。
+   待维护者 push 后看 CI 结果；macOS 从未真机构建，可能仍会暴露编译问题。
+   Windows job 另有一个隐患：`ilammy/msvc-dev-cmd` 之后 VCPKG_ROOT 被指到 VS 自带 vcpkg，
+   Windows 实际没用工作流 clone 的 vcpkg；本轮未动，等后续单独处理。
+2. ~~把关键验证脚本固化进仓库~~ **已完成**：`tools/verify/`（build + 冒烟 / e2e，见 §6.2）。
    可继续把托盘点菜单、区域框选、DPI 探针也整理进去。
 3. **跨屏框选**（`region_selector` TODO）：现在只覆盖鼠标所在显示器，跨屏选择被夹在当前屏。
-4. **光标合成**（`screen_capture` TODO）：`BitBlt/CAPTUREBLT` 不含鼠标指针，截图里没有光标。
+4. ~~光标合成~~ **已完成**：`plugins/screen_capture` 可选 `include_cursor`（默认开），
+   `GetCursorInfo` + `DrawIconEx` 合成；`tools/verify/smoke_cursor_capture.ps1` 用两处光标
+   位置的像素差异验证通过（13/13）。
 5. **负 origin 多屏**：代码链已复核 + 桩测试通过，但未实机验证（本机两屏都在原点右侧）。
 6. **macOS**：无真机；代码级审计已做（`base.cpp` 用 `_NSGetExecutablePath`），已知风险：
    Mach-O 贴尾可能影响 ad-hoc 签名、settings_ui 的 GLFW 要求主线程。
-7. **主循环 16ms 轮询**（`src/main.cpp` TODO）：事件总线支持阻塞等待后改成真正的事件等待。
+7. ~~主循环 16ms 轮询~~ **已完成**：main 循环改为事件驱动阻塞等待
+   （`HostServices::waitForActivity()` + `requestMainThreadWork()` 唤醒，1s 仅兜底），
+   见 `src/main.cpp` 与 `document/EVENT_BUS.md` §3。
 8. **录屏能力**：契约里留了 TODO（新 interface id + 结构体），尚未实现。
 9. 产品向可选：另存为/上传入口、设置页搜索、配置导入导出。
 

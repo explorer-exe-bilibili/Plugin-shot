@@ -18,6 +18,8 @@ Stop-Host
 Backup-Config
 
 $enabled = Get-ConfigValue "clipboard.main/enabled"
+# 配置文件可能不存在（首次运行 / 本次 e2e 前被清掉）：clipboard 的默认值就是 enabled=1。
+if ($enabled -eq "<no-config>" -or $enabled -eq "<missing>") { $enabled = "1" }
 Write-Host ("clipboard.main/enabled = {0}" -f $enabled)
 Check "clipboard 已启用（enabled=1）" ($enabled -eq "1") ("当前值：{0}" -f $enabled)
 

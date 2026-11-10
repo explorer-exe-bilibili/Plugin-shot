@@ -91,8 +91,8 @@ bool TrayIcon::Impl::resolveIcon(ResolvedIcon& out) {
                 return true;
             }
             shot::Logger(host).warn(
-                "[tray] icon 配置的图标文件加载失败（不存在或不是 .ico），回退宿主图标: " +
-                path);
+                "[tray] icon 配置的图标文件加载失败（不存在或不是 .ico），回退宿主应用图标；"
+                "配置值: " + path);
         }
     }
 
