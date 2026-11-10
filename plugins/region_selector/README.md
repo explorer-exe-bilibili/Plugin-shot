@@ -5,8 +5,11 @@
 
 覆盖层是**不透明窗口 + 触发瞬间的桌面快照**（`region_background.cpp`）：先 GDI 截一张该
 显示器的快照、上传成 GL 纹理，窗口用这张纹理铺满当背景，遮罩/挖空/十字线都画在它上面。
-窗口先隐藏、`glfwSetWindowSize/SetWindowPos` 铺满整块显示器、**隐藏状态下先渲染两帧**再
+窗口先隐藏、`glfwSetWindowSize/SetWindowPos` 覆盖整块显示器、**隐藏状态下先渲染两帧**再
 `glfwShowWindow`；刻意**不用** `glfwSetWindowMonitor`（那条路径会切窗口模式，表现为黑屏闪烁）。
+窗口尺寸是**显示器尺寸 + 1 像素**（`kOverlayOversize`）：刚好等于显示器尺寸时 Windows 会把它
+当成"全屏窗口"走 fullscreen optimization，导致每次显示/隐藏闪一下、进程退出后甚至留下黑色
+残影（真机踩过，详见 §6）。
 
 > 为什么不用透明窗口：早期用 `GLFW_TRANSPARENT_FRAMEBUFFER` 让桌面透出来，第一次能显示，
 > 但窗口 `hide → show` 一轮之后 DWM 的 blur-behind 合成失效，覆盖层变回不透明黑屏且不再
@@ -211,6 +214,13 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
 坐标不受影响。
 
 ## 6. 降级与边界情况
+
+**覆盖层显示/隐藏闪一下、退出后屏幕残留黑块**：这是 Windows 把"矩形恰好等于显示器的窗口"
+判定为全屏窗口、走 fullscreen optimization（direct flip）造成的。修法是**窗口比显示器大
+1 像素**（`kOverlayOversize = 1`），不满足全屏判定后走普通合成，闪屏与残影都消失；多出的
+1px 在屏幕外，用户看不到。另外不要显式 `glfwFocusWindow`（hint 里 `GLFW_FOCUS_ON_SHOW`
+已经给焦点，再聚焦一次会多闪一下），也不要为了"不闪"改成窗口永不移除（hide/show 必须保留，
+否则 DWM 可能留下残影）。
 
 | 情况 | 行为 |
 | --- | --- |
