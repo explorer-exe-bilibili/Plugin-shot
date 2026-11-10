@@ -93,12 +93,18 @@ cmake --build build
 ## 4. 热键语法
 
 ```
-[Ctrl+][Alt+][Shift+][Win+]<A-Z 或 0-9 或 F1..F12>
+[Ctrl+][Alt+][Shift+][Win+]<A-Z 或 0-9 或 F1..F12 或 PrintScreen>
 ```
 
 - **大小写不敏感**；修饰键顺序任意，可省略（`F9`、`Shift+F9`、`Ctrl+Alt+S` 都合法）。
 - 修饰键别名：`Ctrl` 也可写 `Control`，`Win` 也可写 `Windows`；重复写只算一次。
-- 主键必须恰好一个：`A-Z`、`0-9`、`F1`..`F12`；`F13` 及以上不在支持范围。
+- 主键必须恰好一个：`A-Z`、`0-9`、`F1`..`F12`、`PrintScreen`；`F13` 及以上不在支持范围。
+- `PrintScreen`（Win32 `VK_SNAPSHOT`）也接受 `Print Screen` / `PrtSc` / `PrtScn` / `PrtScr`
+  拼写，统一规范化成 `PrintScreen`。**注意 Win11 的系统级拦截**：默认开启的
+  「设置 → 辅助功能 → 键盘 → 使用 Print Screen 键打开截图工具」会先把裸按 PrintScreen
+  交给系统截图工具（`RegisterHotKey` 成功但收不到 `WM_HOTKEY`）；带修饰键的组合
+  （如 `Ctrl+PrintScreen`）不受影响。要用裸 PrintScreen 请关掉该 Windows 设置，
+  插件在注册裸 PrintScreen 成功时会打一条 WARN 说明这一点。
 - 修饰键之间/末尾出现多余的 `+`、空 token、未知键位都按**非法**处理。
 - 非法或**被其它程序占用**的热键只 warn 跳过该项，**其它热键照常注册**，插件启动不失败
   （占用时日志带系统错误码，`1409` = `ERROR_HOTKEY_ALREADY_REGISTERED`）。

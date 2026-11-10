@@ -4,11 +4,11 @@
 //  include/hotkey_binding.h —— 热键字符串解析（不依赖 <windows.h>）
 //
 //  语法（大小写不敏感）：
-//      [Ctrl+][Alt+][Shift+][Win+]<A-Z 或 0-9 或 F1..F12>
+//      [Ctrl+][Alt+][Shift+][Win+]<A-Z 或 0-9 或 F1..F12 或 PrintScreen>
 //  修饰键可省略、顺序任意、重复出现按一次算；主键必须恰好一个。
 //
 //  解析结果里的 virtualKey 用 Win32 的 VK_* 数值（A-Z / 0-9 就是 ASCII，
-//  F1..F12 = 0x70..0x7B）：本仓库只支持 Windows（CMake 里非 Windows 直接跳过），
+//  F1..F12 = 0x70..0x7B，PrintScreen = 0x2C）：本仓库只支持 Windows（CMake 里非 Windows 直接跳过），
 //  但解析逻辑本身不 include <windows.h>，方便单独测试、也方便将来移植到
 //  macOS RegisterEventHotKey / Linux XGrabKey 时在各平台做一次 VK 到本地键码映射。
 // ============================================================================
@@ -48,7 +48,8 @@ struct Binding {
  * @param[out] out   解析成功时写入；失败时不保证内容有意义（仍会被清空）。
  * @param[out] error 失败时的中文原因；成功时清空。
  * @return true = 解析成功；false = 语法错误（缺少主键、未知键位等）。
- * @note 修饰键写法：Ctrl / Control、Alt、Shift、Win / Windows；主键：A-Z、0-9、F1..F12。
+ * @note 修饰键写法：Ctrl / Control、Alt、Shift、Win / Windows；主键：A-Z、0-9、F1..F12、
+ *       PrintScreen（也接受 Print Screen / PrtSc / PrtScn 拼写，统一规范化成 "PrintScreen"）。
  * @note 命名按 STYLE.md §3.1："插件侧自由函数"用 snake_case（C++ 类方法才用 camelCase）。
  */
 bool parse_binding(const char* text, Binding& out, std::string& error);

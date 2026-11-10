@@ -1,7 +1,7 @@
 // 热键字符串解析：把配置里的 "Ctrl+Alt+S" 这类文本变成修饰键位 + 虚拟键码。
 //
 // 语法（大小写不敏感）：
-//   [Ctrl+][Alt+][Shift+][Win+]<A-Z 或 0-9 或 F1..F12>
+//   [Ctrl+][Alt+][Shift+][Win+]<A-Z 或 0-9 或 F1..F12 或 PrintScreen>
 //
 // 解析只做语法与键位校验，不碰任何系统 API：非法配置在注册路径统一按
 // "warn + 跳过这一项"处理，所以解析器用返回值报告原因，绝不抛异常、也绝不崩。
@@ -22,6 +22,8 @@ namespace {
 constexpr std::uint32_t kVkF1 = 0x70u;
 /** @brief F 键个数上限：语法只接受 F1..F12。 */
 constexpr int kMaxFunctionKey = 12;
+/** @brief Win32 虚拟键码：PrintScreen = VK_SNAPSHOT = 0x2C（独立按键，不属于 F 键）。 */
+constexpr std::uint32_t kVkSnapshot = 0x2Cu;
 
 /** @brief 去掉两端空白；返回原字符串的子串视图（不分配内存）。 */
 std::string_view trim(std::string_view text) {
@@ -50,11 +52,13 @@ std::string asciiLowerCopy(std::string_view text) {
 }
 
 /**
- * @brief 解析主键：单个字母 A-Z、单个数字 0-9、或 F1..F12。
- * @param[in]  token      已经小写化的 token（如 "s" / "7" / "f12"）。
+ * @brief 解析主键：单个字母 A-Z、单个数字 0-9、F1..F12，或 PrintScreen。
+ * @param[in]  token      已经小写化的 token（如 "s" / "7" / "f12" / "printscreen"）。
  * @param[out] virtualKey 成功时写入 Win32 VK 数值。
- * @param[out] label      成功时写入规范化显示名（"S" / "7" / "F12"）。
+ * @param[out] label      成功时写入规范化显示名（"S" / "7" / "F12" / "PrintScreen"）。
  * @return true = 是合法主键。
+ * @note PrintScreen 接受多种常见拼写（printscreen / print screen / prtsc / prtscn /
+ *       prtscr），统一规范化成 "PrintScreen"；VK_SNAPSHOT 已经实机验证可以注册成全局热键。
  */
 bool parseMainKey(std::string_view token, std::uint32_t& virtualKey, std::string& label) {
     if (token.size() == 1) {
@@ -70,6 +74,20 @@ bool parseMainKey(std::string_view token, std::uint32_t& virtualKey, std::string
             return true;
         }
         return false;
+    }
+    // PrintScreen：先去掉空格 / 下划线 / 连字符再比较，避免用户手写 "Print Screen" 被拒。
+    std::string compact;
+    compact.reserve(token.size());
+    for (const char c : token) {
+        if (c != ' ' && c != '_' && c != '-') {
+            compact.push_back(c);
+        }
+    }
+    if (compact == "printscreen" || compact == "prtsc" || compact == "prtscn" ||
+        compact == "prtscr") {
+        virtualKey = kVkSnapshot;
+        label = "PrintScreen";
+        return true;
     }
     // F1..F12：长度 2..3，首字符 f，其余全是数字，数值必须在 1..12。
     if (token.size() < 2 || token.size() > 3 || token.front() != 'f') {
@@ -172,7 +190,7 @@ bool parse_binding(const char* text, Binding& out, std::string& error) {
     }
 
     if (!haveMainKey) {
-        error = "缺少主键（A-Z / 0-9 / F1..F12）";
+        error = "缺少主键（A-Z / 0-9 / F1..F12 / PrintScreen）";
         return false;
     }
     out.modifiers = modifiers;

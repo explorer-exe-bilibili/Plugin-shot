@@ -7,7 +7,7 @@
 // 交互（用户视角说明在 document/SETTINGS.md §6）：
 //   · 行内显示当前组合键 + 「录入…」按钮；
 //   · 点「录入…」后弹一个模态弹窗，由 ImGui 独占键盘，其它控件（含键盘导航）不响应；
-//   · 按下 [Ctrl+][Alt+][Shift+][Win+]<A-Z|0-9|F1..F12> 就把规范化文本写回 item.value，
+//   · 按下 [Ctrl+][Alt+][Shift+][Win+]<A-Z|0-9|F1..F12|PrintScreen> 就把规范化文本写回 item.value，
 //     仍然走"本地编辑 + 应用"的流程（不在这里写宿主）；
 //   · Esc 取消（值不变），Backspace / Delete 清空（存空串 = 该动作不设热键）；
 //   · 录入期间发布 hotkey.suspend / hotkey.resume，让 hotkey 插件撤掉全局注册——
@@ -44,6 +44,7 @@ constexpr char kHotkeyCapturePopup[] = "##hotkey_capture";
 // 可录入的主键：与 hotkey_binding.h 的语法一一对应。
 // ImGuiKey_A..Z / 0..9 / F1..F12 在 imgui.h 里是连续枚举，但这里仍然显式列出：
 // 录的是"写进配置的键名"，和 ImGui 的枚举顺序脱钩，以后升级 ImGui 也不用重新推导。
+// PrintScreen 不在这段连续区间里，单独列在 F12 后面。
 constexpr ImGuiKey kPrimaryKeys[] = {
     ImGuiKey_A, ImGuiKey_B, ImGuiKey_C, ImGuiKey_D, ImGuiKey_E, ImGuiKey_F, ImGuiKey_G,
     ImGuiKey_H, ImGuiKey_I, ImGuiKey_J, ImGuiKey_K, ImGuiKey_L, ImGuiKey_M, ImGuiKey_N,
@@ -56,6 +57,9 @@ constexpr ImGuiKey kPrimaryKeys[] = {
     ImGuiKey_Keypad5, ImGuiKey_Keypad6, ImGuiKey_Keypad7, ImGuiKey_Keypad8, ImGuiKey_Keypad9,
     ImGuiKey_F1, ImGuiKey_F2, ImGuiKey_F3, ImGuiKey_F4, ImGuiKey_F5, ImGuiKey_F6, ImGuiKey_F7,
     ImGuiKey_F8, ImGuiKey_F9, ImGuiKey_F10, ImGuiKey_F11, ImGuiKey_F12,
+    // PrintScreen 是独立按键（Win32 VK_SNAPSHOT）；hotkey 插件的语法同样接受它，
+    // 常见拼写（Print Screen / PrtSc …）由解析器统一规范化成 "PrintScreen"。
+    ImGuiKey_PrintScreen,
 };
 
 /** @brief 与 kPrimaryKeys 同下标的配置文本（"A" / "7" / "F12"）。 */
@@ -64,6 +68,7 @@ constexpr const char* kPrimaryTexts[] = {
     "S", "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+    "PrintScreen",
 };
 
 static_assert(std::size(kPrimaryKeys) == std::size(kPrimaryTexts),
@@ -241,7 +246,7 @@ void SettingsPanel::Impl::renderHotkeyCapturePopup() {
 
     bool closed = false;
     ImGui::TextUnformatted("按下新的组合键");
-    ImGui::TextDisabled("Ctrl / Alt / Shift / Win + 字母、数字或 F1-F12");
+    ImGui::TextDisabled("Ctrl / Alt / Shift / Win + 字母、数字、F1-F12 或 PrintScreen");
     ImGui::Spacing();
     if (hotkeyCapture.hint.empty()) {
         ImGui::TextDisabled("Esc 取消；Backspace / Delete 清空（该动作不再有热键）");
@@ -290,7 +295,7 @@ void SettingsPanel::Impl::renderHotkeyCapturePopup() {
             closed = true;
         } else if (unsupported) {
             hotkeyCapture.hint =
-                "不支持的按键：只支持 A-Z / 0-9 / F1-F12（可加 Ctrl/Alt/Shift/Win）";
+                "不支持的按键：只支持 A-Z / 0-9 / F1-F12 / PrintScreen（可加 Ctrl/Alt/Shift/Win）";
         }
     }
     if (closed) {

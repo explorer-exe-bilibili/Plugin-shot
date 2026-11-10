@@ -30,6 +30,8 @@ namespace {
 // （STYLE.md §6.7：只在本 TU 用的具名函数）。
 constexpr wchar_t kWindowClass[] = L"PluginShotHotkeyWnd"; /**< 进程内唯一；类不随 DLL 卸载消失，必须显式注销。 */
 constexpr wchar_t kWindowTitle[] = L"Plugin-shot 热键";     /**< 隐藏窗口的标题，只用于排障。 */
+/** @brief Win32 VK_SNAPSHOT（PrintScreen）；裸按在 Win11 上会被系统截图工具先接管，见 registerOne。 */
+constexpr std::uint32_t kVkSnapshot = 0x2Cu;
 
 /** @brief 把 hotkey::Modifier 转成 Win32 的 MOD_* 组合；额外加 MOD_NOREPEAT。 */
 DWORD toWin32Modifiers(std::uint32_t modifiers) {
@@ -448,6 +450,18 @@ bool HotkeyWindow::Impl::registerOne(int id, const char* text, const char* actio
         message += "）";
     }
     shot::Logger(host).info(message);
+
+    // Win11 默认把「裸按 PrintScreen」交给系统截图工具（设置→辅助功能→键盘→
+    // "使用 Print Screen 键打开截图工具"）。这种情况下 RegisterHotKey 会返回成功，
+    // 但按键先被系统消费、WM_HOTKEY 不会到达本插件；带修饰键（Ctrl+PrintScreen 等）
+    // 不受影响（本机实测两种行为都复现过）。注册成功后再提示一句，避免用户以为
+    // "配了却不生效"是插件的 bug。
+    if (binding.virtualKey == kVkSnapshot && binding.modifiers == 0) {
+        shot::Logger(host).warn(
+            "[hotkey] 注意：裸按 PrintScreen 在 Windows 11 上默认会被系统截图工具接管，"
+            "可能收不到 WM_HOTKEY；建议改用 Ctrl+PrintScreen 等组合，或在 Windows 设置 → "
+            "辅助功能 → 键盘 关闭「使用 Print Screen 键打开截图工具」");
+    }
     return true;
 }
 

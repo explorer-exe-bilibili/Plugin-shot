@@ -307,6 +307,11 @@ harness 等），**不入库**，换机器会丢；需要时按同样思路重�
     set 的 `VSPATH` 在解析整块时还是空串 → vcvars 从未执行 → 所有编译报
     `C1083: 无法打开包括文件: "cstdint"`。修复：改用 `goto` 流程，别把 `set`/`call`
     包进括号块（或 `setlocal EnableDelayedExpansion` + `!VAR!`）。
+17. **Win11 会把裸按 PrintScreen 交给系统截图工具**：默认开启的「设置 → 辅助功能 → 键盘 →
+    使用 Print Screen 键打开截图工具」会先消费掉裸 PrintScreen，`RegisterHotKey(VK_SNAPSHOT)`
+    虽然返回成功，但 `WM_HOTKEY` 不会到达插件（本机实测：keybd_event/SendInput 各种方式都不行）。
+    带修饰键的 `Ctrl+PrintScreen` 等不受影响（实测能触发并落盘）。hotkey 插件注册裸
+    PrintScreen 时会打 WARN；要用裸键需关闭该 Windows 设置。
 
 ---
 

@@ -53,7 +53,7 @@ const ShotConfigDesc kConfig[] = {
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "发布 capture.request（空负载）；语法 Ctrl/Alt/Shift/Win + A-Z / 0-9 / F1-F12，大小写不敏感",
+        .tooltip       = "发布 capture.request（空负载）；语法 Ctrl/Alt/Shift/Win + A-Z / 0-9 / F1-F12 / PrintScreen，大小写不敏感",
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),

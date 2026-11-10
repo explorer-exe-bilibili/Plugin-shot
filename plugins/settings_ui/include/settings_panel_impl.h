@@ -287,7 +287,7 @@ struct SettingsPanel::Impl {
     /**
      * @brief 扫描本帧按下的键，凑一个可写进配置的组合键。
      *
-     * 主键范围与 hotkey_binding.h 的语法一致：A-Z、0-9、F1..F12（小键盘数字按数字算）；
+     * 主键范围与 hotkey_binding.h 的语法一致：A-Z、0-9、F1..F12、PrintScreen（小键盘数字按数字算）；
      * 修饰键从 ImGuiIO 的当前状态取，规范化顺序固定为 Ctrl/Alt/Shift/Win。
      *
      * @param[out] label       成功时写入规范化文本（如 "Ctrl+Alt+S"）。

@@ -54,7 +54,7 @@
 | 托盘入口 `plugins/tray`（`tray_command_list` 数据驱动菜单：core 四项 + 插件贡献；图标默认宿主命名资源 `IDI_ICON1`，可用 `icon` 换 `.ico`；仅 Windows） | ✅ 可用 |
 | 通知插件 `plugins/notify`（截屏成功/失败气泡，隐藏占位图标；配置 enabled / show_on_success / show_on_error / sound；仅 Windows） | ✅ 可用 |
 | 剪贴板插件 `plugins/clipboard`（订阅 `capture.done` → CF_DIB / 可选 CF_HDROP；配置 enabled / also_file_drop；仅 Windows） | ✅ 可用 |
-| 全局热键插件 `plugins/hotkey`（默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`；设置页用「按组合键录入」设置（`options="hotkey"`，录入期间经 `hotkey.suspend/resume` 临时撤销全局注册）；非法热键 warn 跳过；仅 Windows） | ✅ 可用 |
+| 全局热键插件 `plugins/hotkey`（默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`；主键支持 A-Z / 0-9 / F1-F12 / PrintScreen（可加修饰键；Win11 默认把裸按 PrintScreen 交给系统截图工具，建议用 Ctrl+PrintScreen 或关闭该 Windows 设置）；设置页用「按组合键录入」设置（`options="hotkey"`，录入期间经 `hotkey.suspend/resume` 临时撤销全局注册）；非法热键 warn 跳过；仅 Windows） | ✅ 可用 |
 | 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
 | 命令行 `--capture`（工作线程 + 退出前派发一轮事件）/ `--settings` / `--help` | ✅ 可用 |

@@ -287,7 +287,7 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
   必须写 `"directory"`，否则默认值为空时会弹成选文件。
 - **热键组合的录入控件**：`kind == STRING` 且描述符 `options == "hotkey"`（大小写不敏感）时，
   设置页不再画文本框，而是显示当前组合键 + 「录入…」按钮。点按钮弹一个**模态窗**独占键盘
-  （其它控件不响应），按下 `[Ctrl+][Alt+][Shift+][Win+]<A-Z|0-9|F1..F12>` 就把**规范化文本**
+  （其它控件不响应），按下 `[Ctrl+][Alt+][Shift+][Win+]<A-Z|0-9|F1..F12|PrintScreen>` 就把**规范化文本**
   （修饰键固定顺序 `Ctrl+Alt+Shift+Win`；小键盘数字按 `0-9` 算）写回本地缓冲——仍然走
   §4 的"本地编辑 + 应用"流程，不会立刻写宿主。Esc 取消（值不变）；Backspace / Delete
   清空：空串的语义是**"这个动作不设热键"**，hotkey 插件解析时按"热键为空" warn 跳过该项，
@@ -298,7 +298,11 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
   总线时安静降级（录入照常可用，只是不能避免触发已注册热键，日志记 WARN）。旧配置里的
   非法值**原样显示、不做语法校验**——解析仍归 hotkey 插件，注册时非法只 warn 跳过；重新
   录入一次即被规范化覆盖。录入中关窗/隐藏/宿主退出时，窗口层取消录入并补发
-  `hotkey.resume`（漏发会让热键永久停在暂停状态）。
+  `hotkey.resume`（漏发会让热键永久停在暂停状态）。**PrintScreen 的 Win11 系统拦截**：
+  Windows 11 默认把裸按 PrintScreen 交给系统截图工具（设置→辅助功能→键盘→"使用
+  Print Screen 键打开截图工具"），此时 `RegisterHotKey` 成功但 `WM_HOTKEY` 可能收不到；
+  带修饰键的组合（如 `Ctrl+PrintScreen`）不受影响。要用裸 PrintScreen 需关闭该 Windows
+  设置，hotkey 插件注册裸 PrintScreen 时会打 WARN 提示。
 - **每项**：label + 悬停 `tooltip` + "恢复默认"小按钮（写 `default_value` 到本地副本）。
 - **状态**：脏标记（没有脏项时"应用"置灰）；`lists.updated` 里 `ok=false` 的项标红
   "写入失败：reason"并保留脏标记；插件已被卸载 → 该节灰掉；窗口位置/大小存宿主配置的
