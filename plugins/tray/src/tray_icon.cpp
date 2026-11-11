@@ -48,10 +48,8 @@ bool TrayIcon::start(const ShotHostServices* host, TrayConfig* config, shot::I18
     m_impl->host = host;
     m_impl->config = config;
     m_impl->i18n = i18n;
-    // 悬停提示是用户可见文案：按当前语言生成一次，图标 (重新) 添加时用。
-    const std::string tooltip =
-        (i18n != nullptr) ? i18n->tr("tray.tooltip", kTooltipFallback) : kTooltipFallback;
-    m_impl->tooltip = m_impl->toWide(tooltip);
+    // 悬停提示不在这里算：start() 发生在宿主 init 阶段，i18n_list 还没生成，
+    // 那时取到的会是第一张表（zh-CN）。图标添加时与 i18n_list 变化后各算一次。
 
     // 先订阅再起线程：订阅之后到达的事件会被队列接住，不会因为线程没就绪而丢。
     shot::EventBus bus(host);

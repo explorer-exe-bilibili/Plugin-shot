@@ -132,6 +132,8 @@ bool TrayIcon::Impl::addIcon(HWND wnd) {
     data.uCallbackMessage = trayCallbackMessage;
     data.hIcon = resolved.handle;
     // szTip 是定长缓冲；_TRUNCATE 保证超长时安全截断，不会写坏结构体。
+    // 悬停提示按当前语言现算（图标可能在 i18n_list 生成之前就加上了）。
+    tooltip = localizedTooltip();
     wcsncpy_s(data.szTip, tooltip.c_str(), _TRUNCATE);
     if (!Shell_NotifyIconW(NIM_ADD, &data)) {
         shot::Logger(host).error("[tray] Shell_NotifyIconW(NIM_ADD) 失败");
@@ -177,6 +179,33 @@ void TrayIcon::Impl::removeIcon() {
     // 文件加载的图标必须在这里释放（共享图标不会进 iconOwned 分支）；
     // 线程退出后进程仍可能继续跑（禁用→重新启用），泄漏会累积。
     releaseIcon();
+}
+
+std::wstring TrayIcon::Impl::localizedTooltip() {
+    const char* text =
+        (i18n != nullptr) ? i18n->tr("tray.tooltip", kTooltipFallback) : kTooltipFallback;
+    return toWide(text);
+}
+
+void TrayIcon::Impl::refreshTooltip() {
+    if (!iconAdded || hwnd == nullptr) {
+        return;  // 图标还没挂上：addIcon 时会按当时语言算提示，不用忙
+    }
+    std::wstring desired = localizedTooltip();
+    if (desired == tooltip) {
+        return;  // 语言没变：不碰 Shell，避免无意义的 NIM_MODIFY
+    }
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd;
+    data.uID = kTrayIconId;
+    data.uFlags = NIF_TIP;
+    wcsncpy_s(data.szTip, desired.c_str(), _TRUNCATE);
+    if (!Shell_NotifyIconW(NIM_MODIFY, &data)) {
+        shot::Logger(host).warn("[tray] 更新托盘悬停提示失败（Shell_NotifyIconW NIM_MODIFY 返回 FALSE）");
+        return;
+    }
+    tooltip = std::move(desired);
 }
 
 void TrayIcon::Impl::refreshIcon() {

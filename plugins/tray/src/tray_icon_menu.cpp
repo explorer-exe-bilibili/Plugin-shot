@@ -37,8 +37,9 @@ constexpr UINT kMenuCommandBase = 1;
  * 宿主负载是 JSON `{"list":"<id>"}`；空负载 / 结构不认识时按"可能是任意列表"
  * 处理——宁可多重建一次，也不要漏掉本插件关心的菜单刷新。
  *
- * 只服务本文件的 lists.changed 过滤、不碰 Impl 状态，所以放匿名命名空间而不是
- * Impl 的成员（STYLE.md §6.7）。
+ * 关心两种列表：`tray_command_list`（菜单条目增删）与 `i18n_list`（语言变了，
+ * 菜单 label 要按新语言重新 resolve）。只服务本文件的 lists.changed 过滤、
+ * 不碰 Impl 状态，所以放匿名命名空间而不是 Impl 的成员（STYLE.md §6.7）。
  */
 bool refersToTrayCommandList(const std::string& payload) {
     if (payload.empty()) {
@@ -48,12 +49,14 @@ bool refersToTrayCommandList(const std::string& payload) {
     if (doc.is_object()) {
         const auto it = doc.find("list");
         if (it != doc.end() && it->is_string()) {
-            return it->get<std::string>() == kTrayCommandListId;
+            const std::string list = it->get<std::string>();
+            return list == kTrayCommandListId || list == kI18nListId;
         }
         return true;
     }
     // 不是 JSON：兼容"负载直接就是 list id"的约定，用子串匹配容忍引号/空白。
-    return payload.find(kTrayCommandListId) != std::string::npos;
+    return payload.find(kTrayCommandListId) != std::string::npos ||
+           payload.find(kI18nListId) != std::string::npos;
 }
 
 }  // namespace

@@ -16,6 +16,12 @@
 
 ## 编译
 
+> **依赖**：插件汇总头 `shot_plugin_helpers.h` 会包含 `shot_plugin_helpers/shot_i18n.h`，
+> 后者用 header-only 的 **nlohmann-json** 解析多语言表（`document/I18N.md`）。用本 SDK
+> 的插件工程需要自己提供 nlohmann-json（vcpkg 清单加 `"nlohmann-json"`，或把
+> `single_include/nlohmann/json.hpp` 放进 include 路径）。宿主仓库内的插件已由根
+> `vcpkg.json` 提供。
+
 最省事的方式是用 SDK 自带的构建模块（宿主仓库的 `plugins/example_processor` 就是完整样板）：
 
 ```cmake

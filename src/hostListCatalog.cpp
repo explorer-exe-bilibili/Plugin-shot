@@ -213,6 +213,7 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     // label 是文案 key：托盘按 display(core, label) 用 i18n_list 解析（document/I18N.md）。
     nlohmann::json capture = {
         {"id", "capture.request"},
+        {"owner", kCoreOwner},  // 消费方按 display(owner,label) 解析文本 key
         {"label", "capture.request"},
         {"event", "capture.request"},
         {"data", ""},
@@ -221,6 +222,7 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     };
     nlohmann::json regionCapture = {
         {"id", "region.capture"},
+        {"owner", kCoreOwner},
         {"label", "region.capture"},
         {"event", "capture.request"},
         // 这条只是"请开始框选"的入口：mode=region 且不带 region，采集流水线会忽略它
@@ -232,6 +234,7 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     };
     nlohmann::json settings = {
         {"id", "settings.open"},
+        {"owner", kCoreOwner},
         {"label", "settings.open"},
         {"event", "settings.open"},
         {"data", ""},
@@ -240,6 +243,7 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     };
     nlohmann::json quit = {
         {"id", "app.quit"},
+        {"owner", kCoreOwner},
         {"label", "app.quit"},
         {"event", "app.quit"},
         {"data", ""},
@@ -384,7 +388,12 @@ void HostListCatalog::handleAdd(const std::string& payload) {
             spdlog::warn("lists.add 的条目缺少 id，跳过（list={}, owner={}）", list, owner);
             continue;
         }
-        upsertEntry(list, owner, id, jsonOrder(item), dumpJson(item));
+        // 宿主为每条注入贡献者 id：tray_command_list 这类消费方要按
+        // display(owner,label) 用 i18n_list 解析文本 key。条目自带 owner 时以列表级
+        // owner 为准（插件不能借别人的 owner 解析文案）。
+        nlohmann::json stored = item;
+        stored["owner"] = owner;
+        upsertEntry(list, owner, id, jsonOrder(item), dumpJson(stored));
         ++accepted;
     }
     if (accepted > 0) {

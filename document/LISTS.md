@@ -126,6 +126,9 @@ nlohmann::json items = nlohmann::json::parse(text, nullptr, false);
 
 宿主不解释条目里的业务字段：`label` / `event` / `data` / `separator` / `default` 等由对应
 list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只改 schema 与消费方，不改宿主。
+**唯一例外**：宿主在保存贡献条目时会注入 `owner`（贡献者 id）——消费方要用它按
+`display(owner, label)` 解析"文本 key"（`document/I18N.md` §2.3）。条目自带 `owner` 时
+以列表级 owner 为准，插件不能借别人的 owner 解析文案。
 
 ### 3.2 `lists.remove`（插件 → 宿主）
 
@@ -255,7 +258,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `owner` | string | 提供者 id：宿主自己是 `"core"`，插件是它的插件 id（如 `example.invert`） |
-| `owner_name` | string | 提供者显示名（`core` 是"宿主"） |
+| `owner_name` | string | 提供者显示名：**字面量或文本 key**（`core` 是 key `core.owner_name`）；消费方按 `display(owner, owner_name) ?? owner_name` 解析 |
 | `id` | string | 配置键（`ShotConfigDesc::key`），在同一 owner 内唯一；存盘键是 `owner/id` |
 | `label` | string | 界面显示名，可以是**字面量或文本 key**；插件没给时宿主用 key 兜底。消费方按 `display(owner,label) ?? label` 用 `i18n_list` 解析（`document/I18N.md` §2.3） |
 | `kind` | number | `SHOT_CONFIG_KIND_*`（1=Bool / 2=Int / 3=Float / 4=String / 5=Enum / 6=Color / 7=Path） |
@@ -306,6 +309,7 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
 | 字段 | 类型 | 必填 | 含义 |
 | --- | --- | --- | --- |
 | `id` | string | ✅ | 稳定标识；upsert 键的一半，发布后不要改 |
+| `owner` | string | 宿主注入 | 贡献者 id（`core` 或插件 id）；插件**不需要**在条目里写，宿主按列表级 owner 注入，托盘用它解析 `label` 文本 key |
 | `label` | string | 命令必填 | 菜单文字：**字面量或文本 key**（UTF-8），托盘按 `display(owner,label)` 解析；为空时退回 `id`，两者都空则跳过该条目 |
 | `event` | string | 命令必填 | 点击时发布的事件主题；`separator:true` 的条目可空 |
 | `data` | 任意 JSON | 可选 | 事件负载：字符串原样发布，对象/数组/数字序列化成 JSON 文本发布，缺省/`null` = 空负载 |
@@ -314,7 +318,8 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
 | `default` | bool | 可选 | `true` = 左键单击托盘图标时执行该条目；多个时取排序后第一个 |
 
 托盘不认识、也不直接调用任何插件：点击任何条目都只把条目声明的 `event`（负载 `data`）
-发到事件总线。`event` 对应的主题有没有人听，条目本身不保证。
+发到事件总线。`label` 显示前按 `display(owner,label)` 用 `i18n_list` 解析；解析不到
+（旧插件写中文原文、或没有 i18n 协议的老宿主）就原样显示。`event` 对应的主题有没有人听，条目本身不保证。
 
 ### 5.3 `i18n_source_list`
 

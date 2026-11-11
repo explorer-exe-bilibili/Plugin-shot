@@ -107,6 +107,7 @@ cmake --build build
 | 字段 | 类型 | 必填 | 含义 |
 | --- | --- | --- | --- |
 | `id` | string | 可选 | 稳定标识：宿主按 `(owner, id)` upsert；托盘只用它写日志 |
+| `owner` | string | 宿主注入 | 贡献者 id（`core` 或插件 id）；托盘用 `resolve(owner,label)` 解析文本 key，条目里不需要自己写 |
 | `label` | string | 命令必填 | 菜单文字：**字面量或文本 key**（UTF-8），托盘按 `display(owner,label)` 用 `i18n_list` 解析；为空时退回 `id`，两者都空则跳过该条目 |
 | `event` | string | 命令必填 | 点击时发布的事件主题；`separator` 条目可空 |
 | `data` | 任意 JSON | 可选 | 事件负载：字符串按原字节发布；对象/数组/数字等按 JSON 文本原样发布 |
@@ -146,9 +147,12 @@ cmake --build build
 宿主，不会因为列表数据坏了就没有退出入口。兜底项文字与图标悬停提示同样按当前语言生成
 （`shot::I18n::tr`，老宿主退回中文）。
 
-**语言刷新**：`i18n_list` 变化同样走 `lists.changed`（负载 `{"list":"i18n_list"}`）；
-托盘本来就会因 `lists.changed` 重建菜单，所以不需要额外订阅——重建时
-`TrayMenu::load` 会用 `shot::I18n::resolve` 取新语言文本。
+**语言刷新**：`i18n_list` 变化同样走 `lists.changed`（负载 `{"list":"i18n_list"}`）。
+托盘的列表过滤同时接受 `tray_command_list` 与 `i18n_list`：前者是菜单条目变化，
+后者是语言变化；两路都会触发重建菜单（`TrayMenu::load` 用
+`shot::I18n::resolve` 取新语言文本），并调用 `refreshTooltip()` 用 `NIF_TIP +
+NIM_MODIFY` 更新图标悬停提示。启动早期（`i18n_list` 尚未生成）图标先按第一张表
+显示，宿主生成快照后的第一条 `lists.changed` 会把它刷成正确语言。
 
 ## 5. 图标
 

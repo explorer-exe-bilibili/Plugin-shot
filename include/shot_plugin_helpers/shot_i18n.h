@@ -198,7 +198,9 @@ private:
      * @param[in] language  该表的 @meta 语言标签（已规范化）；非法时返回 false。
      * @param[in,out] local key -> (tag -> text)。
      * @param[in,out] keys  首次出现的 key 顺序（各语言合并后的并集）。
-     * @param[in,out] keySets 每个语言的 key 集合描述，用来检查各语言是否一致。
+     * @param[in,out] keySets 每个语言的"tag\t排序后的 key 列表"，用来逐 key 检查
+     *                        各语言 key 集是否一致（只比个数会漏掉"数量相同但 key
+     *                        不同"的漏翻）。
      * @return true = 这张表可用。
      */
     bool parseTable(const char* table, std::string& language,
@@ -345,10 +347,17 @@ inline bool I18n::parseTable(
         tableKeys.push_back(it.key());
     }
     // 各语言的 key 集必须一致：缺了某语言的 key 时该语言会落到回退链（可能显示
-    // 英文或中文），能运行但通常是作者漏写，记 WARN 便于发现。
+    // 英文或中文），能运行但通常是作者漏写，记 WARN 便于发现。这里存"排序后的
+    // 完整 key 列表"而不是个数——数量相同但 key 不同时同样要报出来。
     std::vector<std::string> sortedKeys = tableKeys;
     std::sort(sortedKeys.begin(), sortedKeys.end());
-    keySets.push_back(language + "(" + std::to_string(sortedKeys.size()) + ")");
+    std::string canonical = language;
+    canonical.push_back('\t');
+    for (const std::string& key : sortedKeys) {
+        canonical += key;
+        canonical.push_back(',');
+    }
+    keySets.push_back(std::move(canonical));
     if (keys.empty()) {
         keys = tableKeys;
     }
@@ -434,13 +443,16 @@ inline bool I18n::loadTables(const char* const* tables, std::size_t count) {
     if (!loadedAny) {
         return false;
     }
-    // 各语言 key 数不一致只记 WARN（缺的 key 会走回退链），不让插件失败。
+    // 各语言 key 集不一致只记 WARN（缺的 key 会走回退链），不让插件失败。
     for (std::size_t index = 1; index < keySets.size(); ++index) {
-        const std::size_t open = keySets[index].find('(');
-        const std::size_t firstOpen = keySets.front().find('(');
-        if (open != std::string::npos && firstOpen != std::string::npos &&
-            keySets[index].substr(open) != keySets.front().substr(firstOpen)) {
-            m_log.warn("[i18n] 语言表 key 数不一致：" + keySets.front() + " vs " + keySets[index]);
+        const std::size_t firstTab = keySets.front().find('\t');
+        const std::size_t tab = keySets[index].find('\t');
+        const std::string firstKeys =
+            (firstTab == std::string::npos) ? std::string() : keySets.front().substr(firstTab + 1);
+        const std::string keys =
+            (tab == std::string::npos) ? std::string() : keySets[index].substr(tab + 1);
+        if (keys != firstKeys) {
+            m_log.warn("[i18n] 语言表 key 集不一致：" + keySets.front() + " vs " + keySets[index]);
         }
     }
 

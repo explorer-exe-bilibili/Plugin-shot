@@ -168,6 +168,9 @@ shot::EventBus(host).publish("lists.add", R"json({
 
 宿主校验 `owner` 必须是"当前已加载的插件 id"；同 `(list,owner,id)` 覆盖；`order` 缺省 1000；
 点击时托盘只 `publish(item.event, item.data)`。插件卸载时宿主自动清掉它的贡献。
+条目的 `label` 可以写文本 key（推荐用命令 id 作 key），宿主会把列表级 owner 注入每条
+条目，托盘按 `display(owner,label)` 用 `i18n_list` 解析（`document/I18N.md`）；写中文
+字面量的老插件照常显示。
 
 ### 5.3 新增一类 UI 数据（新 list）
 

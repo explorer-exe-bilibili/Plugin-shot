@@ -60,7 +60,9 @@ void TrayIcon::Impl::drainEvents() {
             PostQuitMessage(0);
         } else if (event.name == kTopicListsChanged) {
             // 列表变了：按最新快照重建右键菜单（打开中的菜单会先挂起，见 onListsChanged）。
+            // i18n_list 变化时菜单 label 语言也变了，悬停提示跟着更新。
             onListsChanged(event.payload);
+            refreshTooltip();
         } else if (event.name == kTopicConfigApplied || event.name == kEventRefreshIcon) {
             // 配置已应用（设置页路径）或宿主刚 set_config 过（apply_stored 路径）：
             // 重读 icon 配置，来源路径真变了才重设图标。

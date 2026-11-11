@@ -166,7 +166,9 @@ void SettingsPanel::Impl::renderConfigItem(ConfigItem& item, const std::string& 
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
     // label/tooltip 是 config_list 给的"文本 key 或字面量"：谁渲染谁解析。
-    const char* label = resolve(owner.c_str(), desc.label.c_str());
+    // 空 label 是合法输入（插件没给显示名）：退回配置 key，与改造前一致。
+    const char* label =
+        desc.label.empty() ? desc.key.c_str() : resolve(owner.c_str(), desc.label.c_str());
     ImGui::TextUnformatted(label);
     // 悬停提示：插件的 tooltip 是给用户看的；把 key 也带上，排查配置问题时不用翻代码。
     const std::string keyPrefix = tr("settings_ui.key_prefix", "键：");

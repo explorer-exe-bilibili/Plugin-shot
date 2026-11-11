@@ -47,6 +47,8 @@ class TrayConfig;
 
 /** @brief 发布：请求采集一次屏幕（左键单击的兜底动作、core 预置菜单项）。 */
 inline constexpr char kTopicCaptureRequest[] = "capture.request";
+/** @brief i18n_list 的列表 id：语言快照变化时菜单与悬停提示要按新语言重建。 */
+inline constexpr char kI18nListId[] = "i18n_list";
 /**
  * @brief 订阅：宿主列表内容变化（负载 {"list":"<list id>"}）。
  *
@@ -159,6 +161,15 @@ struct TrayIcon::Impl {
     bool addIcon(HWND wnd);
     void removeIcon();
     void refreshIcon();
+    /**
+     * @brief 按当前语言重算并更新托盘悬停提示（NIF_TIP + NIM_MODIFY）。
+     *
+     * 图标添加发生在启动早期，那时宿主还没生成 i18n_list，所以提示不能只在
+     * start() 里算一次；i18n_list 变化（语言切换）后由 drainEvents 调用这里。
+     */
+    void refreshTooltip();
+    /** @brief 取当前语言下的悬停提示（UTF-16）；i18n 不可用时退回中文兜底。 */
+    std::wstring localizedTooltip();
     bool resolveIcon(ResolvedIcon& out);
     void adoptIcon(const ResolvedIcon& resolved);
     void releaseIcon();
