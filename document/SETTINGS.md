@@ -43,8 +43,9 @@ UI 线程里发生（见 `document/EVENT_BUS.md` 的线程模型）。
 
 `config_list` 是**宿主生成**的只读投影（不是插件贡献的列表）：宿主把 `core` 与**所有当前
 已加载、实现了 `shot.configurable` 的实例**的配置项，按 `ShotConfigDesc` 聚成 JSON 条目。
-完整条目 schema（`owner` / `owner_name` / `id` / `label` / `kind` / `value` / `default` /
-`options` / `min` / `max` / `step` / `tooltip`）与顺序规则见 `document/LISTS.md` §5.1。
+完整条目 schema（`owner` / `owner_name` / `owner_name_key` / `id` / `label` / `kind` /
+`value` / `default` / `options` / `min` / `max` / `step` / `tooltip`）与顺序规则见
+`document/LISTS.md` §5.1。
 
 | 操作 | 怎么做 |
 | --- | --- |
@@ -248,13 +249,25 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
 
 | key | kind | 默认 | 副作用 |
 | --- | --- | --- | --- |
-| `language` | ENUM `auto\|<语言注册表 tag>`（当前 27 个） | `auto` | 立即切换界面语言；下一次 `HostRuntime::tick` 重建 `i18n_list` 并通知消费方（`document/I18N.md` §3；当前只有 zh-CN/en-US 有译文，其余回退 en-US） |
+| `language` | ENUM `auto\|<语言目录 tag>`（当前内置 27 个 + 外部语言包声明） | `auto` | 立即切换界面语言；下一次 `HostRuntime::tick` 重建 `i18n_list` 并通知消费方（`document/I18N.md` §3）。当前仓库内置译文只有 zh-CN / en-US，其余按回退链落 en-US（zh-TW 落 zh 族简体）；外部语言包可补译文（`document/I18N.md` §3.3） |
 | `logging.level` | ENUM `debug\|info\|warn\|error` | `info` | 立即 `spdlog::set_level`（host / plugin 两个 logger） |
 | `debug.console` | BOOL | `1` | 立即开/关控制台 sink（文件日志不受影响） |
 | `logging.file` | BOOL | `1` | 立即开/关文件 sink（`<dataPath>/logs/host.log`） |
 
-`language` 的 ENUM 候选与原生显示名都来自语言注册表（`src/hostI18n.cpp`），
-不是硬编码在配置表里；加语种只加注册表行，下拉显示名由 `i18n_list` 自动投影。
+`language` 的 ENUM 候选与显示名都来自**语言目录**（内置注册表 ∪ `@language/` 声明，
+`src/hostI18n.cpp`），不是硬编码在配置表里：
+
+- 候选值 = `auto` + 目录顺序（内置在前，外部按 tag 排序），存盘仍是技术 tag；
+- 每一项显示名按 `display("core", tag)` 从 `i18n_list` 取：语言包为 tag 提供的
+  core 文本 > 声明里的显示名（`texts[tag]` / `@meta.name`）> 注册表原生名 > tag；
+- 某个 tag 在合并表里没有任何精确匹配的非空译文时，显示名追加「（未翻译）」
+  （英文 ` (untranslated)`），不隐藏候选；zh-TW 能回退到 zh-CN 的简体，但仍算未翻译；
+- `@language/` 声明增删会翻目录版本号：`languageOptions()` 重算候选，
+  `HostListCatalog` 标脏 `config_list`，下一轮 tick 重建，语言下拉与 `i18n_list`
+  同步刷新（`document/I18N.md` §3.1、§3.3）。
+
+外部语言包的目录、文件格式与优先级见 `document/I18N.md` §3.3
+（官方 `<exe>/files/lang/`、用户 `%LOCALAPPDATA%\screen-shot\langs\`）。
 
 **宿主设置里刻意没有 `output.*`**：输出目录/格式/质量/剪贴板这类"保存"相关的配置不在宿主
 设置里，由实现保存/剪贴板能力的插件用 `shot.configurable` 自己声明
@@ -270,8 +283,13 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
   `glfw-binding` + `opengl3-binding`），窗口/上下文/输入用 GLFW（跨平台）；宿主完全不依赖
   UI 库、也拿不到窗口句柄。运行期插件依赖 `bin/glfw3.dll`、`bin/nfd.dll`
   （由 `cmake/copy_runtime_deps.cmake` 从 vcpkg 运行时目录布置，插件目录不含这些 DLL）。
-- **中文字体**：按平台候选加载系统中文 TTF/TTC（msyh / PingFang / Noto CJK / WenQuanYi），
-  失败时退回 ImGui 默认字体（只是显示效果降级，不影响功能）。
+- **字体**：按平台候选加载系统中文字体（Windows 依次 msyh / msyhbd / simhei /
+  simsun，macOS / Linux 各有候选）。ImGui 1.92 + OpenGL3 走动态字体图集按需烘焙，
+  `GlyphRanges` 只影响不支持动态图集的 legacy 路径；代码仍显式补齐 3929 个码位，
+  并在主字体缺字形时用 `ImFontConfig::MergeMode` 合并 Segoe UI（缺省 Arial）补
+  Latin Extended / Greek / Cyrillic，启动日志打印字体与字形覆盖统计。全部候选都
+  找不到时退回 ImGui 默认字体（显示降级，不影响功能）；非 Windows 字体路径未真机
+  验证。详见 `document/I18N.md` §3.1。
 - **布局**：一页滚动，按提供者分节（`CollapsingHeader`，宿主 `core` 在最前）：
   1. 宿主设置；
   2. 插件管理（注册表表格：插件 / 版本 / 状态 / 启用复选框）；
@@ -316,6 +334,11 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
   `settings_ui.window`（`"x,y,w,h"`），下次显示时恢复。
 - **插件管理**：只有 `settings_ui.main` 自己那一行置灰（入口插件不能禁用自己）；禁用行
   显示原因；勾选只改本地状态，应用时才 `set_enabled`。
+- **插件显示名**：配置分区标题优先 `resolve(owner, "plugin.name")`，没有译文时退回
+  `resolve(owner, owner_name) ?? owner_name`；`config_list.owner_name_key` 固定为
+  `plugin.name`（core 用 `core.owner_name`）。插件贡献 `target=自己, id=plugin.name`
+  的译文即可本地化配置分区标题。插件管理表格显示注册表里的 metadata name，不随界面
+  语言变化；metadata 的 description 仍不本地化。
 
 ### 6.1 DPI 与多显示器
 

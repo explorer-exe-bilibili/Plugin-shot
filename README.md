@@ -65,7 +65,7 @@
 | 插件级依赖声明（`requires` / `provides`，带版本区间，`core` 为宿主） | ✅ 可用（`document/METADATA.md`） |
 | 依赖驱动加载顺序（拓扑排序，不满足只跳过该插件） | ✅ 可用 |
 | 插件工程公共构建规则（`shot_add_plugin()`） | ✅ 可用（宿主与离线 SDK 共用） |
-| 多语言 i18n（`core/language` = `auto|zh-CN|zh-TW|en-US`；`i18n_source_list` 插件贡献 + 宿主只读快照 `i18n_list`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；语言注册表可选 27 个标签，仅 zh-CN / en-US 有译文，其余回退英文；RTL 与韩/泰等字体未做） |
+| 多语言 i18n（`core/language` = `auto` 或语言目录 tag；`i18n_source_list` 插件贡献 + 宿主合并生成只读 `i18n_list`；外部语言包 `files/lang/` 与 `%LOCALAPPDATA%\screen-shot\langs\`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；内置 27 个标签，仓库内置译文仅 zh-CN / en-US；外部语言包协议已就绪、翻译插件 `plugins/translator` 已加入（默认关）；字体动态图集 + Segoe UI/Arial 补字，RTL 与韩/泰/阿拉伯字形未做） |
 | 离线插件 SDK 导出（`export_sdk` 目标） | ✅ 可用 |
 
 > 产物名取自 `CMakeLists.txt` 的 `PROJECT_NAME`（当前 `Plugin-shot`）：宿主叫 `Plugin-shot.exe`，
@@ -81,6 +81,8 @@
 ├── vcpkg-configuration.json# vcpkg builtin-baseline
 ├── .github/
 │   └── workflows/cmake.yml # 跨平台 CI（Linux/macOS/Windows；当前受账号 billing 限制）
+├── files/
+│   └── lang/                 # 随安装包分发的官方语言包（<tag>.json；构建同步到 bin/files/）
 ├── include/
 │   ├── plugin_api.h          # ★ 宿主 ⇄ 插件的 ABI 契约汇总头（只 include；跨边界入口仍是它）
 │   ├── plugin_api/           # ★ 契约正文：按主题一个子头（basics / interfaces / 各能力 /
@@ -116,7 +118,7 @@
 │   ├── LISTS.md              # 通用列表与事件驱动：list id 登记、lists.* 协议与刷新时机
 │   ├── CAPTURE.md            # 采集流水线：工作线程、区域截图、capture.* 事件与 --capture
 │   ├── EVENT_BUS.md          # 宿主事件总线：主题约定、线程模型、生命周期
-│   ├── I18N.md               # 多语言协议：语言注册表、两个 i18n 列表、回退链、限制
+│   ├── I18N.md               # 多语言协议：语言目录、外部语言包、两个 i18n 列表、回退链、字体与限制
 │   └── METADATA.md           # metadata.json 的字段定义、权威规则与不写什么
 ├── cmake/
 │   ├── ShotPlugin.cmake        # shot_add_plugin()：插件工程公共构建规则

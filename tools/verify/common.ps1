@@ -58,6 +58,13 @@ public static class DshVerifyWindow {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr h, out NativeRect rect);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    public static uint WindowProcessId(IntPtr h) { uint pid; GetWindowThreadProcessId(h, out pid); return pid; }
+    public static int WindowWidth(IntPtr h) { NativeRect r; return GetWindowRect(h, out r) ? r.Right - r.Left : 0; }
+    public static int WindowHeight(IntPtr h) { NativeRect r; return GetWindowRect(h, out r) ? r.Bottom - r.Top : 0; }
 }
 "@
     }
@@ -151,9 +158,56 @@ function Find-Window([string]$ClassName, [string]$TitleLike, [int]$TimeoutSecond
 }
 
 # 设置窗口标题随界面语言变化（"Plugin-shot 设置" / "Plugin-shot Settings"），
-# 语言无关的脚本用这个函数找窗口；只匹配 GLFW 窗口类，避免抓到别的窗口。
-function Find-SettingsWindow([int]$TimeoutSeconds = 20) {
-    return Find-WindowByTitles "GLFW30" @("*设置*", "*Settings*") $TimeoutSeconds
+# 所以默认不按标题找：按宿主进程 id + GLFW 窗口类 + 可见 + 合理尺寸定位。
+# 需要断言标题的脚本再传 -TitlePatterns（任一通配符命中即可）。
+# -HostProcessId 缺省时自动找当前运行的 Plugin-shot 进程；找不到时不按进程过滤
+# （退化为类 + 可见 + 尺寸，兼容 Start-Host 刚返回、进程枚举还没到的时刻）。
+function Find-SettingsWindow {
+    param(
+        [int]$TimeoutSeconds = 20,
+        [string[]]$TitlePatterns = @(),
+        [int]$HostProcessId = 0,
+        [int]$MinimumWidth = 400,
+        [int]$MinimumHeight = 300
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $processIds = @()
+        if ($HostProcessId -gt 0) {
+            $processIds = @($HostProcessId)
+        } else {
+            $processIds = @(Get-Process Plugin-shot -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Id })
+        }
+        $script:foundWindow = [IntPtr]::Zero
+        [DshVerifyWindow]::EnumWindows({
+            param($hwnd, $lparam)
+            if (-not [DshVerifyWindow]::IsWindowVisible($hwnd)) { return $true }
+            $cls = New-Object System.Text.StringBuilder 256
+            [DshVerifyWindow]::GetClassNameW($hwnd, $cls, 256) | Out-Null
+            if ($cls.ToString() -ne "GLFW30") { return $true }
+            if ($processIds.Count -gt 0) {
+                $windowPid = [int][DshVerifyWindow]::WindowProcessId($hwnd)
+                if ($processIds -notcontains $windowPid) { return $true }
+            }
+            if ([DshVerifyWindow]::WindowWidth($hwnd) -lt $MinimumWidth -or
+                [DshVerifyWindow]::WindowHeight($hwnd) -lt $MinimumHeight) { return $true }
+            if ($TitlePatterns.Count -gt 0) {
+                $title = New-Object System.Text.StringBuilder 256
+                [DshVerifyWindow]::GetWindowTextW($hwnd, $title, 256) | Out-Null
+                $matched = $false
+                foreach ($pattern in $TitlePatterns) {
+                    if ($title.ToString() -like $pattern) { $matched = $true; break }
+                }
+                if (-not $matched) { return $true }
+            }
+            $script:foundWindow = $hwnd
+            return $true
+        }, [IntPtr]::Zero) | Out-Null
+        if ($script:foundWindow -ne [IntPtr]::Zero) { return $script:foundWindow }
+        Start-Sleep -Milliseconds 250
+    }
+    return [IntPtr]::Zero
 }
 
 # 按窗口类 + 多个标题通配符查找；任一标题命中即返回。语义与 Find-Window 相同。

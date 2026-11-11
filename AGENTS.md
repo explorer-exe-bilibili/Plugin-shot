@@ -255,10 +255,11 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 | --- | --- |
 | `smoke_capture.ps1` | `--capture`：exit 0、日志有 `Capture saved:`、落盘尺寸 = 物理虚拟桌面 |
 | `smoke_cursor_capture.ps1` | 抓屏合成鼠标光标：光标两个位置各截一张，比对对应区域像素差异且尺寸 = 物理虚拟桌面 |
-| `smoke_settings.ps1` | `--settings`：设置窗口出现、能截到画面、日志有"设置窗口已显示"、无 error（标题匹配语言无关） |
+| `smoke_settings.ps1` | `--settings`：设置窗口出现、能截到画面、日志有"设置窗口已显示"、无 error（窗口查找语言无关） |
 | `e2e_hotkey_capture.ps1` | 常驻 + 配置里的截屏热键 → 采集落盘（hotkey + 流水线 + 保存） |
 | `e2e_clipboard.ps1` | 截图后系统剪贴板里有一张图（CF_DIB） |
 | `smoke_settings_i18n.ps1` | 多语言：`core/language=en-US` / `zh-CN` 两次启动设置页，标题/截图/日志锚点（`界面语言 = <tag>`），备份恢复 config |
+| `smoke_i18n_translator.ps1` | 外部语言包：翻译插件扫描官方/用户目录，`@language/` 与 `target` 条目、用户包优先级、坏包只 WARN（与翻译插件同期新增） |
 
 运行方式（**必须带 `-ExecutionPolicy Bypass`**，原因见 §7 第 15 条）：
 

@@ -71,7 +71,7 @@ current main line.
 | Plugin-level dependencies (`requires` / `provides` with version ranges, `core` = the host) | ✅ working (`document/METADATA.md`) |
 | Dependency-driven load order (topological sort; an unsatisfied plugin is skipped on its own) | ✅ working |
 | Shared plugin build rules (`shot_add_plugin()`) | ✅ working (host and offline SDK share one module) |
-| i18n / multilingual UI (`core/language` = `auto|zh-CN|zh-TW|en-US`; plugins contribute `i18n_source_list`, the host projects a read-only `i18n_list`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; 27 selectable language tags, only zh-CN and en-US translated, others fall back to English; RTL and extra CJK fonts not done) |
+| i18n / multilingual UI (`core/language` = `auto` or a language-catalog tag; plugins contribute `i18n_source_list`, the host merges it into the read-only `i18n_list`; external packs in `files/lang/` and `%LOCALAPPDATA%\screen-shot\langs\`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; 27 built-in tags, only zh-CN / en-US ship translations; external-pack protocol ready, translator plugin `plugins/translator` included (off by default); dynamic font atlas plus Segoe UI/Arial merge, RTL and Korean/Thai/Arabic glyphs not done) |
 | Offline plugin SDK export (`export_sdk` target) | ✅ working |
 
 > The binary name comes from `PROJECT_NAME` in `CMakeLists.txt` (currently `Plugin-shot`):
@@ -88,6 +88,8 @@ current main line.
 ├── vcpkg-configuration.json# vcpkg builtin-baseline
 ├── .github/
 │   └── workflows/cmake.yml # cross-platform CI (Linux/macOS/Windows; currently blocked by account billing)
+├── files/
+│   └── lang/                 # official language packs shipped with the installer (<tag>.json; synced to bin/files/ at build time)
 ├── include/
 │   ├── plugin_api.h          # ★ umbrella header for the host ⇄ plugin ABI contract (includes only)
 │   ├── plugin_api/           # ★ the contract body, one header per topic (basics / interfaces /
@@ -123,7 +125,7 @@ current main line.
 │   ├── LISTS.md              # generic lists + event-driven design: list id registry, lists.* protocol, refresh timing (Chinese)
 │   ├── CAPTURE.md            # capture pipeline: worker thread, region capture, capture.* events and --capture (Chinese)
 │   ├── EVENT_BUS.md          # host event bus: topics, threading, lifetime (Chinese)
-│   ├── I18N.md               # i18n protocol: language registry, the two i18n lists, fallback chain, limits (Chinese)
+│   ├── I18N.md               # i18n protocol: language catalog, external packs, the two i18n lists, fallback chain, fonts and limits (Chinese)
 │   └── METADATA.md           # metadata.json fields, authority rules, what stays out (Chinese)
 ├── cmake/
 │   ├── ShotPlugin.cmake        # shot_add_plugin(): shared plugin build rules

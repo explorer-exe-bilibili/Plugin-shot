@@ -247,7 +247,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | --- | --- | --- | --- | --- |
 | `config_list` | 宿主生成（只读投影） | 宿主从 `core` + 所有 `shot.configurable` 实例生成；插件写值走 `lists.update`、落盘走 `lists.commit` | 设置页 | §5.1 |
 | `tray_command_list` | 宿主预置 core 四项 + 插件贡献 | 宿主预置 core；插件 `lists.add` / `lists.remove` | 托盘 | §5.2 |
-| `i18n_source_list` | 插件贡献 | 插件在 `create()`/`init()` 里 `lists.add` 语言表（helper 拼好）；宿主只读、生成 `i18n_list` | 宿主 | §5.3 |
+| `i18n_source_list` | 插件 / 语言包贡献 | 插件在 `create()`/`init()` 里 `lists.add` 语言表（helper 拼好）；外部语言包由翻译插件贡献 `target`/`priority` 与 `@language/` 声明；宿主只读、合并生成 `i18n_list` | 宿主 | §5.3 |
 | `i18n_list` | 宿主生成（只读快照） | 宿主按当前语言把 core 文案 + `i18n_source_list` 投影；插件不能 add/remove | 设置页 / 托盘 / 插件 helper | §5.4 |
 
 ### 5.1 `config_list`
@@ -259,6 +259,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | --- | --- | --- |
 | `owner` | string | 提供者 id：宿主自己是 `"core"`，插件是它的插件 id（如 `example.invert`） |
 | `owner_name` | string | 提供者显示名：**字面量或文本 key**（`core` 是 key `core.owner_name`）；消费方按 `display(owner, owner_name) ?? owner_name` 解析 |
+| `owner_name_key` | string | 插件显示名的固定文本 key：插件条目恒为 `"plugin.name"`，core 为 `"core.owner_name"`；消费方按 `resolve(owner, owner_name_key) ?? owner_name` 解析（当前设置页对非 core 分区固定用 `plugin.name`，与字段值相同），老消费方可忽略 |
 | `id` | string | 配置键（`ShotConfigDesc::key`），在同一 owner 内唯一；存盘键是 `owner/id` |
 | `label` | string | 界面显示名，可以是**字面量或文本 key**；插件没给时宿主用 key 兜底。消费方按 `display(owner,label) ?? label` 用 `i18n_list` 解析（`document/I18N.md` §2.3） |
 | `kind` | number | `SHOT_CONFIG_KIND_*`（1=Bool / 2=Int / 3=Float / 4=String / 5=Enum / 6=Color / 7=Path） |
@@ -278,6 +279,13 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 - ENUM 的候选值是**技术值**（如 `auto` / `debug` / `png`），显示名统一按
   `display(owner, 候选值)` 解析：core 已注册语言与日志级别的原生显示名；插件也可以给
   候选值贡献文案（key 就是候选值本身）。解析不到时显示技术值，不影响写值。
+- **插件显示名**：`owner_name` 是 metadata 的 name 字面量；`owner_name_key` 是固定
+  key。设置页对非 core 分区用固定 key `plugin.name`（即 `owner_name_key` 的值）先
+  `resolve(owner, "plugin.name")`，没有译文时退回 `resolve(owner, owner_name) ??
+  owner_name`；插件贡献 `target=自己, id=plugin.name` 的译文即可本地化配置分区标题。
+- `core/language` 的 ENUM 候选来自语言目录，不是固定表：`auto` + 内置/外部 tag；
+  `@language/` 声明增删会重建 `config_list`，`options` 整串重新序列化，
+  语言下拉与 `i18n_list` 同步变化（`document/I18N.md` §3.1、§3.3）。
 
 ### 5.2 `tray_command_list`
 
@@ -323,26 +331,35 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
 
 ### 5.3 `i18n_source_list`
 
-插件贡献的多语言文本（`document/I18N.md`）。插件侧通常不手写 JSON，而是用
-`shot::I18n::loadTables()` 把作者写的"每语言一张 JSON 表"归一成条目后 `lists.add`：
+插件 / 语言包贡献的多语言文本（完整协议见 `document/I18N.md` §2.1、§3.3）。插件侧通常
+不手写 JSON，而是用 `shot::I18n::loadTables()` 把作者写的"每语言一张 JSON 表"归一成
+条目后 `lists.add`；外部语言包由翻译插件按同一 schema 贡献：
 
 ```json
 {"list":"i18n_source_list","owner":"hotkey.main","items":[
-  {"id":"config.capture_hotkey.label","texts":{"zh-CN":"截屏热键","en-US":"Capture hotkey"}}
+  {"id":"config.capture_hotkey.label","texts":{"zh-CN":"截屏热键","en-US":"Capture hotkey"}},
+  {"id":"settings.open","texts":{"ja-JP":"設定"},"target":"core","priority":200}
 ]}
 ```
 
 | 字段 | 类型 | 必填 | 含义 |
 | --- | --- | --- | --- |
-| `id` | string | ✅ | 文案 key，同一 owner 内唯一；通常等于消费方要解析的字段值 |
-| `texts` | object | ✅ | `语言标签 -> 文本`；标签按 BCP-47（大小写不敏感、`_` 视同 `-`） |
+| `id` | string | ✅ | 文案 key，在合并后的 `(target, id)` 内唯一；`@meta` 是保留 id（宿主拒绝）；`@language/<tag>` 是语言声明（不作文本条目） |
+| `texts` | object / string | 文本条目 ✅；语言声明可省 | `语言标签 -> 文本`，标签按 BCP-47（大小写不敏感、`_` 视同 `-`）；空串视为缺失 |
+| `target` | string | 可选 | 文本服务对象：`"core"` 或当前已加载插件 id；缺省 = 贡献者自己；非字符串或未加载 id → 丢弃 + WARN |
+| `priority` | integer | 可选 | 同 `(target, id, 语言)` 的竞争权重，缺省 `100`；内置 100 / 官方包 200 / 用户包 300；高者胜，同 priority 后到者胜 |
 
+- 合并键是 `(target, id, language)`；内置 core 文案先按 priority=100 合并，之后合并
+  source 条目，所以同 priority 的 `target=core` 条目也会覆盖内置文本。
+- `@language/<tag>` 只扩展语言目录：`texts` 可以是 `{tag: 显示名}` 或字符串，
+  `fallback` 可选；显示名/fallback 的取值规则见 `document/I18N.md` §2.1、§3.3。
 - 写：插件 `lists.add` / `lists.remove`；owner 必须是已加载插件 id；宿主按
-  `(owner,id)` upsert；插件卸载时宿主 `removeOwner` 清掉贡献。
+  `(list, owner, id)` upsert；插件卸载时宿主 `removeOwner` 清掉贡献。
 - 读：宿主只读，用来生成 `i18n_list`；插件**不要**直接读本列表做解析。
-- 刷新：`lists.add`/`lists.remove` 真的改动内容、插件启停/卸载后，宿主在下一次
-  `tick` 重建 `i18n_list` 并 `lists.changed`。
-- 负载上限 64 KiB：helper 已按估算大小分块，手写时也要分块。
+- 刷新：`lists.add`/`lists.remove` 真的改动内容、`@language/` 目录变化、插件启停/卸载后，
+  宿主在下一次 `tick` 重建 `i18n_list` 并 `lists.changed`。
+- 负载上限 64 KiB：helper 按 56 KiB 预算分块（留 8 KiB 外壳）；单条 item 自身超限时
+  跳过并 WARN，`lists.remove` 的 `ids` 数组也分块。
 
 ### 5.4 `i18n_list`
 
@@ -351,23 +368,38 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
 ```json
 [
   {"id":"@meta","language":"en-US","fallback":"en-US"},
+  {"owner":"core","id":"core.owner_name","text":"Host"},
   {"owner":"core","id":"settings.open","text":"Open settings"},
+  {"owner":"core","id":"auto","text":"Follow system"},
+  {"owner":"core","id":"en-US","text":"English"},
+  {"owner":"core","id":"fr-FR","text":"Français (untranslated)"},
   {"owner":"hotkey.main","id":"config.capture_hotkey.label","text":"Capture hotkey"}
 ]
 ```
 
+`@meta` 结构：
+
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
-| `id` | string | 条目 id；首条固定 `@meta` |
-| `owner` | string | 贡献方：`core` 或插件 id（`@meta` 无 owner） |
-| `text` | string | 当前语言文本 |
-| `language` / `fallback` | string | 仅 `@meta`：当前语言与回退链下一站 |
+| `id` | string | 固定 `"@meta"` |
+| `language` | string | 当前生效语言（BCP-47） |
+| `fallback` | string | 当前语言回退链的下一站；由语言声明 / 注册表 fallback 计算，缺省 `en-US` |
 
+其余条目：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `owner` | string | 贡献方：`core` 或插件 id |
+| `id` | string | 文本 key；或语言 tag（语言下拉显示名） |
+| `text` | string | 当前语言文本；语言显示名可能带「（未翻译）」后缀 |
+
+- 条目顺序固定：`@meta` 最前，然后 core 文案，然后语言目录显示名（`owner="core"`,
+  `id=<tag>`），最后是合并后的其余 `(target,id)` 文本；同一 `(owner,id)` 只出现一次。
 - 解析规则：`display(owner, textOrKey) = i18n_list[(owner,textOrKey)] ?? textOrKey`，
   设置页/托盘/插件 helper 都按这一条实现。
-- 生成时机：启动加载完成（`HostRuntime::init` 重建一次）、`core/language` 变化、
-  `i18n_source_list` 贡献变化、插件启停/卸载清理；之后在 `HostRuntime::tick` 里
-  重建完再统一 flush。
+- 生成时机：`HostRuntime::init` 在 `loadPlugins` **之前**先用内置 core 文案重建一次，
+  加载完成后再重建；之后 `core/language` 变化、`i18n_source_list` 贡献变化、
+  `@language/` 目录变化、插件启停/卸载清理都会在下一次 `tick` 重建并统一 flush。
 - 消费方刷新：订阅 `lists.changed`，`list == "i18n_list"` 时刷新；不新增事件主题。
 
 ### 5.5 登记一个新列表的规则

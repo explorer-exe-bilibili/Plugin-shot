@@ -20,8 +20,9 @@
 | `build.sh` / `build.bat` | 加构建锁后构建宿主 + 全部插件（`build.sh --target <t>` 可只构建一个） | 无 |
 | `smoke_capture.ps1` | `--capture` 一次性截屏：exit 0、日志有 `Capture saved:`、落盘尺寸 = 物理虚拟桌面 | 采集/保存插件 |
 | `smoke_cursor_capture.ps1` | 抓屏合成鼠标光标：光标在两个已知位置各截一张，断言两次图在对应位置附近像素不同、尺寸 = 物理虚拟桌面 | screen_capture（`include_cursor`） |
-| `smoke_settings.ps1` | `--settings`：设置窗口出现、可见、能截到画面、日志无 error（窗口标题语言无关匹配） | settings_ui |
+| `smoke_settings.ps1` | `--settings`：设置窗口出现、可见、能截到画面、日志无 error（窗口查找语言无关） | settings_ui |
 | `smoke_settings_i18n.ps1` | 多语言冒烟：写 `core/language=en-US` → `--settings` 截图（英文标题/画面）+ 日志锚点 `界面语言 = en-US`；切回 `zh-CN` 再截图 + 锚点；结束恢复 config | settings_ui、宿主 i18n |
+| `smoke_i18n_translator.ps1` | 外部语言包：翻译插件扫描官方/用户目录，贡献 `@language/` 与 `target` 条目；断言语言目录出现、`i18n_list` 重建、托盘 label 用包内译文（用户包覆盖官方）、坏包只 WARN、关闭插件后回退内置文案 | translator、宿主 i18n |
 | `e2e_hotkey_capture.ps1` | 常驻 + 配置里的截屏热键 → 采集落盘（hotkey + 流水线 + 保存 串联） | hotkey/screen_capture/image_saver |
 | `e2e_clipboard.ps1` | 截图后系统剪贴板里有一张图（CF_DIB） | clipboard |
 
@@ -43,7 +44,8 @@
 2. 用 `Stop-Host` / `Backup-Config` 做前置，用 `Start-Host` 启动宿主；
 3. 断言用 `Check`，结束前 `Stop-Host` + `Restore-Config` + `Complete-Verification`；
 4. 需要新的公共能力（找窗口、等日志、注入键鼠、读配置）就加到 `common.ps1`，不要复制粘贴；
-   设置窗口标题会随界面语言变化，找窗口用 `Find-SettingsWindow`（标题语言无关）；
+   设置窗口标题会随界面语言变化，找窗口用 `Find-SettingsWindow`（按宿主进程 +
+   `GLFW30` 窗口类 + 可见 + 合理尺寸，语言无关；需要断言标题时传 `-TitlePatterns`）；
    需要预先写配置项（例如 `core/language`）用 `Set-ConfigValue`（先 `Stop-Host`）；
 5. 更新本表，并把脚本登记到仓库根 `AGENTS.md` §6.2。
 
