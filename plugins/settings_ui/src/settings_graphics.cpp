@@ -8,7 +8,7 @@
 // 跨平台要点：
 //   · <GLFW/glfw3.h> 在非 Apple 平台会带 <GL/gl.h>（Windows 上 GLFW 自己定义 APIENTRY，
 //     所以不会为了几个 GL 1.1 函数把 <windows.h> 拖进来）；
-//   · 中文/日文字体按平台候选回退，全部缺失才退回 ImGui 内置字体。
+//   · 字体按平台候选回退：中文字体缺字形时再用 MergeMode 合并一套西文字体（见 loadFonts）。
 
 #include <cmath>
 #include <cstdio>
@@ -68,6 +68,117 @@ const char* const kFontCandidates[] = {
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
 };
 #endif
+
+// ---------------------------------------------------------------------------
+//  字形覆盖：为什么光有"中文字体"不够
+//
+//  GetGlyphRangesChineseSimplifiedCommon() 只含 Latin-1 + CJK + 日文假名 + 全角标点，
+//  而 document/I18N.md 注册的 27 个语种里还有 Cyrillic（ru-RU / uk-UA / bg-BG）、
+//  Greek（el-GR）、Latin Extended-A（pl-PL / cs-CZ / sk-SK / tr-TR / hu-HU / hr-HR /
+//  ro-RO），这些字母都不在中文字体区间里。区间必须显式补齐：本插件的 OpenGL3 后端
+//  支持动态字体图集（ImGuiBackendFlags_RendererHasTextures），1.92 于是按需烘焙字形、
+//  根本不读这份区间；但同一份代码也可能跑在不支持动态图集的后端/版本上，那时
+//  ImFontAtlasBuildLegacyPreloadAllGlyphRanges 只按这份区间预烘焙，缺的语种就渲染成
+//  '?'。可显示字符不能押在某个后端的实现细节上，所以这里把区间写全。
+// ---------------------------------------------------------------------------
+
+// 追加到中文常用字区间上的其它区间（2 个 ImWchar 一组，0 结尾）。
+// 只放"界面文案实际会用到"的：整个 Latin Extended-B 有 208 个码位，注册语种只用到
+// 罗马尼亚语的 Ș ș Ț ț（U+0218-U+021B），所以只加这 4 个，不为好看把区间撑大。
+constexpr ImWchar kExtraGlyphRanges[] = {
+    0x0020, 0x00FF,  // Latin-1 Supplement：西欧语种的重音字母与 « » 等标点
+    0x0100, 0x017F,  // Latin Extended-A：ą č ę ł ő ş đ …
+    0x0218, 0x021B,  // Latin Extended-B：Ș ș Ț ț（ro-RO）
+    0x0370, 0x03FF,  // Greek and Coptic：el-GR
+    0x0400, 0x052F,  // Cyrillic + Cyrillic Supplement：ru-RU / uk-UA / bg-BG
+    0x2000, 0x206F,  // 常用标点：… — – • « » 等（宿主与插件的语种文案里已在用）
+    0x3000, 0x30FF,  // CJK 标点 + 平假名/片假名：zh-CN / zh-TW / ja-JP
+    0xFF00, 0xFFEF,  // 全角字母、全角标点（中文界面里的（）「」等）
+    0,               // 区间表以 0 结尾（ImGui 的约定）
+};
+
+// 补字字体：主字体缺字形时用 ImFontConfig::MergeMode 合进来。选 Segoe UI 是因为它随
+//  Windows 自带（不用装）、且 Latin Extended-A/B、Greek、Cyrillic 全部覆盖；而中文候选
+//  里的 simhei/simsun 恰恰大面积缺 Latin Extended-A 与 Greek（实测，见 loadFonts 日志），
+//  换一台只有 simhei 的机器时没有它，这些语种就是问号/方块。
+// TODO: POSIX 的补字字体路径未在真机验证，找不到就跳过合并（只是少补几个字形）。
+#if defined(_WIN32)
+const char* const kSupplementFontCandidates[] = {
+    "C:\\Windows\\Fonts\\segoeui.ttf",
+    "C:\\Windows\\Fonts\\arial.ttf",
+};
+#elif defined(__APPLE__)
+const char* const kSupplementFontCandidates[] = {
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+};
+#else
+const char* const kSupplementFontCandidates[] = {
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+};
+#endif
+
+/**
+ * @brief 统计零结尾区间表覆盖的码位总数。
+ * @param[in] ranges 零结尾的 Unicode 区间表（2 个 ImWchar 一组）。
+ * @return 区间内码位总数。
+ * @note 只服务 loadFonts 的启动日志（"到底要求了多大的字符集"），与类状态无关。
+ */
+int countRangeCodepoints(const ImWchar* ranges) {
+    int total = 0;
+    for (const ImWchar* range = ranges; range[0] != 0; range += 2) {
+        total += static_cast<int>(range[1]) - static_cast<int>(range[0]) + 1;
+    }
+    return total;
+}
+
+/**
+ * @brief 统计字体缺多少个"区间内应有的字形"。
+ *
+ * 用途是把"主字体缺多少、合并补字字体后还剩多少"写进启动日志：I18N.md 声称的语种
+ * 覆盖要能自证，否则以后又只能靠猜。这里读的就是 ImGui 预烘焙时用的同一份区间表。
+ *
+ * @param[in] font   已加入图集的字体（AddFontFromFileTTF 返回非空之后才可调用）。
+ * @param[in] ranges 零结尾的 Unicode 区间表。
+ * @return 缺字形的码位数；font 为空时返回 0。
+ * @note ImFont::IsGlyphInFont 不是 const 成员（要遍历内部 source），所以参数不是 const。
+ */
+int countMissingGlyphs(ImFont* font, const ImWchar* ranges) {
+    if (font == nullptr) {
+        return 0;
+    }
+    int missing = 0;
+    for (const ImWchar* range = ranges; range[0] != 0; range += 2) {
+        for (unsigned int codepoint = range[0]; codepoint <= range[1]; ++codepoint) {
+            if (!font->IsGlyphInFont(static_cast<ImWchar>(codepoint))) {
+                ++missing;
+            }
+        }
+    }
+    return missing;
+}
+
+/**
+ * @brief 组装设置页字体的完整字形区间：中文常用字 + kExtraGlyphRanges。
+ *
+ * ImFontConfig::GlyphRanges 只保存指针、不拷贝内容，所以区间表必须活到字体图集销毁；
+ * 这里用函数内 static（调用只发生在 UI 线程的 initImGui 里，C++11 起的 static 初始化
+ * 本身是线程安全的）。重复调用返回同一份存储。
+ *
+ * @return 零结尾的区间表。
+ */
+const ImWchar* buildGlyphRanges() {
+    static ImVector<ImWchar> ranges;
+    if (!ranges.empty()) {
+        return ranges.Data;
+    }
+    ImFontGlyphRangesBuilder builder;
+    builder.AddRanges(ImGui::GetIO().Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    builder.AddRanges(kExtraGlyphRanges);
+    builder.BuildRanges(&ranges);
+    return ranges.Data;
+}
 
 /**
  * @brief 从 GL_VERSION 字符串提出版本号，编码成 major*100 + minor*10。
@@ -146,17 +257,75 @@ bool SettingsWindow::Impl::initImGui() {
 
 void SettingsWindow::Impl::loadFonts() {
     ImGuiIO& io = ImGui::GetIO();
-    const ImWchar* glyphRanges = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
+    // 区间表是函数内 static，指针在字体图集销毁前一直有效（ImFontConfig 只存指针）。
+    const ImWchar* glyphRanges = buildGlyphRanges();
+
+    // 候选表里的路径不一定存在（精简系统 / 别的平台）：NoLoadError 让 AddFont 返回
+    // nullptr 而不是在 Debug 版里断言——文件缺失是正常回退路径，不是错误。
+    ImFontConfig primaryConfig;
+    primaryConfig.Flags |= ImFontFlags_NoLoadError;
+    ImFont* primary = nullptr;
+    std::string primaryPath;
     for (const char* path : kFontCandidates) {
         // 文件不存在 / 读不了时返回 nullptr（不抛异常），正好用来做"按顺序尝试"。
-        if (io.Fonts->AddFontFromFileTTF(path, kFontSizePixels, nullptr, glyphRanges) != nullptr) {
-            shot::Logger(host).info("settings_ui：中文字体 " + std::string(path));
-            return;
+        primary = io.Fonts->AddFontFromFileTTF(path, kFontSizePixels, &primaryConfig, glyphRanges);
+        if (primary != nullptr) {
+            primaryPath = path;
+            break;
         }
     }
-    // 一个系统字体都没有（极简系统）：退回内置字体。只是显示效果降级，不影响功能。
-    io.Fonts->AddFontDefault();
-    shot::Logger(host).warn("settings_ui：系统中文字体都不可用，退回 ImGui 内置字体（中文会显示成方块）");
+    if (primary == nullptr) {
+        // 一个系统字体都没有（极简系统）：退回内置字体。只是显示效果降级，不影响功能。
+        io.Fonts->AddFontDefault();
+        shot::Logger(host).warn(
+            "settings_ui：系统中文字体都不可用，退回 ImGui 内置字体（中文会显示成方块）");
+        return;
+    }
+
+    // 主字体缺字形才合并补字字体：ImGui 按 source 顺序找字形，主字体有的优先，
+    // 所以中英文的观感与合并前完全一致，只有主字体没有的字形才落到补字字体上。
+    // 实测 msyh.ttc 在扩展区间缺 U+021B（ț）等少量字形；simhei/simsun 缺得多得多。
+    const int missingBefore = countMissingGlyphs(primary, glyphRanges);
+    std::string supplementPath;
+    if (missingBefore > 0) {
+        for (const char* path : kSupplementFontCandidates) {
+            ImFontConfig mergeConfig;
+            mergeConfig.MergeMode = true;  // 合进上一个字体，而不是新建一个 ImFont
+            mergeConfig.Flags |= ImFontFlags_NoLoadError;
+            if (io.Fonts->AddFontFromFileTTF(path, kFontSizePixels, &mergeConfig, glyphRanges) !=
+                nullptr) {
+                supplementPath = path;
+                break;
+            }
+        }
+    }
+    const int missingAfter = countMissingGlyphs(primary, glyphRanges);
+
+    // 图集大小：1.92 的字体图集按需烘焙，后端支持 RendererHasTextures 时还会自动扩容
+    // （见 applyContentScale 的说明），所以不需要手工设 TexDesiredWidth；真正光栅化的
+    // 只有界面上出现过的字形，合并一套西文字体不会把图集撑爆。
+    std::string fontList = "settings_ui：中文字体 " + primaryPath;
+    if (!supplementPath.empty()) {
+        fontList += " + 补字字体 " + supplementPath;
+    }
+    shot::Logger(host).info(fontList);
+
+    // 覆盖统计只用于自证（document/I18N.md §3.1 声称的语种覆盖）：主字体缺多少、
+    // 合并后还剩多少。剩下的通常是 C1 控制符、未分配码位与 ‣ ⁂ 这类生僻排版符号。
+    std::string coverage = "settings_ui：字形覆盖：区间 " +
+                           std::to_string(countRangeCodepoints(glyphRanges)) + " 个码位，主字体缺 " +
+                           std::to_string(missingBefore) + " 个字形";
+    if (!supplementPath.empty()) {
+        if (missingAfter == 0) {
+            coverage += "，合并后无缺字";
+        } else {
+            coverage += "，合并后仍缺 " + std::to_string(missingAfter) +
+                        " 个（控制符/未分配码位/生僻标点）";
+        }
+    } else if (missingBefore > 0) {
+        coverage += "，没有可用的补字字体（这些字形会显示成 ?）";
+    }
+    shot::Logger(host).info(coverage);
 }
 
 /**
