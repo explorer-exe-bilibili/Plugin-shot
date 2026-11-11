@@ -887,6 +887,17 @@ void HostListCatalog::rebuildI18nList() {
         entries.push_back(Entry{kCoreOwner, text.id, 0, dumpJson(entry)});
     }
 
+    // 语言下拉的候选显示名从语言注册表投影：原生名与界面语言无关，注册表加一行，
+    // 这里自动多一条 core 条目，设置页按 display(core, tag) 就能显示人话。
+    for (const Host::I18n::Language& language : Host::I18n::languages()) {
+        nlohmann::json entry = {
+            {"owner", kCoreOwner},
+            {"id", language.tag},
+            {"text", language.nativeName},
+        };
+        entries.push_back(Entry{kCoreOwner, language.tag, 0, dumpJson(entry)});
+    }
+
     // 插件贡献：每个源条目的 texts 按当前语言回退链选一条；一个可用文本都没有
     // 的条目（坏 JSON / 空 texts）跳过——消费方查不到会自动显示 key 本身。
     for (const Entry& source : sources) {

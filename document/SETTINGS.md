@@ -248,13 +248,13 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
 
 | key | kind | 默认 | 副作用 |
 | --- | --- | --- | --- |
-| `language` | ENUM `auto\|zh-CN\|zh-TW\|en-US` | `auto` | 立即切换界面语言；下一次 `HostRuntime::tick` 重建 `i18n_list` 并通知消费方（`document/I18N.md` §3） |
+| `language` | ENUM `auto\|<语言注册表 tag>`（当前 27 个） | `auto` | 立即切换界面语言；下一次 `HostRuntime::tick` 重建 `i18n_list` 并通知消费方（`document/I18N.md` §3；当前只有 zh-CN/en-US 有译文，其余回退 en-US） |
 | `logging.level` | ENUM `debug\|info\|warn\|error` | `info` | 立即 `spdlog::set_level`（host / plugin 两个 logger） |
 | `debug.console` | BOOL | `1` | 立即开/关控制台 sink（文件日志不受影响） |
 | `logging.file` | BOOL | `1` | 立即开/关文件 sink（`<dataPath>/logs/host.log`） |
 
 `language` 的 ENUM 候选与原生显示名都来自语言注册表（`src/hostI18n.cpp`），
-不是硬编码在配置表里；加语种只加注册表行。
+不是硬编码在配置表里；加语种只加注册表行，下拉显示名由 `i18n_list` 自动投影。
 
 **宿主设置里刻意没有 `output.*`**：输出目录/格式/质量/剪贴板这类"保存"相关的配置不在宿主
 设置里，由实现保存/剪贴板能力的插件用 `shot.configurable` 自己声明

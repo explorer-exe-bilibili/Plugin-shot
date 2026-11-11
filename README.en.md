@@ -71,7 +71,7 @@ current main line.
 | Plugin-level dependencies (`requires` / `provides` with version ranges, `core` = the host) | ✅ working (`document/METADATA.md`) |
 | Dependency-driven load order (topological sort; an unsatisfied plugin is skipped on its own) | ✅ working |
 | Shared plugin build rules (`shot_add_plugin()`) | ✅ working (host and offline SDK share one module) |
-| i18n / multilingual UI (`core/language` = `auto|zh-CN|zh-TW|en-US`; plugins contribute `i18n_source_list`, the host projects a read-only `i18n_list`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; zh-CN and en-US translated, RTL and CJK fallback fonts not done) |
+| i18n / multilingual UI (`core/language` = `auto|zh-CN|zh-TW|en-US`; plugins contribute `i18n_source_list`, the host projects a read-only `i18n_list`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; 27 selectable language tags, only zh-CN and en-US translated, others fall back to English; RTL and extra CJK fonts not done) |
 | Offline plugin SDK export (`export_sdk` target) | ✅ working |
 
 > The binary name comes from `PROJECT_NAME` in `CMakeLists.txt` (currently `Plugin-shot`):

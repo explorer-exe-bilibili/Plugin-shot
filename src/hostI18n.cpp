@@ -42,6 +42,35 @@ const std::vector<Host::I18n::Language> kLanguages = {
     {"zh-CN", "简体中文", "zh"},
     {"zh-TW", "繁體中文", "zh"},
     {"en-US", "English", ""},
+    // 以下语种当前只有"可选 + 回退"（首批译文只有 zh-CN / en-US，未翻译文案按回退链
+    // 落 en-US）。它们都使用设置页当前字体（msyh.ttc）覆盖的 Latin / Cyrillic /
+    // Greek 字母与日文假名/汉字；韩/泰/印地/阿拉伯/希伯来/越南等在当前字体里缺字形
+    // （实测 msyh.ttc 无对应 glyph）或需要 RTL 布局的语种
+    // 暂不注册，见 document/I18N.md §7。
+    {"fr-FR", "Français", ""},
+    {"de-DE", "Deutsch", ""},
+    {"es-ES", "Español", ""},
+    {"pt-BR", "Português (Brasil)", ""},
+    {"it-IT", "Italiano", ""},
+    {"nl-NL", "Nederlands", ""},
+    {"sv-SE", "Svenska", ""},
+    {"da-DK", "Dansk", ""},
+    {"nb-NO", "Norsk bokmål", ""},
+    {"fi-FI", "Suomi", ""},
+    {"pl-PL", "Polski", ""},
+    {"cs-CZ", "Čeština", ""},
+    {"sk-SK", "Slovenčina", ""},
+    {"hu-HU", "Magyar", ""},
+    {"hr-HR", "Hrvatski", ""},
+    {"tr-TR", "Türkçe", ""},
+    {"ru-RU", "Русский", ""},
+    {"uk-UA", "Українська", ""},
+    {"bg-BG", "Български", ""},
+    {"el-GR", "Ελληνικά", ""},
+    {"ja-JP", "日本語", ""},
+    {"ro-RO", "Română", ""},
+    {"id-ID", "Bahasa Indonesia", ""},
+    {"ms-MY", "Bahasa Melayu", ""},
 };
 
 // ---- 会发布进 i18n_list 的宿主文案 ----------------------------------------
@@ -66,10 +95,9 @@ const std::vector<Host::I18n::CoreText> kDisplayTexts = {
     {"config.debug.console.tooltip", {{"zh-CN", "关闭后控制台不再输出，文件日志不受影响"}, {"en-US", "Console output stops when off; the log file is unaffected"}}},
     {"config.logging.file.label", {{"zh-CN", "文件日志"}, {"en-US", "Log file"}}},
     {"config.logging.file.tooltip", {{"zh-CN", "写入 <数据目录>/logs/host.log；文件打不开时恒为关闭"}, {"en-US", "Writes to <data dir>/logs/host.log; stays off if the file cannot be opened"}}},
+    // 语言标签的"原生显示名"不在这里：由语言注册表提供、HostListCatalog 生成
+    // i18n_list 时投影成 core 条目。只有 auto 不是语言标签，需要本地化文本。
     {"auto", {{"zh-CN", "跟随系统"}, {"en-US", "Follow system"}}},
-    {"zh-CN", {{"zh-CN", "简体中文"}, {"en-US", "简体中文"}}},
-    {"zh-TW", {{"zh-CN", "繁體中文"}, {"en-US", "繁體中文"}}},
-    {"en-US", {{"zh-CN", "English"}, {"en-US", "English"}}},
     {"debug", {{"zh-CN", "调试"}, {"en-US", "Debug"}}},
     {"info", {{"zh-CN", "信息"}, {"en-US", "Info"}}},
     {"warn", {{"zh-CN", "警告"}, {"en-US", "Warning"}}},

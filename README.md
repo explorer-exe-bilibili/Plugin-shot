@@ -65,7 +65,7 @@
 | 插件级依赖声明（`requires` / `provides`，带版本区间，`core` 为宿主） | ✅ 可用（`document/METADATA.md`） |
 | 依赖驱动加载顺序（拓扑排序，不满足只跳过该插件） | ✅ 可用 |
 | 插件工程公共构建规则（`shot_add_plugin()`） | ✅ 可用（宿主与离线 SDK 共用） |
-| 多语言 i18n（`core/language` = `auto|zh-CN|zh-TW|en-US`；`i18n_source_list` 插件贡献 + 宿主只读快照 `i18n_list`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；zh-CN / en-US 已翻译，RTL 与日韩字体未做） |
+| 多语言 i18n（`core/language` = `auto|zh-CN|zh-TW|en-US`；`i18n_source_list` 插件贡献 + 宿主只读快照 `i18n_list`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；语言注册表可选 27 个标签，仅 zh-CN / en-US 有译文，其余回退英文；RTL 与韩/泰等字体未做） |
 | 离线插件 SDK 导出（`export_sdk` 目标） | ✅ 可用 |
 
 > 产物名取自 `CMakeLists.txt` 的 `PROJECT_NAME`（当前 `Plugin-shot`）：宿主叫 `Plugin-shot.exe`，
