@@ -49,11 +49,21 @@ public:
         const char* fallback;    /**< 该语言缺文本时的下一个候选；空串 = 用默认语言 */
     };
 
-    /** @brief 宿主"自己产生、被消费方原样展示"的文案（按 id 取）。 */
+    /** @brief 一条文案的某种语言文本。 */
+    struct LanguageText {
+        const char* tag;   /**< BCP-47 语言标签，如 "zh-CN"；比较时归一化 */
+        const char* text;  /**< 该语言文本（UTF-8）；值必须在进程生命周期内有效 */
+    };
+
+    /**
+     * @brief 宿主"自己产生、被消费方原样展示"的文案（按 id 取）。
+     *
+     * `texts` 是任意长度的语言列表：加语种只在这里加一项（以及各插件的语言表），
+     * 不需要改宿主代码。顺序只在"回退链上所有语言都没有"时作为第一条兜底。
+     */
     struct CoreText {
-        const char* id;    /**< 文本 id，如 "capture.request" / "config.language.label" */
-        const char* zhCN;  /**< 简体中文 */
-        const char* enUS;  /**< 英文 */
+        const char* id;                 /**< 文本 id，如 "capture.request" / "config.language.label" */
+        std::vector<LanguageText> texts;/**< 语言标签 -> 文本（至少一项） */
     };
 
     /**
@@ -253,6 +263,19 @@ private:
      * @return "zh-CN"（zh 语言族）或 "en-US"（其它）。
      */
     static const char* textColumn(std::string_view language);
+
+    /**
+     * @brief 按回退链从一条文案的语言列表里选文本。
+     *
+     * 回退链与 i18n_list 生成一致：完全匹配 -> 主语言族（zh-TW 命中 zh-CN）-> 默认
+     * 语言 en-US -> 默认语言的主语言 -> 该文案第一条可用文本。
+     *
+     * @param[in] texts    语言列表；空列表返回 nullptr。
+     * @param[in] language 目标语言标签。
+     * @return 选中的文本；一个都没有时 nullptr。
+     */
+    static const char* pickFromTexts(const std::vector<LanguageText>& texts,
+                                     std::string_view language);
 
     /**
      * @brief 在"标签 -> 文本"映射里找某个语言的文本。

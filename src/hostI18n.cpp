@@ -48,99 +48,78 @@ const std::vector<Host::I18n::Language> kLanguages = {
 // id 的两类用法：
 //   · 数据列表里的 key（tray_command_list 的 label、config_list 的 label/tooltip）；
 //   · ENUM 候选值（core 的语言与日志级别），设置页按 display(owner, value) 解析。
+// 每条文案的 texts 是"语言标签 -> 文本"的**任意长度**列表：加语种只在这里加一项
+// （以及各插件语言表），不需要改代码。顺序只用于"所有语言都缺"时的第一条兜底。
 // core 的 owner_name 也走这里：设置页把 owner_name 当显示名，不解析的话英文界面
 // 会剩一个"宿主"。
 const std::vector<Host::I18n::CoreText> kDisplayTexts = {
-    {"core.owner_name", "宿主", "Host"},
-    {"capture.request", "截屏", "Capture"},
-    {"region.capture", "区域截屏", "Region capture"},
-    {"settings.open", "打开设置", "Open settings"},
-    {"app.quit", "退出", "Quit"},
-    {"config.language.label", "界面语言", "Language"},
-    {"config.language.tooltip", "auto = 跟随系统；切换后界面立即刷新",
-     "Auto follows the system; the UI refreshes immediately"},
-    {"config.logging.level.label", "日志级别", "Log level"},
-    {"config.logging.level.tooltip", "host / plugin 两个 logger 一起改",
-     "Applies to both the host and plugin loggers"},
-    {"config.debug.console.label", "控制台日志", "Console log"},
-    {"config.debug.console.tooltip", "关闭后控制台不再输出，文件日志不受影响",
-     "Console output stops when off; the log file is unaffected"},
-    {"config.logging.file.label", "文件日志", "Log file"},
-    {"config.logging.file.tooltip", "写入 <数据目录>/logs/host.log；文件打不开时恒为关闭",
-     "Writes to <data dir>/logs/host.log; stays off if the file cannot be opened"},
-    // 语言下拉的原生显示名：换语言时语言名保持各自母语写法（用户认得出）。
-    {"auto", "跟随系统", "Follow system"},
-    {"zh-CN", "简体中文", "简体中文"},
-    {"zh-TW", "繁體中文", "繁體中文"},
-    {"en-US", "English", "English"},
-    // 日志级别 ENUM 的候选：值是技术值（debug/info/...），显示名走同一套解析。
-    {"debug", "调试", "Debug"},
-    {"info", "信息", "Info"},
-    {"warn", "警告", "Warning"},
-    {"error", "错误", "Error"},
+    {"core.owner_name", {{"zh-CN", "宿主"}, {"en-US", "Host"}}},
+    {"capture.request", {{"zh-CN", "截屏"}, {"en-US", "Capture"}}},
+    {"region.capture", {{"zh-CN", "区域截屏"}, {"en-US", "Region capture"}}},
+    {"settings.open", {{"zh-CN", "打开设置"}, {"en-US", "Open settings"}}},
+    {"app.quit", {{"zh-CN", "退出"}, {"en-US", "Quit"}}},
+    {"config.language.label", {{"zh-CN", "界面语言"}, {"en-US", "Language"}}},
+    {"config.language.tooltip", {{"zh-CN", "auto = 跟随系统；切换后界面立即刷新"}, {"en-US", "Auto follows the system; the UI refreshes immediately"}}},
+    {"config.logging.level.label", {{"zh-CN", "日志级别"}, {"en-US", "Log level"}}},
+    {"config.logging.level.tooltip", {{"zh-CN", "host / plugin 两个 logger 一起改"}, {"en-US", "Applies to both the host and plugin loggers"}}},
+    {"config.debug.console.label", {{"zh-CN", "控制台日志"}, {"en-US", "Console log"}}},
+    {"config.debug.console.tooltip", {{"zh-CN", "关闭后控制台不再输出，文件日志不受影响"}, {"en-US", "Console output stops when off; the log file is unaffected"}}},
+    {"config.logging.file.label", {{"zh-CN", "文件日志"}, {"en-US", "Log file"}}},
+    {"config.logging.file.tooltip", {{"zh-CN", "写入 <数据目录>/logs/host.log；文件打不开时恒为关闭"}, {"en-US", "Writes to <data dir>/logs/host.log; stays off if the file cannot be opened"}}},
+    {"auto", {{"zh-CN", "跟随系统"}, {"en-US", "Follow system"}}},
+    {"zh-CN", {{"zh-CN", "简体中文"}, {"en-US", "简体中文"}}},
+    {"zh-TW", {{"zh-CN", "繁體中文"}, {"en-US", "繁體中文"}}},
+    {"en-US", {{"zh-CN", "English"}, {"en-US", "English"}}},
+    {"debug", {{"zh-CN", "调试"}, {"en-US", "Debug"}}},
+    {"info", {{"zh-CN", "信息"}, {"en-US", "Info"}}},
+    {"warn", {{"zh-CN", "警告"}, {"en-US", "Warning"}}},
+    {"error", {{"zh-CN", "错误"}, {"en-US", "Error"}}},
 };
 
 // ---- 宿主生成的动态消息（带模板参数）-------------------------------------
 // 这些字符串会被 settings_ui / notify 原样展示，必须按当前语言生成；内部日志
 // 用 Message::chinese() 固定中文（日志不翻译，e2e 按中文日志断言）。
+// texts 同样是任意语言列表，加语种加一项即可。
 const std::vector<Host::I18n::CoreText> kMessages = {
-    // 插件加载/依赖/启停原因（PluginManager -> plugin_registry.reason / plugins.changed）
-    {"plugin.error.no_export", "没有 shot_module_entry 导出", "Missing shot_module_entry export"},
-    {"plugin.error.empty_module", "shot_module_entry 返回空", "shot_module_entry returned null"},
-    {"plugin.error.module_too_short", "模块表太短（{0} 字节）",
-     "Module table too short ({0} bytes)"},
-    {"plugin.error.abi_major", "abi major 不兼容（插件 {0}，宿主 {1}）",
-     "Incompatible abi major (plugin {0}, host {1})"},
-    {"plugin.error.missing_create_destroy", "缺少 create/destroy", "Missing create/destroy"},
-    {"plugin.error.init_rejected", "init 拒绝了本宿主（{0}）", "init rejected this host ({0})"},
-    {"plugin.error.dep_syntax", "依赖语法错误：{0}", "Invalid requirement syntax: {0}"},
-    {"plugin.error.core_version", "需要 {0}，宿主是 {1}", "Requires {0}, host is {1}"},
-    {"plugin.error.no_provider", "没有提供者满足 {0}", "No provider satisfies {0}"},
-    {"plugin.error.provider_skipped", "提供者 {0} 被跳过了", "Provider {0} was skipped"},
-    {"plugin.error.provider_no_version", "提供者 {0} 没有报告版本",
-     "Provider {0} reported no version"},
-    {"plugin.error.version_mismatch", "要求 {0}，实际提供 {1}",
-     "Requires {0}, actually provided {1}"},
-    {"plugin.error.dll_load", "DLL 加载失败（{0}）", "Failed to load DLL ({0})"},
-    {"plugin.error.create_null", "create 返回空", "create returned null"},
-    {"plugin.error.ui_init", "UIProvider::init 失败", "UIProvider::init failed"},
-    {"plugin.error.no_metadata", "没有 metadata 且没有本宿主认识的任何能力",
-     "No metadata and no capability this host understands"},
-    {"plugin.error.empty_id", "插件 id 为空", "Plugin id is empty"},
-    {"plugin.error.no_such_plugin", "没有这个插件", "No such plugin"},
-    {"plugin.error.required_by", "被 {0} 依赖", "Required by {0}"},
-    {"plugin.error.dependency_enable_failed", "依赖 {0} 启用失败：{1}",
-     "Failed to enable dependency {0}: {1}"},
-    {"plugin.state.not_loaded", "未加载", "Not loaded"},
-    {"plugin.state.disabled", "已在配置中禁用", "Disabled in configuration"},
-    // 采集失败原因（capture.failed.reason，notify 气泡直接展示）
-    {"capture.error.host_shutting_down", "宿主正在退出，请求被丢弃",
-     "Host is shutting down; request dropped"},
-    {"capture.error.no_capture_plugin", "没有可用的屏幕采集插件",
-     "No screen capture plugin available"},
-    {"capture.error.describe_failed", "describe 失败（返回 {0}）", "describe failed (returned {0})"},
-    {"capture.error.invalid_size", "describe 返回的尺寸非法（{0}x{1}）",
-     "describe returned an invalid size ({0}x{1})"},
-    {"capture.error.unsupported_pixel_format", "不支持的像素格式（{0}）",
-     "Unsupported pixel format ({0})"},
-    {"capture.error.too_large", "采集尺寸过大（{0} 字节）", "Capture size too large ({0} bytes)"},
-    {"capture.error.capture_failed", "capture 失败（返回 {0}）", "capture failed (returned {0})"},
-    {"capture.error.no_saver_plugin", "没有可用的图像保存插件",
-     "No image saver plugin available"},
-    {"capture.error.save_failed", "save 失败（返回 {0}）", "save failed (returned {0})"},
-    // 列表写值/落盘失败原因（lists.updated.reason，设置页在配置项旁标红显示）
-    {"list.error.bad_payload", "负载不是合法 JSON 对象", "Payload is not a valid JSON object"},
-    {"list.error.update_only_config", "lists.update 只支持 config_list",
-     "lists.update only supports config_list"},
-    {"list.error.commit_only_config", "lists.commit 只支持 config_list",
-     "lists.commit only supports config_list"},
-    {"list.error.changes_array", "changes 必须是数组", "changes must be an array"},
-    {"list.error.bad_param", "参数非法：owner/id/value 必须都是字符串",
-     "Invalid parameter: owner/id/value must be strings"},
-    {"list.error.provider_unavailable", "提供者未加载或不支持 shot.configurable",
-     "Provider not loaded or does not support shot.configurable"},
-    {"list.error.plugin_rejected", "插件拒绝（返回码 {0}）", "Plugin rejected (returned {0})"},
-    {"list.error.save_failed", "保存失败", "Failed to save"},
+    {"plugin.error.no_export", {{"zh-CN", "没有 shot_module_entry 导出"}, {"en-US", "Missing shot_module_entry export"}}},
+    {"plugin.error.empty_module", {{"zh-CN", "shot_module_entry 返回空"}, {"en-US", "shot_module_entry returned null"}}},
+    {"plugin.error.module_too_short", {{"zh-CN", "模块表太短（{0} 字节）"}, {"en-US", "Module table too short ({0} bytes)"}}},
+    {"plugin.error.abi_major", {{"zh-CN", "abi major 不兼容（插件 {0}，宿主 {1}）"}, {"en-US", "Incompatible abi major (plugin {0}, host {1})"}}},
+    {"plugin.error.missing_create_destroy", {{"zh-CN", "缺少 create/destroy"}, {"en-US", "Missing create/destroy"}}},
+    {"plugin.error.init_rejected", {{"zh-CN", "init 拒绝了本宿主（{0}）"}, {"en-US", "init rejected this host ({0})"}}},
+    {"plugin.error.dep_syntax", {{"zh-CN", "依赖语法错误：{0}"}, {"en-US", "Invalid requirement syntax: {0}"}}},
+    {"plugin.error.core_version", {{"zh-CN", "需要 {0}，宿主是 {1}"}, {"en-US", "Requires {0}, host is {1}"}}},
+    {"plugin.error.no_provider", {{"zh-CN", "没有提供者满足 {0}"}, {"en-US", "No provider satisfies {0}"}}},
+    {"plugin.error.provider_skipped", {{"zh-CN", "提供者 {0} 被跳过了"}, {"en-US", "Provider {0} was skipped"}}},
+    {"plugin.error.provider_no_version", {{"zh-CN", "提供者 {0} 没有报告版本"}, {"en-US", "Provider {0} reported no version"}}},
+    {"plugin.error.version_mismatch", {{"zh-CN", "要求 {0}，实际提供 {1}"}, {"en-US", "Requires {0}, actually provided {1}"}}},
+    {"plugin.error.dll_load", {{"zh-CN", "DLL 加载失败（{0}）"}, {"en-US", "Failed to load DLL ({0})"}}},
+    {"plugin.error.create_null", {{"zh-CN", "create 返回空"}, {"en-US", "create returned null"}}},
+    {"plugin.error.ui_init", {{"zh-CN", "UIProvider::init 失败"}, {"en-US", "UIProvider::init failed"}}},
+    {"plugin.error.no_metadata", {{"zh-CN", "没有 metadata 且没有本宿主认识的任何能力"}, {"en-US", "No metadata and no capability this host understands"}}},
+    {"plugin.error.empty_id", {{"zh-CN", "插件 id 为空"}, {"en-US", "Plugin id is empty"}}},
+    {"plugin.error.no_such_plugin", {{"zh-CN", "没有这个插件"}, {"en-US", "No such plugin"}}},
+    {"plugin.error.required_by", {{"zh-CN", "被 {0} 依赖"}, {"en-US", "Required by {0}"}}},
+    {"plugin.error.dependency_enable_failed", {{"zh-CN", "依赖 {0} 启用失败：{1}"}, {"en-US", "Failed to enable dependency {0}: {1}"}}},
+    {"plugin.state.not_loaded", {{"zh-CN", "未加载"}, {"en-US", "Not loaded"}}},
+    {"plugin.state.disabled", {{"zh-CN", "已在配置中禁用"}, {"en-US", "Disabled in configuration"}}},
+    {"capture.error.host_shutting_down", {{"zh-CN", "宿主正在退出，请求被丢弃"}, {"en-US", "Host is shutting down; request dropped"}}},
+    {"capture.error.no_capture_plugin", {{"zh-CN", "没有可用的屏幕采集插件"}, {"en-US", "No screen capture plugin available"}}},
+    {"capture.error.describe_failed", {{"zh-CN", "describe 失败（返回 {0}）"}, {"en-US", "describe failed (returned {0})"}}},
+    {"capture.error.invalid_size", {{"zh-CN", "describe 返回的尺寸非法（{0}x{1}）"}, {"en-US", "describe returned an invalid size ({0}x{1})"}}},
+    {"capture.error.unsupported_pixel_format", {{"zh-CN", "不支持的像素格式（{0}）"}, {"en-US", "Unsupported pixel format ({0})"}}},
+    {"capture.error.too_large", {{"zh-CN", "采集尺寸过大（{0} 字节）"}, {"en-US", "Capture size too large ({0} bytes)"}}},
+    {"capture.error.capture_failed", {{"zh-CN", "capture 失败（返回 {0}）"}, {"en-US", "capture failed (returned {0})"}}},
+    {"capture.error.no_saver_plugin", {{"zh-CN", "没有可用的图像保存插件"}, {"en-US", "No image saver plugin available"}}},
+    {"capture.error.save_failed", {{"zh-CN", "save 失败（返回 {0}）"}, {"en-US", "save failed (returned {0})"}}},
+    {"list.error.bad_payload", {{"zh-CN", "负载不是合法 JSON 对象"}, {"en-US", "Payload is not a valid JSON object"}}},
+    {"list.error.update_only_config", {{"zh-CN", "lists.update 只支持 config_list"}, {"en-US", "lists.update only supports config_list"}}},
+    {"list.error.commit_only_config", {{"zh-CN", "lists.commit 只支持 config_list"}, {"en-US", "lists.commit only supports config_list"}}},
+    {"list.error.changes_array", {{"zh-CN", "changes 必须是数组"}, {"en-US", "changes must be an array"}}},
+    {"list.error.bad_param", {{"zh-CN", "参数非法：owner/id/value 必须都是字符串"}, {"en-US", "Invalid parameter: owner/id/value must be strings"}}},
+    {"list.error.provider_unavailable", {{"zh-CN", "提供者未加载或不支持 shot.configurable"}, {"en-US", "Provider not loaded or does not support shot.configurable"}}},
+    {"list.error.plugin_rejected", {{"zh-CN", "插件拒绝（返回码 {0}）"}, {"en-US", "Plugin rejected (returned {0})"}}},
+    {"list.error.save_failed", {{"zh-CN", "保存失败"}, {"en-US", "Failed to save"}}},
 };
 
 /**
@@ -393,9 +372,50 @@ const I18n::CoreText* I18n::findText(const char* id) {
     return (entry != nullptr) ? entry : findInTable(kMessages, id);
 }
 
-const char* I18n::textColumn(std::string_view language) {
-    // 本批只有两列：zh 语言族用简体中文列，其它（含默认 en-US 与未翻译语种）用英文列。
-    return (primaryTag(language) == "zh") ? "zh-CN" : "en-US";
+const char* I18n::pickFromTexts(const std::vector<LanguageText>& texts,
+                                std::string_view language) {
+    if (texts.empty()) {
+        return nullptr;
+    }
+    const std::string normalized = normalizeTag(language);
+    // 回退链：完全匹配 -> 主语言族 -> 默认语言 -> 默认语言的主语言 -> 第一条兜底。
+    std::vector<std::string> candidates;
+    if (!normalized.empty()) {
+        candidates.push_back(normalized);
+        candidates.push_back(primaryTag(normalized));
+    }
+    candidates.push_back(defaultLanguage());
+    candidates.push_back(primaryTag(defaultLanguage()));
+
+    for (const std::string& candidate : candidates) {
+        if (candidate.empty()) {
+            continue;
+        }
+        for (const LanguageText& text : texts) {
+            if (text.tag == nullptr || text.text == nullptr) {
+                continue;
+            }
+            if (normalizeTag(text.tag) == candidate) {
+                return text.text;  // 完全匹配
+            }
+        }
+        const std::string candidatePrimary = primaryTag(candidate);
+        for (const LanguageText& text : texts) {
+            if (text.tag == nullptr || text.text == nullptr) {
+                continue;
+            }
+            if (primaryTag(text.tag) == candidatePrimary) {
+                return text.text;  // 同语言族（zh-TW -> zh-CN）
+            }
+        }
+    }
+    // 所有语言都缺：取第一条可用文本（作者的表顺序）。
+    for (const LanguageText& text : texts) {
+        if (text.text != nullptr) {
+            return text.text;
+        }
+    }
+    return nullptr;
 }
 
 const char* I18n::text(const char* id) const {
@@ -403,8 +423,10 @@ const char* I18n::text(const char* id) const {
     if (entry == nullptr) {
         return id;
     }
-    const std::string column = textColumn(currentLanguage());
-    return (column == "zh-CN") ? entry->zhCN : entry->enUS;
+    if (const char* text = pickFromTexts(entry->texts, currentLanguage())) {
+        return text;
+    }
+    return id;
 }
 
 std::string I18n::textIn(std::string_view language, const char* id) const {
@@ -412,9 +434,12 @@ std::string I18n::textIn(std::string_view language, const char* id) const {
     if (entry == nullptr) {
         return (id != nullptr) ? std::string(id) : std::string();
     }
-    const std::string column =
-        textColumn(language.empty() ? std::string_view(currentLanguage()) : language);
-    return (column == "zh-CN") ? std::string(entry->zhCN) : std::string(entry->enUS);
+    const std::string_view target =
+        language.empty() ? std::string_view(currentLanguage()) : language;
+    if (const char* text = pickFromTexts(entry->texts, target)) {
+        return text;
+    }
+    return (id != nullptr) ? std::string(id) : std::string();
 }
 
 std::string I18n::format(const char* id, const std::vector<std::string>& args) const {
