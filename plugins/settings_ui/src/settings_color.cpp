@@ -3,7 +3,8 @@
 // 为什么用 STRING + options 而不是新增 kind：数据形状不进 ABI，options 本来就是
 // "给设置页的交互提示"（hotkey / directory 都这么用）。插件只要在描述符里写
 // "#4C9AFF|#34C759|…"，设置页就渲染成预设色块；老宿主仍把同一份值当普通文本框
-// 显示，配置本身不需要迁移，也不需要涨 ABI。
+// 显示，配置本身不需要迁移，也不需要涨 ABI。目前的使用者是宿主设置里的
+// core/theme_color（声明在 src/hostConfigurable.cpp）。
 //
 // 交互（用户视角说明在 plugins/settings_ui/README.md §4.2）：
 //   · 一行预设色块（options 按 | 切，只保留合法的 #RRGGBB），点击即选中；
