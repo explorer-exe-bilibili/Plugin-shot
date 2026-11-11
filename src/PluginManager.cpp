@@ -19,10 +19,48 @@
 #include "PluginInstances/ScreenCapture.h"
 #include "PluginInstances/UIProvider.h"
 #include "config.h"
+#include "hostI18n.h"
 #include "hostServices.h"
 #include "version.h"  // CMake 从 include/version.h.in 生成：VERSION_MAJOR/MINOR/PATCH
 
 namespace Plugin {
+
+Reason::Reason(const char* messageId) {
+    if (messageId != nullptr) {
+        id = messageId;
+    }
+}
+
+Reason::Reason(const char* messageId, std::string arg0) : Reason(messageId) {
+    args[0] = std::move(arg0);
+}
+
+Reason::Reason(const char* messageId, std::string arg0, std::string arg1) : Reason(messageId) {
+    args[0] = std::move(arg0);
+    args[1] = std::move(arg1);
+}
+
+bool Reason::empty() const noexcept { return id.empty(); }
+
+void Reason::clear() noexcept {
+    id.clear();
+    args[0].clear();
+    args[1].clear();
+}
+
+std::string Reason::chinese() const {
+    if (id.empty()) {
+        return {};
+    }
+    return Host::I18n::instance().formatIn("zh-CN", id.c_str(), {args[0], args[1]});
+}
+
+std::string Reason::localized() const {
+    if (id.empty()) {
+        return {};
+    }
+    return Host::I18n::instance().format(id.c_str(), {args[0], args[1]});
+}
 
 namespace {
 
@@ -84,30 +122,30 @@ std::vector<std::string> PluginManager::readDisabledList() {
 }
 
 bool PluginManager::resolveModule(const std::shared_ptr<DllHandler>& dll, const ShotModule*& module,
-                                  std::string& reason) {
+                                  Reason& reason) {
     const auto entryFn = reinterpret_cast<const ShotModule* (*)()>(
         dll->tryGetFunction("shot_module_entry"));
     if (entryFn == nullptr) {
-        reason = "没有 shot_module_entry 导出";
+        reason = Reason("plugin.error.no_export");
         return false;
     }
     const ShotModule* loaded = entryFn();
     if (loaded == nullptr) {
-        reason = "shot_module_entry 返回空";
+        reason = Reason("plugin.error.empty_module");
         return false;
     }
     if (!SHOT_HAS_FIELD(loaded, ShotModule, plugin_count) ||
         !SHOT_HAS_FIELD(loaded, ShotModule, query_interface)) {
-        reason = "模块表太短（" + std::to_string(loaded->struct_size) + " 字节）";
+        reason = Reason("plugin.error.module_too_short", std::to_string(loaded->struct_size));
         return false;
     }
     if (loaded->abi_major != SHOT_ABI_MAJOR) {
-        reason = "abi major 不兼容（插件 " + std::to_string(loaded->abi_major) + "，宿主 " +
-                 std::to_string(SHOT_ABI_MAJOR) + "）";
+        reason = Reason("plugin.error.abi_major", std::to_string(loaded->abi_major),
+                        std::to_string(SHOT_ABI_MAJOR));
         return false;
     }
     if (loaded->create == nullptr || loaded->destroy == nullptr) {
-        reason = "缺少 create/destroy";
+        reason = Reason("plugin.error.missing_create_destroy");
         return false;
     }
     module = loaded;
@@ -115,7 +153,7 @@ bool PluginManager::resolveModule(const std::shared_ptr<DllHandler>& dll, const 
 }
 
 bool PluginManager::initModule(const std::string& dllPath, const ShotModule* module,
-                               std::string& reason) {
+                               Reason& reason) {
     // 新插件 + 老宿主是允许的组合：只提示，不拒绝，插件自己按 abi_minor 降级。
     if (module->abi_minor > SHOT_ABI_MINOR) {
         spdlog::info("Note: {} targets abi {}.{} but host supports {}.{}; "
@@ -125,7 +163,7 @@ bool PluginManager::initModule(const std::string& dllPath, const ShotModule* mod
     if (module->init != nullptr) {
         const int32_t rc = module->init(&Host::g_hostServices, 0);
         if (rc != 0) {
-            reason = "init 拒绝了本宿主（" + std::to_string(rc) + "）";
+            reason = Reason("plugin.error.init_rejected", std::to_string(rc));
             return false;
         }
     }
@@ -151,16 +189,16 @@ ShotVersion PluginManager::hostCoreVersion() {
 bool PluginManager::checkRequirements(const Record& record,
                                       const std::map<std::string, std::size_t>& providers,
                                       const std::vector<Record>& records,
-                                      std::string& reason) {
+                                      Reason& reason) {
     const ShotVersion core = hostCoreVersion();
     for (const PluginRequirement& requirement : record.meta.requireList) {
         if (requirement.isBroken()) {
-            reason = "依赖语法错误：" + requirement.getRaw();
+            reason = Reason("plugin.error.dep_syntax", requirement.getRaw());
             return false;
         }
         if (requirement.getName() == "core") {
             if (!requirement.satisfies("core", core)) {
-                reason = "需要 " + requirement.getRaw() + "，宿主是 " + core.to_string();
+                reason = Reason("plugin.error.core_version", requirement.getRaw(), core.to_string());
                 return false;
             }
             continue;
@@ -168,12 +206,12 @@ bool PluginManager::checkRequirements(const Record& record,
 
         const auto it = providers.find(requirement.getName());
         if (it == providers.end()) {
-            reason = "没有提供者满足 " + requirement.getRaw();
+            reason = Reason("plugin.error.no_provider", requirement.getRaw());
             return false;
         }
         const Record& provider = records[it->second];
         if (provider.info.state != SHOT_PLUGIN_STATE_LOADED) {
-            reason = "提供者 " + requirement.getName() + " 被跳过了";
+            reason = Reason("plugin.error.provider_skipped", requirement.getName());
             return false;
         }
 
@@ -182,11 +220,11 @@ bool PluginManager::checkRequirements(const Record& record,
             provider.libVersion.empty() ? provider.runtimeVersion : provider.libVersion;
         ShotVersion providedVersion;
         if (!providedVersion.parse(provided)) {
-            reason = "提供者 " + requirement.getName() + " 没有报告版本";
+            reason = Reason("plugin.error.provider_no_version", requirement.getName());
             return false;
         }
         if (!providedVersion.satisfies(requirement.getOp(), requirement.getVersion())) {
-            reason = "要求 " + requirement.getRaw() + "，实际提供 " + provided;
+            reason = Reason("plugin.error.version_mismatch", requirement.getRaw(), provided);
             return false;
         }
     }
@@ -198,7 +236,7 @@ PluginManager::~PluginManager() {
 }
 
 bool PluginManager::acquireModule(const std::string& dllPath, std::shared_ptr<DllHandler>& dll,
-                                  const ShotModule*& module, std::string& reason) {
+                                  const ShotModule*& module, Reason& reason) {
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         const auto it = m_modules.find(dllPath);
@@ -215,7 +253,7 @@ bool PluginManager::acquireModule(const std::string& dllPath, std::shared_ptr<Dl
     try {
         handler = std::make_shared<DllHandler>(dllPath);
     } catch (const std::exception& e) {
-        reason = std::string("DLL 加载失败（") + e.what() + "）";
+        reason = Reason("plugin.error.dll_load", e.what());
         return false;
     }
 
@@ -256,7 +294,7 @@ PluginManager::CreatedPlugin PluginManager::createPlugin(const std::shared_ptr<D
     CreatedPlugin created;
     void* instance = module->create(index, &Host::g_hostServices);
     if (instance == nullptr) {
-        created.reason = "create 返回空";
+        created.reason = Reason("plugin.error.create_null");
         return created;
     }
 
@@ -304,7 +342,7 @@ PluginManager::CreatedPlugin PluginManager::createPlugin(const std::shared_ptr<D
         auto provider = std::make_shared<UIProvider>(dll, module, instance, id, displayName,
                                                      version, uiOps);
         if (!provider->init(&Host::g_hostServices)) {
-            created.reason = "UIProvider::init 失败";
+            created.reason = Reason("plugin.error.ui_init");
             return created;  // provider 析构会触发 module->destroy，不泄漏实例
         }
         created.instance = std::move(provider);
@@ -349,7 +387,7 @@ PluginManager::CreatedPlugin PluginManager::createPlugin(const std::shared_ptr<D
     }
     // 认不出能力又没有 metadata：必须自己把实例还给插件销毁，宿主绝不 delete 插件对象。
     module->destroy(instance);
-    created.reason = "没有 metadata 且没有本宿主认识的任何能力";
+    created.reason = Reason("plugin.error.no_metadata");
     return created;
 }
 
@@ -395,7 +433,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
             record.info.dllPath = path;
             record.info.id = fallbackId(path, 0);
             record.info.name = record.info.id;
-            record.info.reason = "未加载";
+            record.info.reason = Reason("plugin.state.not_loaded");
             record.info.state = SHOT_PLUGIN_STATE_FAILED;
             record.opaque = true;
             record.placeholder = true;
@@ -411,7 +449,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
             record.info.id = entries[i].id;
             record.info.name = entries[i].name.empty() ? entries[i].id : entries[i].name;
             record.info.version = entries[i].version;
-            record.info.reason = "未加载";
+            record.info.reason = Reason("plugin.state.not_loaded");
             record.info.state = SHOT_PLUGIN_STATE_FAILED;
             record.index = i;
             record.hasMeta = true;
@@ -477,7 +515,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
     }
 
     // ---- 阶段 4：按顺序加载 ----
-    std::map<std::string, std::string> moduleFailures;  // 同一个包的多条记录只尝试一次
+    std::map<std::string, Reason> moduleFailures;  // 同一个包的多条记录只尝试一次
 
     for (const std::size_t recordIndex : order) {
         // 先处理无元数据的包：没有声明，失败开放——把模块表里每个索引都登记一遍。
@@ -485,13 +523,13 @@ bool PluginManager::loadPlugins(const std::string& dir) {
             const std::string dllPath = records[recordIndex].info.dllPath;
             std::shared_ptr<DllHandler> dll;
             const ShotModule* module = nullptr;
-            std::string reason;
+            Reason reason;
             if (!acquireModule(dllPath, dll, module, reason)) {
                 // 整个包装不上：占位记录转成真实失败记录，让注册表能解释原因。
                 records[recordIndex].placeholder = false;
                 records[recordIndex].info.state = SHOT_PLUGIN_STATE_FAILED;
                 records[recordIndex].info.reason = reason;
-                spdlog::warn("Failed to load plugin module: {}（{}）", dllPath, reason);
+                spdlog::warn("Failed to load plugin module: {}（{}）", dllPath, reason.chinese());
                 continue;
             }
             const std::uint32_t pluginCount = module->plugin_count;
@@ -501,7 +539,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
                 created.info.id = fallbackId(dllPath, i);
                 created.info.name = created.info.id;
                 created.info.state = SHOT_PLUGIN_STATE_FAILED;
-                created.info.reason = "未加载";
+                created.info.reason = Reason("plugin.state.not_loaded");
                 created.index = i;
                 created.opaque = true;
                 ShotPluginInfo info{};
@@ -516,7 +554,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
                 }
                 if (isDisabled(created.info.id)) {
                     created.info.state = SHOT_PLUGIN_STATE_DISABLED;
-                    created.info.reason = "已在配置中禁用";
+                    created.info.reason = Reason("plugin.state.disabled");
                     records.push_back(std::move(created));
                     continue;
                 }
@@ -526,7 +564,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
                 if (plugin.instance == nullptr) {
                     created.info.state = SHOT_PLUGIN_STATE_FAILED;
                     created.info.reason = plugin.reason;
-                    spdlog::warn("  - {} 跳过：{}", created.info.id, plugin.reason);
+                    spdlog::warn("  - {} 跳过：{}", created.info.id, plugin.reason.chinese());
                     records.push_back(std::move(created));
                     continue;
                 }
@@ -552,7 +590,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
         // 禁用检查（一）：按 metadata 的 id。命中就不创建实例，连 DLL 都不用装。
         if (isDisabled(record.info.id)) {
             record.info.state = SHOT_PLUGIN_STATE_DISABLED;
-            record.info.reason = "已在配置中禁用";
+            record.info.reason = Reason("plugin.state.disabled");
             spdlog::info("  - {} 已禁用，跳过", record.info.id);
             continue;
         }
@@ -561,18 +599,18 @@ bool PluginManager::loadPlugins(const std::string& dir) {
         if (failedModule != moduleFailures.end()) {
             record.info.state = SHOT_PLUGIN_STATE_FAILED;
             record.info.reason = failedModule->second;
-            spdlog::warn("Failed to load plugin module: {}（{}）", dllPath, record.info.reason);
+            spdlog::warn("Failed to load plugin module: {}（{}）", dllPath, record.info.reason.chinese());
             continue;
         }
 
         std::shared_ptr<DllHandler> dll;
         const ShotModule* module = nullptr;
-        std::string reason;
+        Reason reason;
         if (!acquireModule(dllPath, dll, module, reason)) {
             moduleFailures[dllPath] = reason;
             record.info.state = SHOT_PLUGIN_STATE_FAILED;
             record.info.reason = reason;
-            spdlog::warn("Failed to load plugin module: {}（{}）", dllPath, reason);
+            spdlog::warn("Failed to load plugin module: {}（{}）", dllPath, reason.chinese());
             continue;
         }
 
@@ -614,7 +652,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
         // 禁用检查（二）：metadata 写错时以 get_info 为准，所以运行期 id 也要查一次。
         if (isDisabled(record.info.id)) {
             record.info.state = SHOT_PLUGIN_STATE_DISABLED;
-            record.info.reason = "已在配置中禁用";
+            record.info.reason = Reason("plugin.state.disabled");
             spdlog::info("  - {} 已禁用，跳过", record.info.id);
             continue;
         }
@@ -622,7 +660,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
         if (!checkRequirements(record, providers, records, reason)) {
             record.info.state = SHOT_PLUGIN_STATE_FAILED;
             record.info.reason = reason;
-            spdlog::warn("  - {} 跳过：{}", record.info.id, reason);
+            spdlog::warn("  - {} 跳过：{}", record.info.id, reason.chinese());
             continue;
         }
 
@@ -632,7 +670,7 @@ bool PluginManager::loadPlugins(const std::string& dir) {
         if (plugin.instance == nullptr) {
             record.info.state = SHOT_PLUGIN_STATE_FAILED;
             record.info.reason = plugin.reason;
-            spdlog::warn("  - {} 跳过：{}", record.info.id, plugin.reason);
+            spdlog::warn("  - {} 跳过：{}", record.info.id, plugin.reason.chinese());
             continue;
         }
         record.libName = plugin.libName;
@@ -724,10 +762,10 @@ void PluginManager::unloadAll() {
     modules.clear();
 }
 
-bool PluginManager::setPluginEnabled(const std::string& id, bool enabled, std::string& reason) {
+bool PluginManager::setPluginEnabled(const std::string& id, bool enabled, Reason& reason) {
     reason.clear();
     if (id.empty()) {
-        reason = "插件 id 为空";
+        reason = Reason("plugin.error.empty_id");
         return false;
     }
 
@@ -739,14 +777,14 @@ bool PluginManager::setPluginEnabled(const std::string& id, bool enabled, std::s
     return ok;
 }
 
-bool PluginManager::disableOne(const std::string& id, std::string& reason) {
+bool PluginManager::disableOne(const std::string& id, Reason& reason) {
     // ---- 禁用：依赖检查 → deinit → 销毁实例 → 包内没实例了才卸载 DLL ----
     std::shared_ptr<PluginBase> instance;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         Record* record = findRecordLocked(id);
         if (record == nullptr) {
-            reason = "没有这个插件";
+            reason = Reason("plugin.error.no_such_plugin");
             return false;
         }
         if (record->info.state == SHOT_PLUGIN_STATE_DISABLED) {
@@ -756,7 +794,7 @@ bool PluginManager::disableOne(const std::string& id, std::string& reason) {
             // 被依赖的插件不允许单独禁用（v1 直接拒绝，不做级联禁用）。
             const std::string dependent = findDependentLocked(*record);
             if (!dependent.empty()) {
-                reason = "被 " + dependent + " 依赖";
+                reason = Reason("plugin.error.required_by", dependent);
                 return false;
             }
             instance = findLoadedInstanceLocked(id);
@@ -805,7 +843,7 @@ bool PluginManager::disableOne(const std::string& id, std::string& reason) {
     return true;
 }
 
-bool PluginManager::enableOne(const std::string& id, std::string& reason) {
+bool PluginManager::enableOne(const std::string& id, Reason& reason) {
     // ---- 启用：包 DLL 还在就只重新 create；不在就重新 LoadLibrary + 校验 + init ----
     std::uint32_t index = 0;
     std::string dllPath;
@@ -816,7 +854,7 @@ bool PluginManager::enableOne(const std::string& id, std::string& reason) {
         std::lock_guard<std::mutex> lock(m_mutex);
         Record* record = findRecordLocked(id);
         if (record == nullptr) {
-            reason = "没有这个插件";
+            reason = Reason("plugin.error.no_such_plugin");
             return false;
         }
         if (record->info.state == SHOT_PLUGIN_STATE_LOADED) {
@@ -838,7 +876,7 @@ bool PluginManager::enableOne(const std::string& id, std::string& reason) {
             record->info.state = SHOT_PLUGIN_STATE_FAILED;
             record->info.reason = reason;
         }
-        spdlog::warn("Failed to reload plugin {}: {}", id, reason);
+        spdlog::warn("Failed to reload plugin {}: {}", id, reason.chinese());
         return false;
     }
 
@@ -850,7 +888,7 @@ bool PluginManager::enableOne(const std::string& id, std::string& reason) {
             record->info.state = SHOT_PLUGIN_STATE_FAILED;
             record->info.reason = plugin.reason;
         }
-        spdlog::warn("Failed to reload plugin {}: {}", id, plugin.reason);
+        spdlog::warn("Failed to reload plugin {}: {}", id, plugin.reason.chinese());
         reason = plugin.reason;
         return false;
     }
@@ -872,7 +910,7 @@ bool PluginManager::enableOne(const std::string& id, std::string& reason) {
     return true;
 }
 
-bool PluginManager::enableWithDependencies(const std::string& id, std::string& reason) {
+bool PluginManager::enableWithDependencies(const std::string& id, Reason& reason) {
     // visited 跨整棵依赖树共享：既防 metadata 成环，也保证同一个 provider 只启用一次。
     std::vector<std::string> visited;
     return enableDependenciesRecursive(id, visited, reason);
@@ -880,7 +918,7 @@ bool PluginManager::enableWithDependencies(const std::string& id, std::string& r
 
 bool PluginManager::enableDependenciesRecursive(const std::string& id,
                                                 std::vector<std::string>& visited,
-                                                std::string& reason) {
+                                                Reason& reason) {
     if (std::find(visited.begin(), visited.end(), id) != visited.end()) {
         return true;  // 当前依赖链已经处理过（同时兜住成环）
     }
@@ -893,7 +931,7 @@ bool PluginManager::enableDependenciesRecursive(const std::string& id,
         std::lock_guard<std::mutex> lock(m_mutex);
         const Record* record = findRecordLocked(id);
         if (record == nullptr) {
-            reason = "没有这个插件";
+            reason = Reason("plugin.error.no_such_plugin");
             return false;
         }
         if (record->info.state == SHOT_PLUGIN_STATE_LOADED) {
@@ -917,9 +955,9 @@ bool PluginManager::enableDependenciesRecursive(const std::string& id,
     // 深度优先：先把每个 provider（以及它自己的依赖）启用成功，再启用自己。
     // 插件代码（LoadLibrary/create/init）全部在锁外执行，reason 逐层带上来源。
     for (const std::string& providerId : providers) {
-        std::string providerReason;
+        Reason providerReason;
         if (!enableDependenciesRecursive(providerId, visited, providerReason)) {
-            reason = "依赖 " + providerId + " 启用失败：" + providerReason;
+            reason = Reason("plugin.error.dependency_enable_failed", providerId, providerReason.chinese());
             return false;
         }
     }

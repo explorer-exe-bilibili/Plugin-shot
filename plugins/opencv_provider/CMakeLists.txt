@@ -41,6 +41,8 @@ endif()
 
 # 插件工程自己声明依赖，不去依赖宿主有没有 find_package 过 OpenCV。
 # 找不到也要能编：那时本插件照样是合法的 lib_provider，只是报不出库版本。
+# nlohmann-json：i18n 语言表解析（header-only，根 vcpkg 清单里已有）。
+find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenCV QUIET)
 set(_opencv_include_dirs "")
 set(_opencv_libs "")
@@ -52,7 +54,9 @@ endif()
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA       metadata.json
     SOURCES        src/plugin_entry.cpp
-    LINK_LIBRARIES ${_opencv_libs}
+    LINK_LIBRARIES
+                 nlohmann_json::nlohmann_json
+                 ${_opencv_libs}
 )
 
 if(_opencv_include_dirs)

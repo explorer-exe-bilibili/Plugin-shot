@@ -35,6 +35,8 @@ endif()
 # stb 是 header-only：vcpkg 的 FindStb.cmake 只负责找到 Stb_INCLUDE_DIR，
 # 没有导入目标、也没有要链接的库。
 find_package(Stb REQUIRED)
+# nlohmann-json：i18n 语言表解析（header-only，根 vcpkg 清单里已有）。
+find_package(nlohmann_json CONFIG REQUIRED)
 
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
@@ -44,6 +46,8 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  src/image_encoder.cpp
                  src/output_path.cpp
     INCLUDE_DIRS include
+    LINK_LIBRARIES
+                 nlohmann_json::nlohmann_json
 )
 
 # shot_add_plugin() 只认识 INCLUDE_DIRS / LINK_LIBRARIES 两种参数，所以 stb 的

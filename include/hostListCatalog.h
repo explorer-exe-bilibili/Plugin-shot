@@ -34,8 +34,9 @@ class PluginBase;
 //
 //  两类列表：
 //    · 宿主生成（generated）：config_list 由 core + 所有实现了 shot.configurable
-//      的已加载实例实时生成（相当于旧配置目录的只读投影）。插件不能 add/remove
-//      它；写值走 lists.update、落盘走 lists.commit。
+//      的已加载实例实时生成（相当于旧配置目录的只读投影）；i18n_list 由宿主把
+//      core 文案 + 各插件贡献的 i18n_source_list 条目按当前语言投影出来。插件
+//      不能 add/remove 它们；写值走 lists.update、落盘走 lists.commit。
 //    · 插件贡献：任意 list id 在第一次 lists.add 时自动注册；宿主按 owner
 //      （= 贡献者插件 id）记账，插件被禁用/卸载时 removeOwner 清掉它的全部贡献。
 //      tray_command_list 由宿主预置 core 三项（截屏 / 打开设置 / 退出），
@@ -172,6 +173,15 @@ public:
     void rebuildConfigListLocked();
 
     /**
+     * @brief 需要时重建 i18n_list（当前语言快照，宿主生成、只读）。
+     *
+     * 触发点：启动（构造时标脏）、`core/language` 变化、`i18n_source_list` 贡献
+     * 变化、插件启停/卸载清理。重建只读列表与事件，不调用插件能力，因此不需要
+     * 生命周期锁；由 HostRuntime 在 tick 里 flushChanged 之前调用。
+     */
+    void rebuildI18nListIfDirtyLocked();
+
+    /**
      * @brief 清掉某个 owner 在全部插件贡献列表里的条目，并标记 lists.changed。
      *
      * 插件被禁用 / 卸载 / 加载失败时由 HostRuntime 在 main 线程调用；generated
@@ -279,10 +289,19 @@ private:
 
     /**
      * @brief 安装一份宿主生成的列表内容，内容变化时记入 pending changed。
-     * @param[in] list    列表 id（目前只有 config_list）。
+     * @param[in] list    列表 id（config_list 或 i18n_list）。
      * @param[in] entries 新条目（按生成顺序，不排序）。
      */
     void installGeneratedList(const std::string& list, std::vector<Entry> entries);
+
+    /**
+     * @brief 重建 i18n_list 的实现（标记脏之后由 rebuildI18nListIfDirtyLocked 调用）。
+     *
+     * 条目顺序固定：首条 `@meta`（language/fallback），然后 core 文案，最后按
+     * i18n_source_list 的条目顺序逐个投影成 {owner,id,text}。源条目里的
+     * `texts` 按当前语言回退链选一条；一个可用文本都没有的条目跳过。
+     */
+    void rebuildI18nListLocked();
 
     /**
      * @brief 把条目数组序列化成 list_json 的返回文本（JSON 数组）。
@@ -307,6 +326,7 @@ private:
     std::shared_ptr<const std::vector<Provider>> m_current;     /**< 最新提供者快照 */
     std::shared_ptr<const std::vector<Provider>> m_previous;    /**< 上一份快照，保活字符串指针 */
     bool m_writeThreadLogged = false;                           /**< 是否已记录过写线程（一次性日志） */
+    bool m_i18nDirty = true;                                    /**< i18n_list 需要重建（main 线程） */
 };
 
 }  // namespace Host

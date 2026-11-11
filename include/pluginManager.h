@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -16,6 +17,48 @@ struct ShotModule;
 namespace Plugin {
 
 /**
+ * @brief 一条宿主生成的界面文案：消息 id + 最多两个模板参数。
+ *
+ * 插件注册表 reason / plugins.changed.reason 这类字符串由宿主生成、被消费方原样
+ * 展示，所以必须按界面语言本地化；同时内部日志要求固定中文（e2e 按中文日志断言）。
+ * 这里只存"消息 id + 参数"，两种语言在渲染时各取所需，见 Host::I18n 的消息表。
+ */
+struct Reason {
+    std::string id;                   /**< 消息 id；空 = 没有原因 */
+    std::array<std::string, 2> args;  /**< 模板参数 {0} / {1} */
+
+    /** @brief 构造空原因（empty() 为 true）。 */
+    Reason() = default;
+    /**
+     * @brief 构造无参原因。
+     * @param[in] messageId 消息 id（见 src/hostI18n.cpp 的消息表）。
+     */
+    explicit Reason(const char* messageId);
+    /**
+     * @brief 构造一个参数的原因。
+     * @param[in] messageId 消息 id。
+     * @param[in] arg0      替换模板里 {0} 的文本。
+     */
+    Reason(const char* messageId, std::string arg0);
+    /**
+     * @brief 构造两个参数的原因。
+     * @param[in] messageId 消息 id。
+     * @param[in] arg0      替换模板里 {0} 的文本。
+     * @param[in] arg1      替换模板里 {1} 的文本。
+     */
+    Reason(const char* messageId, std::string arg0, std::string arg1);
+
+    /** @brief 是否为空原因。 */
+    bool empty() const noexcept;
+    /** @brief 清空原因（成功路径用）。 */
+    void clear() noexcept;
+    /** @brief 中文文本：内部日志与错误信息固定用它。 */
+    std::string chinese() const;
+    /** @brief 当前界面语言的文本：给被消费方原样展示的字段用。 */
+    std::string localized() const;
+};
+
+/**
  * @brief 一条已安装插件的状态（含被禁用与加载失败的插件）。
  *
  * 注册表服务（shot.host.plugin_registry）按这份记录列清单，所以"没出现"和
@@ -27,7 +70,7 @@ struct InstalledPlugin {
     std::string name;    /**< 界面显示名 */
     std::string version; /**< 插件版本；加载前就失败时用 metadata 的声明值，可能为空串 */
     std::string dllPath; /**< 插件 DLL/SO 路径；始终非空 */
-    std::string reason;  /**< 禁用/失败原因；正常时为空串 */
+    Reason reason;       /**< 禁用/失败原因；正常时为空（界面文本按语言生成） */
     uint32_t state = 0;  /**< SHOT_PLUGIN_STATE_LOADED / DISABLED / FAILED */
     bool loaded = false; /**< 当前是否有活着的实例（state == LOADED 时为 true） */
 };
@@ -81,7 +124,7 @@ class PluginManager {
         std::shared_ptr<PluginBase> instance; /**< 包装好的实例；失败为空 */
         std::string libName;                  /**< lib provider 的库名，其它类型为空 */
         std::string libVersion;               /**< lib provider 的库版本 */
-        std::string reason;                   /**< 失败原因 */
+        Reason reason;                        /**< 失败原因 */
     };
 
     mutable std::mutex m_mutex;  /**< 保护下面全部数据；绝不递归加锁 */
@@ -113,7 +156,7 @@ class PluginManager {
      * @return true = 通过校验；false = 这个 DLL 不是可用的插件包。
      */
     static bool resolveModule(const std::shared_ptr<DllHandler>& dll, const ShotModule*& module,
-                              std::string& reason);
+                              Reason& reason);
 
     /**
      * @brief 调用模块级 init（插件代码，必须在数据锁外调用）。
@@ -123,7 +166,7 @@ class PluginManager {
      * @return true = 模块接受本宿主；false = init 拒绝或返回非 0。
      */
     static bool initModule(const std::string& dllPath, const ShotModule* module,
-                           std::string& reason);
+                           Reason& reason);
 
     /**
      * @brief 调 get_info 取插件身份证（插件代码，必须在数据锁外调用）。
@@ -150,7 +193,7 @@ class PluginManager {
     static bool checkRequirements(const Record& record,
                                   const std::map<std::string, std::size_t>& providers,
                                   const std::vector<Record>& records,
-                                  std::string& reason);
+                                  Reason& reason);
 
     /** @brief 无 metadata 包的兜底 id（文件名 + "#index"）。 */
     static std::string fallbackId(const std::string& dllPath, uint32_t index);
@@ -191,7 +234,7 @@ class PluginManager {
      * @param[out] reason 失败原因；成功时清空。
      * @return true = 已加载（或本来就加载着）；false = 加载失败，记录被标成 FAILED。
      */
-    bool enableOne(const std::string& id, std::string& reason);
+    bool enableOne(const std::string& id, Reason& reason);
 
     /**
      * @brief 禁用单个插件：依赖检查 → UI deinit → 销毁实例 → 按需卸载 DLL。
@@ -203,7 +246,7 @@ class PluginManager {
      * @param[out] reason 拒绝/失败原因；成功时清空。
      * @return true = 已禁用（或本来就被禁用）；false = 被依赖拒绝或没有这个插件。
      */
-    bool disableOne(const std::string& id, std::string& reason);
+    bool disableOne(const std::string& id, Reason& reason);
 
     /**
      * @brief 启用级联入口：先递归启用 metadata requires 里的提供者，再启用自己。
@@ -215,7 +258,7 @@ class PluginManager {
      * @param[out] reason 失败原因；依赖启用失败时写"依赖 X 启用失败：…"。
      * @return true = 该插件及其依赖都已启用；false = 任一环节失败。
      */
-    bool enableWithDependencies(const std::string& id, std::string& reason);
+    bool enableWithDependencies(const std::string& id, Reason& reason);
 
     /**
      * @brief enableWithDependencies 的深度优先实现。
@@ -226,7 +269,7 @@ class PluginManager {
      * @return true = 当前插件（含其依赖）已启用。
      */
     bool enableDependenciesRecursive(const std::string& id, std::vector<std::string>& visited,
-                                     std::string& reason);
+                                     Reason& reason);
 
     /** @brief 加锁把实例从 m_instances / m_plugins 摘掉。
      *        不销毁实例：调用方的 shared_ptr 还持有它，销毁点由调用方决定。 */
@@ -273,7 +316,7 @@ class PluginManager {
      * @return true = 模块可用；false = 加载/校验/init 失败。
      */
     bool acquireModule(const std::string& dllPath, std::shared_ptr<DllHandler>& dll,
-                       const ShotModule*& module, std::string& reason);
+                       const ShotModule*& module, Reason& reason);
 
     /**
      * @brief 创建第 index 个插件实例并按能力包装（插件代码，必须在数据锁外调用）。
@@ -342,7 +385,7 @@ public:
      * @note 级联/禁用结果会写回宿主配置的 `plugins.disabled`（内存），落盘由
      *       HostRuntime 在 tick 末尾统一做。
      */
-    bool setPluginEnabled(const std::string& id, bool enabled, std::string& reason);
+    bool setPluginEnabled(const std::string& id, bool enabled, Reason& reason);
 
     /**
      * @brief 查询插件当前是否启用（不在禁用列表里）。

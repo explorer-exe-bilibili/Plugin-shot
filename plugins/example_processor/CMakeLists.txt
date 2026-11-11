@@ -40,10 +40,15 @@ if(NOT COMMAND shot_add_plugin)
     include(ShotPlugin)
 endif()
 
+# nlohmann-json：i18n 语言表解析（header-only，根 vcpkg 清单里已有）。
+find_package(nlohmann_json CONFIG REQUIRED)
+
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
     SOURCES      src/plugin_entry.cpp
                  src/invert.cpp
                  src/grayscale.cpp
     INCLUDE_DIRS include
+    LINK_LIBRARIES
+                 nlohmann_json::nlohmann_json
 )

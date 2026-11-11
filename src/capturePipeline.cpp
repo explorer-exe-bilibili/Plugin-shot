@@ -161,7 +161,7 @@ void CapturePipeline::stop() {
         std::lock_guard<std::mutex> lock(request.completion->mutex);
         request.completion->result.ok = false;
         request.completion->result.failStage = "capture";
-        request.completion->result.failReason = "宿主正在退出，请求被丢弃";
+        request.completion->result.failMessage = I18n::Message("capture.error.host_shutting_down");
         request.completion->done = true;
         request.completion->cv.notify_all();
     }
@@ -296,7 +296,7 @@ CapturePipeline::PipelineResult CapturePipeline::runPipelineLocked(const std::st
         m_manager.getPluginsByType<Plugin::ScreenCaptureInstance>(Plugin::PluginType::ScreenCapture);
     if (captures.empty()) {
         result.failStage = "capture";
-        result.failReason = "没有可用的屏幕采集插件";
+        result.failMessage = I18n::Message("capture.error.no_capture_plugin");
         return result;
     }
     Plugin::ScreenCaptureInstance& capture = *captures.front();
@@ -304,18 +304,19 @@ CapturePipeline::PipelineResult CapturePipeline::runPipelineLocked(const std::st
     const int32_t describeRc = capture.describe(info);
     if (describeRc != 0) {
         result.failStage = "capture";
-        result.failReason = "describe 失败（返回 " + std::to_string(describeRc) + "）";
+        result.failMessage = I18n::Message("capture.error.describe_failed", std::to_string(describeRc));
         return result;
     }
     if (info.width <= 0 || info.height <= 0) {
         result.failStage = "capture";
-        result.failReason = "describe 返回的尺寸非法（" + std::to_string(info.width) + "x" +
-                            std::to_string(info.height) + "）";
+        result.failMessage = I18n::Message("capture.error.invalid_size",
+                                              std::to_string(info.width), std::to_string(info.height));
         return result;
     }
     if (info.pixel_format != SHOT_PIXEL_FORMAT_BGRA8) {
         result.failStage = "capture";
-        result.failReason = "不支持的像素格式（" + std::to_string(info.pixel_format) + "）";
+        result.failMessage = I18n::Message("capture.error.unsupported_pixel_format",
+                                         std::to_string(info.pixel_format));
         return result;
     }
     // BGRA8 = 4 字节/像素；宿主把 stride 填成 width*4，保持"一行有效像素紧邻"。
@@ -324,7 +325,7 @@ CapturePipeline::PipelineResult CapturePipeline::runPipelineLocked(const std::st
     const std::int64_t byteCount = rowBytes * static_cast<std::int64_t>(info.height);
     if (byteCount <= 0 || byteCount > kMaxCaptureBytes) {
         result.failStage = "capture";
-        result.failReason = "采集尺寸过大（" + std::to_string(byteCount) + " 字节）";
+        result.failMessage = I18n::Message("capture.error.too_large", std::to_string(byteCount));
         return result;
     }
     std::vector<std::uint8_t> pixels(static_cast<std::size_t>(byteCount));
@@ -340,7 +341,7 @@ CapturePipeline::PipelineResult CapturePipeline::runPipelineLocked(const std::st
     const int32_t captureRc = capture.capture(fullImage);
     if (captureRc != 0) {
         result.failStage = "capture";
-        result.failReason = "capture 失败（返回 " + std::to_string(captureRc) + "）";
+        result.failMessage = I18n::Message("capture.error.capture_failed", std::to_string(captureRc));
         return result;
     }
 
@@ -374,14 +375,14 @@ CapturePipeline::PipelineResult CapturePipeline::runPipelineLocked(const std::st
         m_manager.getPluginsByType<Plugin::ImageSaverInstance>(Plugin::PluginType::ImageSaver);
     if (savers.empty()) {
         result.failStage = "save";
-        result.failReason = "没有可用的图像保存插件";
+        result.failMessage = I18n::Message("capture.error.no_saver_plugin");
         return result;
     }
     char path[kSavePathSize] = {0};
     const int32_t saveRc = savers.front()->save(image, nullptr, nullptr, path, sizeof(path));
     if (saveRc != 0) {
         result.failStage = "save";
-        result.failReason = "save 失败（返回 " + std::to_string(saveRc) + "）";
+        result.failMessage = I18n::Message("capture.error.save_failed", std::to_string(saveRc));
         return result;
     }
     const std::string savedFile(path);
@@ -502,8 +503,9 @@ void CapturePipeline::publishResult(const PipelineResult& result) {
     if (!result.ok) {
         nlohmann::json payload;
         payload["stage"] = result.failStage;
-        payload["reason"] = result.failReason;
-        spdlog::warn("CapturePipeline: {} 阶段失败：{}", result.failStage, result.failReason);
+        payload["reason"] = result.failMessage.localized();
+        spdlog::warn("CapturePipeline: {} 阶段失败：{}", result.failStage,
+                     result.failMessage.chinese());
         publishTopic(kCaptureFailedTopic, payload.dump());
         return;
     }

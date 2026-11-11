@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 
 #include "config.h"
+#include "hostI18n.h"
 #include "hostServices.h"
 
 namespace {
@@ -49,6 +50,13 @@ HostRuntime::~HostRuntime() {
 }
 
 bool HostRuntime::init(const std::string& pluginDir) {
+    // 语言偏好在加载插件之前生效：插件 create 里就能读到 i18n_list（若有），
+    // 之后 applyStored 回灌 core/language 的默认值也不会改变已生效的语言。
+    Host::I18n::instance().loadPreference();
+    m_lastLanguage = Host::I18n::instance().language();
+    spdlog::info("i18n: 界面语言 = {}（偏好 {}，回退 {}）", m_lastLanguage,
+                 Host::I18n::instance().preference(), Host::I18n::instance().fallbackLanguage());
+
     if (!m_manager.loadPlugins(pluginDir)) {
         return false;
     }
@@ -65,6 +73,8 @@ bool HostRuntime::init(const std::string& pluginDir) {
         std::lock_guard<std::mutex> lock(m_lifecycleMutex);
         m_listCatalog.applyStoredLocked();
         m_listCatalog.rebuildConfigListLocked();
+        // i18n_list 至少要有 core 文案：设置页/托盘在 init 完成后就可能打开。
+        m_listCatalog.rebuildI18nListIfDirtyLocked();
     }
 
     m_pluginRegistry.bind(&m_manager);
@@ -150,6 +160,16 @@ void HostRuntime::tick() {
 
         m_pluginRegistry.refresh();
         m_configDirty = true;  // 禁用列表可能变了，下一段落盘
+    }
+
+    // i18n_list 的重建不调用插件能力，不需要生命周期锁：core/language 的 set_config
+    // 与 i18n_source_list 的贡献都只在 main 线程改脏标记，这里统一重建一次再 flush。
+    m_listCatalog.rebuildI18nListIfDirtyLocked();
+    // 语言变了：注册表快照里的 reason 文本要按新语言重新生成（快照由 main 线程重建）。
+    const std::string& language = Host::I18n::instance().language();
+    if (language != m_lastLanguage) {
+        m_lastLanguage = language;
+        m_pluginRegistry.refresh();
     }
 
     // 列表变更统一在这里 flush：本轮 dispatch 里处理的事件、以及上面的启停清理

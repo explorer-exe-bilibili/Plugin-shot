@@ -51,8 +51,9 @@ if(NOT COMMAND shot_add_plugin)
 endif()
 
 # user32：RegisterHotKey / UnregisterHotKey、隐藏消息窗口与消息循环。
-# 插件不链接 nlohmann-json / spdlog：热键事件负载是两个固定 JSON 字面量，
-# 日志走宿主的 log 服务（见 STYLE.md §6.4）。
+# nlohmann-json：只有 i18n 语言表解析用到（header-only，根 vcpkg 清单里已有）；
+# 热键事件负载仍是两个固定 JSON 字面量；日志走宿主的 log 服务（STYLE.md §6.4）。
+find_package(nlohmann_json CONFIG REQUIRED)
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
     SOURCES      src/plugin_entry.cpp
@@ -62,5 +63,6 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  src/hotkey_window_message.cpp
     INCLUDE_DIRS include
     LINK_LIBRARIES
+                 nlohmann_json::nlohmann_json
                  user32
 )

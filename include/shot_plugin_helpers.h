@@ -11,6 +11,7 @@
 //    · shot_plugin_helpers/shot_event_bus.h      —— shot::EventBus（主题发布/订阅）
 //    · shot_plugin_helpers/shot_plugin_lists.h   —— shot::PluginLists（列表服务：按 list id 读 JSON 快照）
 //    · shot_plugin_helpers/shot_plugin_registry.h—— shot::PluginStatus / shot::PluginRegistry（插件启停）
+//    · shot_plugin_helpers/shot_i18n.h          —— shot::I18n（多语言：本地语言表 + i18n_list 解析）
 //
 //  插件通常只需要 #include "shot_plugin_helpers.h"；要用到具体类型、或想减少依赖时，
 //  也可以只包含对应的那个头文件。
@@ -18,6 +19,7 @@
 
 #include "shot_plugin_helpers/shot_config.h"
 #include "shot_plugin_helpers/shot_event_bus.h"
+#include "shot_plugin_helpers/shot_i18n.h"
 #include "shot_plugin_helpers/shot_iface_entry.h"
 #include "shot_plugin_helpers/shot_logger.h"
 #include "shot_plugin_helpers/shot_plugin_lists.h"

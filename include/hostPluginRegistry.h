@@ -34,8 +34,20 @@ namespace Host {
  */
 class HostPluginRegistry {
 public:
+    /**
+     * @brief 快照里的一条：插件记录 + 当前界面语言的原因文本。
+     *
+     * 原因用 Plugin::Reason（消息 id + 参数）保存，展示文本在 refresh() 时按当前
+     * 语言生成；语言切换后 HostRuntime 会再调 refresh()，注册表里的旧语言文本
+     * 因此不会残留。字符串存活在快照里，服务函数返回的 const char* 指着它。
+     */
+    struct Item {
+        Plugin::InstalledPlugin info;  /**< 插件记录（reason 字段是消息 id + 参数） */
+        std::string reasonText;        /**< 当前界面语言的原因文本；无原因时为空 */
+    };
+
     /** @brief 注册表快照：一份"已安装插件"的拷贝，服务函数只读它。 */
-    using Snapshot = std::vector<Plugin::InstalledPlugin>;
+    using Snapshot = std::vector<Item>;
 
     /** @brief 构造并注册为进程内唯一的插件注册表。 */
     HostPluginRegistry();
@@ -97,10 +109,10 @@ private:
      * @param[in] pluginId 插件 id。
      * @param[in] enabled  处理后的状态（true = 已加载）。
      * @param[in] state    SHOT_PLUGIN_STATE_* 的数值。
-     * @param[in] reason   拒绝/失败原因；成功时为空串。
+     * @param[in] reason   拒绝/失败原因；成功时为空（按当前语言发布）。
      */
     void publishChanged(const std::string& pluginId, bool enabled, uint32_t state,
-                        const std::string& reason);
+                        const Plugin::Reason& reason);
 
     /** @brief 已安装插件条数。 */
     static uint32_t installedCount(void* ctx);

@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 
+#include "hostI18n.h"
 #include "plugin_api.h"
 
 namespace Plugin {
@@ -134,7 +135,7 @@ private:
                                                不采集、不落盘、也不发 capture.done/failed */
         std::string savedPath;            /**< 最终文件路径；插件没写回时为空串 */
         std::string failStage;            /**< 失败阶段："capture" / "save" */
-        std::string failReason;           /**< 失败原因（写进 capture.failed 负载） */
+        I18n::Message failMessage;        /**< 失败原因：日志取中文，capture.failed 取当前语言 */
         std::int32_t width = 0;           /**< 最终图像宽（region 裁剪后） */
         std::int32_t height = 0;          /**< 最终图像高（region 裁剪后） */
         std::uint32_t processors = 0;     /**< 成功处理过这张图的处理器个数 */

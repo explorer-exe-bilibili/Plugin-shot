@@ -4,12 +4,14 @@
 #include <cstring>
 #include <iterator>
 
+#include "hostI18n.h"
 #include "hostLogging.h"
 #include "version.h"  // CMake 从 include/version.h.in 生成：VERSION_STRING
 
 namespace {
 
 // 配置项 key 不带 "core/" 前缀：前缀只由配置目录在存盘时拼，见 SETTINGS.md §2。
+const char kKeyLanguage[] = "language";  // 与 Host::I18n::preferenceKey() 相同
 const char kKeyLoggingLevel[] = "logging.level";
 const char kKeyDebugConsole[] = "debug.console";
 const char kKeyLoggingFile[] = "logging.file";
@@ -17,42 +19,86 @@ const char kKeyLoggingFile[] = "logging.file";
 // ENUM 的候选值按契约用 | 分隔；写值时会逐项比对，不认识的候选直接拒绝。
 const char kLevelOptions[] = "debug|info|warn|error";
 
+/**
+ * @brief 语言 ENUM 的候选值：auto + 语言注册表里的全部标签。
+ *
+ * 候选从 Host::I18n::languages() 生成，不在配置表里硬编码语言清单——加语种
+ * 只改注册表。返回静态字符串，生命周期同进程。
+ */
+const std::string& languageOptions() {
+    static const std::string kOptions = [] {
+        std::string options = Host::I18n::autoPreference();
+        for (const Host::I18n::Language& language : Host::I18n::languages()) {
+            options += "|";
+            options += language.tag;
+        }
+        return options;
+    }();
+    return kOptions;
+}
+
+/**
+ * @brief 设置页显示文案的 key；config_list 里 core 的 label/tooltip 都是 key，
+ *        由消费方用 i18n_list 解析（document/I18N.md），所以配置表里不写中文。
+ */
+const char kLabelLanguage[] = "config.language.label";
+const char kTooltipLanguage[] = "config.language.tooltip";
+const char kLabelLoggingLevel[] = "config.logging.level.label";
+const char kTooltipLoggingLevel[] = "config.logging.level.tooltip";
+const char kLabelDebugConsole[] = "config.debug.console.label";
+const char kTooltipDebugConsole[] = "config.debug.console.tooltip";
+const char kLabelLoggingFile[] = "config.logging.file.label";
+const char kTooltipLoggingFile[] = "config.logging.file.tooltip";
+
 const ShotConfigDesc kConfig[] = {
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_ENUM,
+        .key           = kKeyLanguage,
+        .label         = kLabelLanguage,
+        .default_value = "auto",
+        // options 由 getConfigDesc 用 languageOptions() 填：候选来自语言注册表。
+        .options       = nullptr,
+        .min           = 0.0,
+        .max           = 0.0,
+        .step          = 0.0,
+        .tooltip       = kTooltipLanguage,
+    },
+    {
+        .struct_size   = sizeof(ShotConfigDesc),
+        .kind          = SHOT_CONFIG_KIND_ENUM,
         .key           = kKeyLoggingLevel,
-        .label         = "日志级别",
+        .label         = kLabelLoggingLevel,
         .default_value = "info",
         .options       = kLevelOptions,
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "host / plugin 两个 logger 一起改",
+        .tooltip       = kTooltipLoggingLevel,
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_BOOL,
         .key           = kKeyDebugConsole,
-        .label         = "控制台日志",
+        .label         = kLabelDebugConsole,
         .default_value = "1",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 1.0,
         .step          = 1.0,
-        .tooltip       = "关闭后控制台不再输出，文件日志不受影响",
+        .tooltip       = kTooltipDebugConsole,
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_BOOL,
         .key           = kKeyLoggingFile,
-        .label         = "文件日志",
+        .label         = kLabelLoggingFile,
         .default_value = "1",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 1.0,
         .step          = 1.0,
-        .tooltip       = "写入 <数据目录>/logs/host.log；文件打不开时恒为关闭",
+        .tooltip       = kTooltipLoggingFile,
     },
 };
 
@@ -100,7 +146,8 @@ bool isValidLevel(const char* text) {
 
 const char* Host::HostConfigurable::id() { return "core"; }
 
-const char* Host::HostConfigurable::name() { return "宿主"; }
+// 显示名也是 key：设置页按 display(core, owner_name) 解析成"宿主"/"Host"。
+const char* Host::HostConfigurable::name() { return "core.owner_name"; }
 
 const char* Host::HostConfigurable::version() { return VERSION_STRING; }
 
@@ -129,6 +176,9 @@ int32_t Host::HostConfigurable::getConfigDesc(void* /*self*/, uint32_t index, Sh
         return 2;
     }
     *out = kConfig[index];
+    if (out->key == kKeyLanguage) {
+        out->options = languageOptions().c_str();
+    }
     return 0;
 }
 
@@ -136,6 +186,9 @@ int32_t Host::HostConfigurable::getConfig(void* /*self*/, const char* key, char*
                                            uint32_t bufSize) {
     if (key == nullptr) {
         return -1;
+    }
+    if (std::strcmp(key, kKeyLanguage) == 0) {
+        return copyValue(buf, bufSize, Host::I18n::instance().preference());
     }
     if (std::strcmp(key, kKeyLoggingLevel) == 0) {
         return copyValue(buf, bufSize, Logging::level());
@@ -152,6 +205,11 @@ int32_t Host::HostConfigurable::getConfig(void* /*self*/, const char* key, char*
 int32_t Host::HostConfigurable::setConfig(void* /*self*/, const char* key, const char* value) {
     if (key == nullptr || value == nullptr) {
         return -1;
+    }
+    if (std::strcmp(key, kKeyLanguage) == 0) {
+        // 语言偏好立即生效（与其它 core 配置项一致，落盘由 lists.commit 负责）；
+        // i18n_list 的重建由 HostListCatalog 在下一轮 tick 完成并通知消费方。
+        return Host::I18n::instance().setPreference(value) ? 0 : -1;
     }
     if (std::strcmp(key, kKeyLoggingLevel) == 0) {
         if (!isValidLevel(value)) {

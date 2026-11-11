@@ -18,9 +18,11 @@
 //
 //  它还负责把列表协议的时间点串起来（一个关注点一个类，事件处理在目录里，
 //  装配时间点在运行期里）：
-//   · init：加载插件 → 回灌已存配置 → 重建 config_list → 订阅 lists.* 与 app.quit；
+//   · init：读语言偏好 → 加载插件 → 回灌已存配置 → 重建 config_list/i18n_list
+//           → 订阅 lists.* 与 app.quit；
 //   · tick：执行 pending 启停 → 清理被卸载插件的列表贡献 → 回灌重新启用的配置
-//           → 重建 config_list → 统一 flush lists.changed → 脏配置落盘。
+//           → 重建 config_list → 需要时重建 i18n_list（并在语言变化后刷新注册表）
+//           → 统一 flush lists.changed → 脏配置落盘。
 //
 //  线程模型：init / tick 只在宿主 main 线程调用（与事件分发同线程）；列表服务与
 //  注册表服务的函数可以在任意插件线程调用；采集流水线由 CapturePipeline 自己的工作
@@ -110,6 +112,7 @@ private:
     bool m_quitSubscribed = false;      /**< 是否已订阅 app.quit；析构时据此退订 */
     bool m_listsSubscribed = false;     /**< 是否已订阅 lists.*；与 app.quit 共用 user */
     bool m_configDirty = false;         /**< 配置内存有变更、等 tick 落盘 */
+    std::string m_lastLanguage;         /**< 上一轮生效的语言；变化时刷新注册表文案 */
 };
 
 }  // namespace Host

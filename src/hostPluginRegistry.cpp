@@ -66,7 +66,17 @@ void HostPluginRegistry::refresh() {
     if (manager == nullptr) {
         return;
     }
-    auto snapshot = std::make_shared<const Snapshot>(manager->getInstalledPlugins());
+    // 原因文本按当前界面语言在这里生成一次：服务函数可能在设置页 UI 线程被调用，
+    // 不能每次 installed_info 都去查一次 i18n（也没法返回临时字符串的指针）。
+    std::vector<Plugin::InstalledPlugin> records = manager->getInstalledPlugins();
+    auto snapshot = std::make_shared<Snapshot>();
+    snapshot->reserve(records.size());
+    for (Plugin::InstalledPlugin& record : records) {
+        Item item;
+        item.reasonText = record.reason.localized();
+        item.info = std::move(record);
+        snapshot->push_back(std::move(item));
+    }
     std::lock_guard<std::mutex> lock(m_mutex);
     // 保留上一份：刚返回的字符串指针要活到调用方下一次注册表调用。
     m_previous = std::move(m_current);
@@ -92,9 +102,9 @@ bool HostPluginRegistry::applyPending(Plugin::PluginManager& manager) {
     // 状态才能一条不漏地通知设置页（级联启用是"一次点击、多条变化"）。
     const std::vector<Plugin::InstalledPlugin> before = manager.getInstalledPlugins();
 
-    std::map<std::string, std::string> outcomes;  // 被请求的 id -> 拒绝/失败原因
+    std::map<std::string, Plugin::Reason> outcomes;  // 被请求的 id -> 拒绝/失败原因
     for (const auto& [pluginId, enabled] : pending) {
-        std::string reason;
+        Plugin::Reason reason;
         manager.setPluginEnabled(pluginId, enabled, reason);
         if (!reason.empty()) {
             outcomes[pluginId] = reason;
@@ -128,10 +138,10 @@ bool HostPluginRegistry::applyPending(Plugin::PluginManager& manager) {
                              old->second.loaded != record.loaded;
         const auto reasonIt = outcomes.find(pluginId);
         // 被请求的 id 优先用请求结果的原因（拒绝/失败）；级联出来的变化用记录里的
-        // 失败原因（成功时为空串）。
-        const std::string reason = reasonIt != outcomes.end()
+        // 失败原因（成功时为空原因）。
+        const Plugin::Reason reason = reasonIt != outcomes.end()
             ? reasonIt->second
-            : (record.state == SHOT_PLUGIN_STATE_FAILED ? record.reason : std::string());
+            : (record.state == SHOT_PLUGIN_STATE_FAILED ? record.reason : Plugin::Reason());
         if (!changed && reasonIt == outcomes.end()) {
             continue;  // 状态没变、也不是被请求的 id：不发
         }
@@ -152,12 +162,12 @@ bool HostPluginRegistry::applyPending(Plugin::PluginManager& manager) {
 }
 
 void HostPluginRegistry::publishChanged(const std::string& pluginId, bool enabled,
-                                        uint32_t state, const std::string& reason) {
+                                        uint32_t state, const Plugin::Reason& reason) {
     nlohmann::json payload;
     payload["plugin"] = pluginId;
     payload["enabled"] = enabled;
     payload["state"] = state;
-    payload["reason"] = reason;
+    payload["reason"] = reason.localized();
     const std::string text = payload.dump();
     HostServices::eventBusPublish(nullptr, kPluginsChangedTopic, text.data(),
                                   static_cast<uint32_t>(text.size()));
@@ -190,13 +200,14 @@ int32_t HostPluginRegistry::installedInfo(void* /*ctx*/, uint32_t index,
     if (registry->m_current == nullptr || index >= registry->m_current->size()) {
         return 1;
     }
-    const Plugin::InstalledPlugin& record = (*registry->m_current)[index];
+    const Item& item = (*registry->m_current)[index];
+    const Plugin::InstalledPlugin& record = item.info;
     out->id = record.id.c_str();
     out->name = record.name.c_str();
     out->version = record.version.c_str();
     out->path = record.dllPath.c_str();
     out->state = record.state;
-    out->reason = record.reason.c_str();
+    out->reason = item.reasonText.c_str();
     return 0;
 }
 
@@ -212,10 +223,10 @@ int32_t HostPluginRegistry::isEnabled(void* /*ctx*/, const char* pluginId) {
     if (registry->m_current == nullptr) {
         return -1;
     }
-    for (const Plugin::InstalledPlugin& record : *registry->m_current) {
-        if (record.id == pluginId) {
+    for (const Item& item : *registry->m_current) {
+        if (item.info.id == pluginId) {
             // FAILED 不算"禁用"：用户没有关它，只是这次没起来；state 里能看出失败。
-            return record.state == SHOT_PLUGIN_STATE_DISABLED ? 0 : 1;
+            return item.info.state == SHOT_PLUGIN_STATE_DISABLED ? 0 : 1;
         }
     }
     return -1;  // 没有这个 id
@@ -235,8 +246,8 @@ int32_t HostPluginRegistry::setEnabled(void* /*ctx*/, const char* pluginId, int3
         return -1;
     }
     bool known = false;
-    for (const Plugin::InstalledPlugin& record : *registry->m_current) {
-        if (record.id == id) {
+    for (const Item& item : *registry->m_current) {
+        if (item.info.id == id) {
             known = true;
             break;
         }

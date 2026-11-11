@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -20,6 +21,7 @@
 #include "PluginInstances/base.h"
 #include "config.h"
 #include "hostConfigurable.h"
+#include "hostI18n.h"
 #include "hostServices.h"
 #include "pluginManager.h"
 
@@ -60,6 +62,8 @@ const char kConfigAppliedTopic[] = "config.applied";/**< 宿主 → 所有：批
 
 const char kConfigListId[] = "config_list";             /**< 宿主生成：配置项目录 */
 const char kTrayCommandListId[] = "tray_command_list";  /**< 插件可贡献：托盘命令 */
+const char kI18nSourceListId[] = "i18n_source_list";    /**< 插件可贡献：语言表 */
+const char kI18nListId[] = "i18n_list";                 /**< 宿主生成：当前语言快照 */
 
 // "core" 是宿主自己的 owner：core 的托盘命令是预置项，插件既不能添加、也不能删除，
 // 否则用户可能把「退出」菜单从托盘里弄丢。
@@ -206,9 +210,10 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     // 预置 core 的托盘命令。托盘只是渲染器，菜单里必须永远有这三项：插件被禁用 /
     // 加载失败时，用户仍然要能截屏、打开设置、退出。owner = "core" 的条目在
     // lists.remove 里被拒绝，所以插件删不掉它们。
+    // label 是文案 key：托盘按 display(core, label) 用 i18n_list 解析（document/I18N.md）。
     nlohmann::json capture = {
         {"id", "capture.request"},
-        {"label", "截屏"},
+        {"label", "capture.request"},
         {"event", "capture.request"},
         {"data", ""},
         {"order", 10},
@@ -216,7 +221,7 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     };
     nlohmann::json regionCapture = {
         {"id", "region.capture"},
-        {"label", "区域截屏"},
+        {"label", "region.capture"},
         {"event", "capture.request"},
         // 这条只是"请开始框选"的入口：mode=region 且不带 region，采集流水线会忽略它
         // （不抓屏、不落盘），由 plugins/region_selector 弹出覆盖层；框选确认后它会再发
@@ -227,7 +232,7 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     };
     nlohmann::json settings = {
         {"id", "settings.open"},
-        {"label", "打开设置"},
+        {"label", "settings.open"},
         {"event", "settings.open"},
         {"data", ""},
         {"order", 20},
@@ -235,7 +240,7 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     };
     nlohmann::json quit = {
         {"id", "app.quit"},
-        {"label", "退出"},
+        {"label", "app.quit"},
         {"event", "app.quit"},
         {"data", ""},
         {"order", 100},
@@ -253,6 +258,13 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     config.generated = true;
     config.cache = "[]";
     config.cacheValid = true;
+
+    // i18n_list 同理：它是宿主生成的当前语言快照，启动时由 HostRuntime::init 填；
+    // 先注册成空列表，设置页/插件在 init 阶段读到的是 [] 而不是"列表不存在"。
+    ListState& i18n = m_lists[kI18nListId];
+    i18n.generated = true;
+    i18n.cache = "[]";
+    i18n.cacheValid = true;
 
     spdlog::info("HostListCatalog: 列表写路径绑定到宿主 main 线程（thread={}）", currentThreadId());
 }
@@ -334,11 +346,16 @@ void HostListCatalog::handleAdd(const std::string& payload) {
         spdlog::warn("lists.add 缺少 list/owner 字段，已丢弃");
         return;
     }
-    // config_list 是宿主生成的只读投影：插件只能通过 lists.update 写值，
-    // 直接 add 会造出第二份真相，宁可拒绝也别让消费方看到两种数据来源。
-    if (list == kConfigListId) {
-        spdlog::warn("lists.add 试图写宿主生成的 {}，已丢弃（写值请用 lists.update）", kConfigListId);
-        return;
+    // 宿主生成的只读投影（config_list / i18n_list）：插件只能通过 lists.update
+    // 写 config_list 的值，直接 add 会造出第二份真相，宁可拒绝也别让消费方看到
+    // 两种数据来源。注意这个判断必须对"当前已注册为 generated 的任意列表"生效。
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto stateIt = m_lists.find(list);
+        if (stateIt != m_lists.end() && stateIt->second.generated) {
+            spdlog::warn("lists.add 试图写宿主生成的 {}，已丢弃（写值请用 lists.update）", list);
+            return;
+        }
     }
     if (owner == kCoreOwner) {
         spdlog::warn("lists.add 使用了宿主保留 owner \"core\"，已丢弃");
@@ -374,6 +391,9 @@ void HostListCatalog::handleAdd(const std::string& payload) {
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_pendingChanged.insert(list);
+            if (list == kI18nSourceListId) {
+                m_i18nDirty = true;  // 新文案要先投影进 i18n_list 才对消费方可见
+            }
         }
         spdlog::info("lists.add: list={} owner={} 接受 {} 条", list, owner, accepted);
     }
@@ -391,9 +411,13 @@ void HostListCatalog::handleRemove(const std::string& payload) {
         spdlog::warn("lists.remove 缺少 list/owner 字段，已丢弃");
         return;
     }
-    if (list == kConfigListId) {
-        spdlog::warn("lists.remove 不能删宿主生成的 {}，已丢弃", kConfigListId);
-        return;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto stateIt = m_lists.find(list);
+        if (stateIt != m_lists.end() && stateIt->second.generated) {
+            spdlog::warn("lists.remove 不能删宿主生成的 {}，已丢弃", list);
+            return;
+        }
     }
     if (owner == kCoreOwner) {
         spdlog::warn("lists.remove 不能删宿主预置的 core 条目，已丢弃");
@@ -430,6 +454,8 @@ void HostListCatalog::handleRemove(const std::string& payload) {
         }
         ListState& state = listIt->second;
         if (state.generated) {
+            // 双保险：正常路径在上面已经按"任意 generated 列表"拒绝过。
+            spdlog::warn("lists.remove 不能删宿主生成的 {}，已丢弃", list);
             return;
         }
         const std::size_t before = state.entries.size();
@@ -440,6 +466,9 @@ void HostListCatalog::handleRemove(const std::string& payload) {
         if (removed > 0) {
             state.cacheValid = false;
             m_pendingChanged.insert(list);
+            if (list == kI18nSourceListId) {
+                m_i18nDirty = true;
+            }
         }
     }
     if (removed > 0) {
@@ -458,23 +487,23 @@ void HostListCatalog::handleUpdate(const std::string& payload) {
     }
     // 出错时也发 lists.updated：消费方可能在等 tag 匹配的响应，静默丢弃会让它
     // 一直等到超时；error 字段让"宿主不支持 / 参数错"可以被界面显示出来。
-    const auto publishError = [&response](const std::string& error) {
+    const auto publishError = [&response](const Host::I18n::Message& error) {
         response["results"] = nlohmann::json::array();
-        response["error"] = error;
+        response["error"] = error.localized();
         publishJson(kListsUpdatedTopic, response);
-        spdlog::warn("lists.update 失败：{}", error);
+        spdlog::warn("lists.update 失败：{}", error.chinese());  // 日志固定中文
     };
     if (!data.is_object()) {
-        publishError("负载不是合法 JSON 对象");
+        publishError(Host::I18n::Message("list.error.bad_payload"));
         return;
     }
     if (jsonFieldString(data, "list") != kConfigListId) {
-        publishError("lists.update 只支持 config_list");
+        publishError(Host::I18n::Message("list.error.update_only_config"));
         return;
     }
     const auto changesIt = data.find("changes");
     if (changesIt == data.end() || !changesIt->is_array()) {
-        publishError("changes 必须是数组");
+        publishError(Host::I18n::Message("list.error.changes_array"));
         return;
     }
 
@@ -505,7 +534,8 @@ void HostListCatalog::handleUpdate(const std::string& payload) {
             result["id"] = id;
             if (owner.empty() || id.empty() || !valueOk) {
                 result["ok"] = false;
-                result["reason"] = "参数非法：owner/id/value 必须都是字符串";
+                result["reason"] =
+                    Host::I18n::Message("list.error.bad_param").localized();
                 ++failCount;
                 results.push_back(std::move(result));
                 continue;
@@ -514,7 +544,7 @@ void HostListCatalog::handleUpdate(const std::string& payload) {
             if (provider == nullptr || provider->config == nullptr ||
                 provider->config->set_config == nullptr) {
                 result["ok"] = false;
-                result["reason"] = "提供者未加载或不支持 shot.configurable";
+                result["reason"] = Host::I18n::Message("list.error.provider_unavailable").localized();
                 ++failCount;
                 results.push_back(std::move(result));
                 continue;
@@ -524,12 +554,18 @@ void HostListCatalog::handleUpdate(const std::string& payload) {
             if (rc == 0) {
                 // 值与插件内存已经同步；宿主配置只记内存，落盘由 lists.commit 触发。
                 core::Config::getInstance().set(owner + "/" + id, core::ConfigItem(value));
+                if (owner == HostConfigurable::id() && id == Host::I18n::preferenceKey()) {
+                    // 语言偏好立即生效（set_config 里已经切了 I18n），列表快照由下一轮
+                    // tick 重建并统一发 lists.changed —— 一轮只发一次。
+                    m_i18nDirty = true;
+                }
                 result["ok"] = true;
                 result["reason"] = "";
                 ++okCount;
             } else {
                 result["ok"] = false;
-                result["reason"] = "插件拒绝（返回码 " + std::to_string(rc) + "）";
+                result["reason"] = Host::I18n::Message("list.error.plugin_rejected",
+                                                      std::to_string(rc)).localized();
                 ++failCount;
             }
             results.push_back(std::move(result));
@@ -552,7 +588,7 @@ void HostListCatalog::handleCommit(const std::string& payload) {
     }
     if (!data.is_object() || jsonFieldString(data, "list") != kConfigListId) {
         response["results"] = nlohmann::json::array();
-        response["error"] = "lists.commit 只支持 config_list";
+        response["error"] = Host::I18n::Message("list.error.commit_only_config").localized();
         publishJson(kListsUpdatedTopic, response);
         spdlog::warn("lists.commit 失败：只支持 config_list");
         return;
@@ -572,7 +608,7 @@ void HostListCatalog::handleCommit(const std::string& payload) {
     }
     // 失败没有对应的"applied"，用 lists.updated 的 error 字段告诉消费方原因。
     response["results"] = nlohmann::json::array();
-    response["error"] = "保存失败";
+    response["error"] = Host::I18n::Message("list.error.save_failed").localized();
     publishJson(kListsUpdatedTopic, response);
     spdlog::warn("lists.commit: 配置落盘失败，已发布 lists.updated(error)");
 }
@@ -799,6 +835,87 @@ void HostListCatalog::rebuildConfigListLocked() {
     installGeneratedList(kConfigListId, std::move(entries));
 }
 
+void HostListCatalog::rebuildI18nListIfDirtyLocked() {
+    if (!m_i18nDirty) {
+        return;
+    }
+    rebuildI18nListLocked();
+}
+
+void HostListCatalog::rebuildI18nListLocked() {
+    const Host::I18n& i18n = Host::I18n::instance();
+
+    // 先把 i18n_source_list 的条目拷出来（不持 m_mutex 时解析 JSON，避免长时间锁）。
+    std::vector<Entry> sources;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto sourceIt = m_lists.find(kI18nSourceListId);
+        if (sourceIt != m_lists.end()) {
+            sources = sourceIt->second.entries;
+        }
+    }
+
+    std::vector<Entry> entries;
+    entries.reserve(1 + Host::I18n::displayTexts().size() + sources.size());
+
+    // 首条 @meta：消费方（插件 helper 与设置页/托盘）用它判断当前语言与回退语言。
+    nlohmann::json meta = {
+        {"id", "@meta"},
+        {"language", i18n.language()},
+        {"fallback", i18n.fallbackLanguage()},
+    };
+    entries.push_back(Entry{"", "@meta", 0, dumpJson(meta)});
+
+    // core 文案直接按当前语言生成（托盘命令 label、配置项 label/tooltip、ENUM 原生名）。
+    for (const Host::I18n::CoreText& text : Host::I18n::displayTexts()) {
+        nlohmann::json entry = {
+            {"owner", kCoreOwner},
+            {"id", text.id},
+            {"text", i18n.text(text.id)},
+        };
+        entries.push_back(Entry{kCoreOwner, text.id, 0, dumpJson(entry)});
+    }
+
+    // 插件贡献：每个源条目的 texts 按当前语言回退链选一条；一个可用文本都没有
+    // 的条目（坏 JSON / 空 texts）跳过——消费方查不到会自动显示 key 本身。
+    for (const Entry& source : sources) {
+        if (source.owner.empty() || source.owner == kCoreOwner) {
+            continue;
+        }
+        const nlohmann::json item = parseJsonObject(source.valueJson);
+        if (!item.is_object()) {
+            continue;
+        }
+        const std::string id = jsonFieldString(item, "id");
+        if (id.empty()) {
+            continue;
+        }
+        const auto textsIt = item.find("texts");
+        if (textsIt == item.end() || !textsIt->is_object()) {
+            continue;
+        }
+        std::map<std::string, std::string> texts;
+        for (auto it = textsIt->begin(); it != textsIt->end(); ++it) {
+            if (it->is_string()) {
+                texts[it.key()] = it->get<std::string>();
+            }
+        }
+        const std::string text = i18n.pickText(texts);
+        if (text.empty()) {
+            continue;
+        }
+        nlohmann::json entry = {
+            {"owner", source.owner},
+            {"id", id},
+            {"text", text},
+        };
+        entries.push_back(Entry{source.owner, id, 0, dumpJson(entry)});
+    }
+
+    installGeneratedList(kI18nListId, std::move(entries));
+    m_i18nDirty = false;
+}
+
 void HostListCatalog::upsertEntry(const std::string& list, const std::string& owner,
                                   const std::string& id, std::int32_t order,
                                   const std::string& valueJson) {
@@ -869,6 +986,9 @@ void HostListCatalog::removeOwner(const std::string& owner) {
             if (state.entries.size() != before) {
                 state.cacheValid = false;
                 m_pendingChanged.insert(listId);
+                if (listId == kI18nSourceListId) {
+                    m_i18nDirty = true;  // 插件走了，它的文案要从 i18n_list 里消失
+                }
                 changedLists.push_back(listId);
             }
         }

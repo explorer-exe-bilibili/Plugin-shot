@@ -45,9 +45,12 @@ if(NOT COMMAND shot_add_plugin)
     include(ShotPlugin)
 endif()
 
-# 只链接两个系统库；没有第三方依赖，插件不链接 spdlog（日志走宿主服务）。
+# 系统库两个 + header-only 的 nlohmann-json（i18n 语言表解析）；
+# 插件不链接 spdlog（日志走宿主服务）。
 #   gdi32  —— BitBlt / CreateCompatibleDC / GetDIBits / DeleteObject 等 GDI 对象
 #   user32 —— GetDC / GetSystemMetrics / GetCursorInfo / GetIconInfo / DrawIconEx
+find_package(nlohmann_json CONFIG REQUIRED)
+
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
     SOURCES      src/plugin_entry.cpp
@@ -56,6 +59,7 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  src/gdi_desktop_capture.cpp
     INCLUDE_DIRS include
     LINK_LIBRARIES
+                 nlohmann_json::nlohmann_json
                  gdi32
                  user32
 )
