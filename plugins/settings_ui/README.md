@@ -34,6 +34,7 @@ plugins/settings_ui/
     ├── settings_model.cpp          # config_list JSON 解析 + 模型刷新 + 跨文件共用的值解析/格式化工具
     ├── settings_form.cpp           # 操作条 + 配置节 + 7 种 kind 的控件渲染
     ├── settings_hotkey.cpp         # STRING + options="hotkey" 的"按组合键录入"控件（模态弹窗 + suspend/resume）
+    ├── settings_color.cpp          # STRING + options="#..." 的颜色控件（预设色块 + 自定义取色弹窗 + hex 输入）
     ├── settings_plugin_table.cpp   # 插件管理表渲染
     └── settings_apply.cpp          # 应用状态机（lists.update / commit）、取消 / 恢复默认、事件 / 等待超时
 ```
@@ -130,6 +131,7 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | `INT` / `FLOAT` | Slider + Input（用 `min/max/step`，越界 clamp，非法输入回退） | 十进制字符串 |
 | `ENUM` | Combo（`options` 按 `\|` 切） | 选项字符串 |
 | `STRING` | InputText；`options` 是 `"hotkey"` 时换成"当前组合键 + 录入…"（见 §4.1） | 原样 / 规范化组合键 |
+| `STRING` + `options` 以 `#` 开头 | 颜色控件：预设色块 + `自定义…` 取色弹窗 + `#RRGGBB` 输入框（见 §4.2） | 统一存大写 `#RRGGBB` |
 | `COLOR` | ColorEdit4 + hex 输入 | 统一存 `#RRGGBBAA`，读取兼容 `#RRGGBB` / `R,G,B,A` |
 | `PATH` | InputText + `浏览…`（nativefiledialog-extended） | 原样 |
 | 未知 kind | 灰色"不支持的配置类型"，不崩 | —— |
@@ -185,6 +187,33 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 （带修饰键的组合不受影响）：录入裸 PrintScreen 后按了没反应时，请关闭系统的
 「设置 → 辅助功能 → 键盘 → 使用 Print Screen 键打开截图工具」。
 
+### 4.2 颜色控件（`options` 以 `#` 开头）
+
+`kind == STRING` 且描述符 `options` 以 `#` 开头的配置项（目前是宿主设置里的
+`core/theme_color`）不再显示文本框，而是：
+
+1. 一行预设色块：`options` 按 `|` 切分（例如
+   `#4C9AFF|#34C759|#FF9F0A|#FF453A|#BF5AF2|#8E8E93`），只保留合法的 `#RRGGBB`；
+   点击色块即选中，与当前值相同的色块画外边框 + 勾选标记；
+2. 「自定义…」按钮打开非模态取色窗（ImGui `ColorPicker3`，不透明度固定 1），
+   拖动时把颜色**实时写回本地编辑缓冲**，配置行与十六进制输入框同步预览；
+   「确定」/ 点窗外保留预览，「取消」回滚到打开弹窗时的值；
+3. 旁边的十六进制输入框只认 `#RRGGBB`（大小写不敏感）：输入暂时非法时**不提交、
+   不标红**，缓冲保留原文让用户继续编辑；输入合法的瞬间把 `item.value` 规范化成
+   大写 `#RRGGBB`。
+
+所有改动只写本地 `ConfigItem`，仍然要点「应用」才走 §4 的 `lists.update` /
+`lists.commit`，不绕过现有提交路径。
+
+边界：这是**设置页解释 `options`** 的又一种语义（与 `"hotkey"`、PATH 的
+`"directory"` 同一套约定），不新增 `SHOT_CONFIG_KIND_*`、不涨 ABI。插件只要在
+`ShotConfigDesc.options` 里写预设串就能用；老版本设置页没有这个语义时仍按普通
+`STRING` 文本框渲染同一份值，配置本身不需要迁移。旧配置里的非法值（例如 `red`、
+`#12345`）会被宿主 `set_config` 拒绝：运行期保持默认色，`config_list` / 设置页显示的
+就是默认色（`config.json` 里的旧坏值保留到用户点「应用」后覆盖）；直接通过
+`shot.host.config.get_config("core/theme_color")` 读磁盘值的插件会看到旧坏值，需要
+按自己的解析失败路径降级。
+
 ## 5. 为什么这么设计
 
 | 决定 | 理由 |
@@ -204,6 +233,7 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | 几何恢复 clamp 计入窗口边框、且边框按**目标显示器** DPI 取 | 先把隐藏窗口搬进目标显示器再 `glfwGetWindowFrameSize`（真机实测 setPos 返回时已同步更新），否则 150% 创建、100% 恢复会拿错边框；实测主屏 L11/T45/R11/B11、副屏 L8/T31/R8/B8 |
 | 原生对话框只经 `settings_dialog` 一个模块 | 平台差异与库生命周期收在一处；设置页模型不需要知道窗口句柄 |
 | 热键录入用 `STRING + options="hotkey"`，不新增 kind / ABI | `options` 已经是"给设置页的交互提示"（PATH 就这么用）；新增一种控件只改设置页，插件只需在描述符写一个字符串（数据形状不进 ABI） |
+| 颜色控件用 `STRING + options` 以 `#` 开头，不新增 kind / ABI | 与热键同一套约定：预设值只是设置页的展示提示，存储值仍是 `#RRGGBB` 字符串；老宿主 / 老设置页按普通文本框渲染同一份值，配置无需迁移 |
 | 录入用模态弹窗而不是行内按键捕获 | ImGui 模态窗天然独占鼠标与键盘导航，满足"录入期间其它控件不响应"；行内状态要自己挡导航焦点，容易误触别的控件 |
 | 结束录入一定发 `hotkey.resume`（含关窗 / 宿主退出） | 漏发会让 hotkey 插件的全局热键永久停在暂停状态；`resume` 是幂等的，多发明发都安全 |
 
@@ -228,12 +258,13 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | hotkey 插件未加载 / 宿主没有事件总线 | 发布的 `hotkey.suspend` / `hotkey.resume` 没有订阅者或直接失败（记 WARN）；录入控件照常可用，只是按下已注册热键仍可能触发真实动作 |
 | 录入中窗口被关闭 / 宿主退出 | 窗口层取消录入并补发 `hotkey.resume`，热键不会停在暂停状态 |
 | 旧配置里是非法热键字符串 | 原样显示、不做校验；重新录入一次即被规范化覆盖（解析仍归 hotkey 插件，注册时 warn 跳过） |
+| 旧配置里是非法主题色（不是 `#RRGGBB`） | 宿主 `set_config` 拒绝并保持默认色；设置页显示默认色，`config.json` 里的旧值在下一次「应用」时被覆盖 |
 
 ### 6.1 多语言（i18n）
 
 设置页自身文案与从别处读来的 label/tooltip 都跟随界面语言（`document/I18N.md`）：
 
-- 语言表：`src/settings_window.cpp` 的 `kLangTables[]`（zh-CN / en-US 各一张 JSON，75 个
+- 语言表：`src/settings_window.cpp` 的 `kLangTables[]`（zh-CN / en-US 各一张 JSON，79 个
   `settings_ui.*` key，`@meta` 必填）；`SettingsWindow::start()` 里
   `shot::I18n(host, "settings_ui.main")` + `loadTables()`，并把只读解析器经
   `SettingsPanel::setI18n()` 借给面板；`stop()` 在 UI 线程 join 之后先

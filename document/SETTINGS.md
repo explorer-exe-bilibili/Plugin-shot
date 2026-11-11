@@ -253,6 +253,7 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
 | `logging.level` | ENUM `debug\|info\|warn\|error` | `info` | 立即 `spdlog::set_level`（host / plugin 两个 logger） |
 | `debug.console` | BOOL | `1` | 立即开/关控制台 sink（文件日志不受影响） |
 | `logging.file` | BOOL | `1` | 立即开/关文件 sink（`<dataPath>/logs/host.log`） |
+| `theme_color` | STRING `#RRGGBB`，`options` 是 6 个预设色（`#4C9AFF\|#34C759\|#FF9F0A\|#FF453A\|#BF5AF2\|#8E8E93`） | `#4C9AFF` | 只保存运行期值（落盘由配置目录负责）；区域框选覆盖层每次显示时用 `shot.host.config` 读它画边框/折角，配置项本身不触发重绘 |
 
 `language` 的 ENUM 候选与显示名都来自**语言目录**（内置注册表 ∪ `@language/` 声明，
 `src/hostI18n.cpp`），不是硬编码在配置表里：
@@ -301,7 +302,7 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
 | BOOL | Checkbox | `"1"` / `"0"` |
 | INT / FLOAT | Slider + Input（用 `min/max/step`，越界 clamp） | 十进制字符串 |
 | ENUM | Combo（`options` 按 `\|` 切） | 选项字符串 |
-| STRING | InputText；`options == "hotkey"` 时换成"当前组合键 + 录入…"（见下方热键约定） | 原样 / 规范化组合键 |
+| STRING | InputText；`options == "hotkey"` 时换成"当前组合键 + 录入…"（见下方热键约定）；`options` 以 `#` 开头时换成颜色控件（见下方颜色约定） | 原样 / 规范化组合键 / `#RRGGBB` |
 | COLOR | ColorEdit4 + hex 输入 | `"#RRGGBB"` 或 `"R,G,B,A"`（统一成 `#RRGGBBAA` 存盘） |
 | PATH | InputText + "浏览…"（对话框类型见下方约定） | 原样 |
 | 未知 kind | 跳过并显示灰色"不支持的配置类型" | —— |
@@ -339,6 +340,14 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
   `plugin.name`（core 用 `core.owner_name`）。插件贡献 `target=自己, id=plugin.name`
   的译文即可本地化配置分区标题。插件管理表格显示注册表里的 metadata name，不随界面
   语言变化；metadata 的 description 仍不本地化。
+
+- **颜色控件的约定**：`kind == STRING` 且 `options` 以 `#` 开头时，设置页渲染成颜色控件
+  （实现见 `plugins/settings_ui/src/settings_color.cpp`）：一行预设色块（`options` 按 `|`
+  切、只保留合法 `#RRGGBB`，点击即选中，当前值与预设相同时画选中边框）+「自定义…」
+  打开取色器（实时预览，取消回滚）+ 十六进制输入框（只认 `#RRGGBB`，非法输入不提交、
+  可继续编辑）。修改只写本地配置项，仍然点「应用」才走 `lists.update` / `lists.commit`；
+  宿主 `set_config` 会再次校验并统一存成大写。零 ABI 改动：`options` 本来就是"给设置页
+  的交互提示"，老宿主把它当普通文本框显示，配置值本身不需要迁移。
 
 ### 6.1 DPI 与多显示器
 

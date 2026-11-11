@@ -5,6 +5,7 @@
 //   settings_model.cpp        —— config_list JSON 解析、模型刷新与纯值工具
 //   settings_form.cpp         —— 操作条 + 配置节 + 控件渲染
 //   settings_hotkey.cpp       —— 热键组合录入控件（模态弹窗 + suspend/resume）
+//   settings_color.cpp        —— 颜色控件（预设色块 + 自定义取色弹窗）
 //   settings_plugin_table.cpp —— 插件管理表渲染
 //   settings_apply.cpp        —— 应用状态机 / 事件 / 超时
 // 这个文件只留"进门"的那一层，避免又长回一个上帝类（STYLE.md §6.8）。
@@ -30,9 +31,10 @@ void SettingsPanel::Impl::render() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     if (ImGui::Begin("##settings_page", nullptr, windowFlags)) {
-        // 热键录入弹窗必须每帧都画：它可能因为 lists.changed / plugins.changed 的刷新
-        // 脱离配置行的渲染路径，但录入会话（以及 hotkey 插件的暂停状态）必须始终可取消。
+        // 热键录入 / 自定义取色弹窗必须每帧都画：它们可能因为 lists.changed /
+        // plugins.changed 的刷新脱离配置行的渲染路径，但会话必须始终能关闭。
         renderHotkeyCapturePopup();
+        renderColorCustomPopup();
         renderActionBar();
         ImGui::Separator();
         // 内容区单独一个子窗口：操作条固定在上面，只有配置节跟着滚。

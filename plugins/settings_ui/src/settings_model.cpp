@@ -213,6 +213,44 @@ std::string SettingsPanel::Impl::formatColorHex(const float color[4]) {
     return buffer;
 }
 
+/**
+ * @brief 解析 STRING 颜色控件的值：严格 `#RRGGBB`（大小写不敏感）→ 0..1 RGB。
+ *
+ * 与 COLOR kind 的 parseColorValue 分开：主题色这类配置只允许 6 位、不透明，
+ * 宽进会让插件侧读出 `#RRGGBBAA` / `R,G,B,A` 多种写法，最终各自的颜色解析漂移。
+ * 这里不接受 `#RGB` / `#RRGGBBAA` / 不带 `#`，与宿主 set_config 的校验保持一致。
+ */
+bool SettingsPanel::Impl::parseRgbColorValue(std::string_view text, float out[3]) {
+    out[0] = 0.0f;
+    out[1] = 0.0f;
+    out[2] = 0.0f;
+    if (text.size() != 7 || text.front() != '#') {
+        return false;
+    }
+    std::uint32_t rgb = 0;
+    for (std::size_t index = 1; index < text.size(); ++index) {
+        const int digit = hexDigit(text[index]);
+        if (digit < 0) {
+            return false;
+        }
+        rgb = (rgb << 4) | static_cast<std::uint32_t>(digit);
+    }
+    out[0] = static_cast<float>((rgb >> 16) & 0xFFu) / 255.0f;
+    out[1] = static_cast<float>((rgb >> 8) & 0xFFu) / 255.0f;
+    out[2] = static_cast<float>(rgb & 0xFFu) / 255.0f;
+    return true;
+}
+
+/** @brief 把 0..1 的 RGB 写成规范化的大写 "#RRGGBB"（与宿主 set_config 的存储形态一致）。 */
+std::string SettingsPanel::Impl::formatRgbHex(const float color[3]) {
+    const int r = static_cast<int>(std::lround(std::clamp(color[0], 0.0f, 1.0f) * 255.0f));
+    const int g = static_cast<int>(std::lround(std::clamp(color[1], 0.0f, 1.0f) * 255.0f));
+    const int b = static_cast<int>(std::lround(std::clamp(color[2], 0.0f, 1.0f) * 255.0f));
+    char buffer[8] = {};
+    std::snprintf(buffer, sizeof(buffer), "#%02X%02X%02X", r, g, b);
+    return buffer;
+}
+
 /** @brief 按 '|' 切分 ENUM 的候选列表（契约规定 options 就是这个格式）。 */
 std::vector<std::string> SettingsPanel::Impl::splitOptions(std::string_view options) {
     std::vector<std::string> result;
@@ -272,18 +310,25 @@ PathPicker SettingsPanel::Impl::pathPickerFor(const ConfigDesc& desc) {
 }
 
 /**
- * @brief 把 COLOR 项当前值同步进十六进制编辑缓冲；其它 kind 是空操作。
+ * @brief 把颜色控件当前值同步进十六进制编辑缓冲；其它 kind 是空操作。
  *
- * 三处会改 COLOR 的值（读取模型 / 恢复默认 / 取消），刷新缓冲的逻辑只有这一份。
+ * 两类颜色控件共用 ConfigItem::colorHex：COLOR kind 统一成 `#RRGGBBAA`；
+ * STRING + options 颜色控件统一成大写 `#RRGGBB`。值非法时原样放进缓冲，让用户
+ * 看到旧配置里到底是什么（而不是被悄悄清成默认色），继续编辑即可改好。
  *
  * @param[in,out] item 配置项；只改 colorHex 的展示形态，不改语义。
  */
 void SettingsPanel::Impl::syncColorHex(ConfigItem& item) {
-    if (item.desc.kind != SHOT_CONFIG_KIND_COLOR) {
+    if (item.desc.kind == SHOT_CONFIG_KIND_COLOR) {
+        float color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        item.colorHex = parseColorValue(item.value, color) ? formatColorHex(color) : "#00000000";
         return;
     }
-    float color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-    item.colorHex = parseColorValue(item.value, color) ? formatColorHex(color) : "#00000000";
+    if (!isColorStringDesc(item.desc)) {
+        return;
+    }
+    float color[3] = {0.0f, 0.0f, 0.0f};
+    item.colorHex = parseRgbColorValue(item.value, color) ? formatRgbHex(color) : item.value;
 }
 
 bool SettingsPanel::Impl::parseConfigListJson(std::string_view text,

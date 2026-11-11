@@ -265,7 +265,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | `kind` | number | `SHOT_CONFIG_KIND_*`（1=Bool / 2=Int / 3=Float / 4=String / 5=Enum / 6=Color / 7=Path） |
 | `value` | string | 当前值（一律字符串；读不出来时给空串并记 WARN） |
 | `default` | string | 默认值；没有时为 `""` |
-| `options` | string | 由设置页解释的交互提示：ENUM 是候选列表 `"low\|mid\|high"`；PATH 用 `"directory"` / `"file"` 声明对话框类型；STRING 用 `"hotkey"` 声明"按组合键录入"控件；其它 kind 为 `""`（语义见本节末尾） |
+| `options` | string | 由设置页解释的交互提示：ENUM 是候选列表 `"low\|mid\|high"`；PATH 用 `"directory"` / `"file"` 声明对话框类型；STRING 用 `"hotkey"` 声明"按组合键录入"控件，以 `#` 开头的 `"#4C9AFF\|#34C759\|…"` 声明"预设色块 + 任意取色"控件；其它 kind 为 `""`（语义见本节末尾） |
 | `min` / `max` / `step` | number | INT / FLOAT 的取值范围与步长；其它 kind 忽略 |
 | `tooltip` | string | 悬停提示，同样允许是字面量或文本 key；没有时为 `""`，解析规则同 `label` |
 
@@ -274,8 +274,10 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
   重新启用会先回灌已存值再重建列表。
 - 插件不能往 `config_list` 里塞自己的运行期数据——那是另一种 list id 要做的事。
 - `options` 的字符串语义**由设置页解释**（宿主只原样透传）：ENUM 是候选列表，PATH 是
-  对话框类型，STRING 的 `"hotkey"` 是"按组合键录入"控件。给 `options` 新增一种语义必须
-  同步 `document/SETTINGS.md` §6 的控件映射表，否则它就成了没有文档的私有协议。
+  对话框类型，STRING 的 `"hotkey"` 是"按组合键录入"控件，STRING 的 `"#RRGGBB|…"` 是
+  "预设色块 + 任意取色"控件（候选本身就是预设色，值统一 `#RRGGBB`）。给 `options`
+  新增一种语义必须同步 `document/SETTINGS.md` §6 的控件映射表，否则它就成了没有文档的
+  私有协议。
 - ENUM 的候选值是**技术值**（如 `auto` / `debug` / `png`），显示名统一按
   `display(owner, 候选值)` 解析：core 已注册语言与日志级别的原生显示名；插件也可以给
   候选值贡献文案（key 就是候选值本身）。解析不到时显示技术值，不影响写值。

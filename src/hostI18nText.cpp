@@ -51,6 +51,12 @@ const std::vector<Host::I18n::CoreText> kDisplayTexts = {
     {"config.debug.console.tooltip", {{"zh-CN", "关闭后控制台不再输出，文件日志不受影响"}, {"en-US", "Console output stops when off; the log file is unaffected"}}},
     {"config.logging.file.label", {{"zh-CN", "文件日志"}, {"en-US", "Log file"}}},
     {"config.logging.file.tooltip", {{"zh-CN", "写入 <数据目录>/logs/host.log；文件打不开时恒为关闭"}, {"en-US", "Writes to <data dir>/logs/host.log; stays off if the file cannot be opened"}}},
+    {"config.theme_color.label", {{"zh-CN", "主题色"}, {"en-US", "Theme color"}}},
+    {"config.theme_color.tooltip",
+     {{"zh-CN", "区域框选等界面用它；可选 6 个预设，也可以自定义任意 #RRGGBB 颜色"},
+      {"en-US",
+       "Used by the region selector and similar overlays; choose one of 6 presets or any "
+       "custom #RRGGBB color"}}},
     // 语言标签的"原生显示名"不在这里：由语言目录提供、HostListCatalog 生成
     // i18n_list 时投影成 core 条目。只有 auto 不是语言标签，需要本地化文本。
     {"auto", {{"zh-CN", "跟随系统"}, {"en-US", "Follow system"}}},

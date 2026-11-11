@@ -55,11 +55,13 @@
 | 通知插件 `plugins/notify`（截屏成功/失败气泡，隐藏占位图标；配置 enabled / show_on_success / show_on_error / sound；仅 Windows） | ✅ 可用 |
 | 剪贴板插件 `plugins/clipboard`（订阅 `capture.done` → CF_DIB / 可选 CF_HDROP；配置 enabled / also_file_drop；仅 Windows） | ✅ 可用 |
 | 全局热键插件 `plugins/hotkey`（默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`；主键支持 A-Z / 0-9 / F1-F12 / PrintScreen（可加修饰键；Win11 默认把裸按 PrintScreen 交给系统截图工具，建议用 Ctrl+PrintScreen 或关闭该 Windows 设置）；设置页用「按组合键录入」设置（`options="hotkey"`，录入期间经 `hotkey.suspend/resume` 临时撤销全局注册）；非法热键 warn 跳过；仅 Windows） | ✅ 可用 |
+| 区域框选覆盖层 `plugins/region_selector`（悬停窗口吸附 + 单击截窗口 + 拖动选区；四角主题色折角与约 100ms 平滑动画；Esc / 右键取消；仅 Windows） | ✅ 可用（`document/CAPTURE.md` §3.1） |
+| 主题色（`core/theme_color`，6 个预设 + 任意取色；区域框选边框/折角读它） | ✅ 可用（`document/SETTINGS.md` §5/§6） |
 | 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
 | 命令行 `--capture`（工作线程 + 退出前派发一轮事件）/ `--settings` / `--help` | ✅ 可用 |
 | GitHub Actions 跨平台 CI（Linux/macOS/Windows 矩阵 + vcpkg 缓存 + preset 构建 + `--help` 冒烟） | workflow 已就绪；Actions 因账号 billing 锁定暂无法启动（Linux 本地 WSL 实测通过，见「平台」） |
-| 宿主自身设置（`core` 伪插件：界面语言 / 日志级别 / 控制台 / 文件日志） | ✅ 可用 |
+| 宿主自身设置（`core` 伪插件：界面语言 / 日志级别 / 控制台 / 文件日志 / 主题色） | ✅ 可用 |
 | 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主加载前读取：预筛 + 依赖拓扑排序） |
 | 元数据构建期校验（id 唯一 / interfaces 已注册 / abi 与头一致 / 依赖语法） | ✅ 可用（`cmake/ValidatePluginMeta.cmake`） |
 | 插件级依赖声明（`requires` / `provides`，带版本区间，`core` 为宿主） | ✅ 可用（`document/METADATA.md`） |
@@ -108,7 +110,7 @@
 │   ├── clipboard/            # 剪贴板：capture.done → CF_DIB / CF_HDROP（仅 Windows）
 │   ├── notify/               # 截屏结果通知：隐藏占位图标 + Shell 气泡（仅 Windows）
 │   ├── hotkey/               # 全局热键 → 事件（仅 Windows）
-│   ├── region_selector/      # 区域框选覆盖层：发布带 region 的 capture.request（仅 Windows）
+│   ├── region_selector/      # 区域框选覆盖层：悬停窗口吸附、单击截窗、四角主题色折角（仅 Windows）
 │   ├── settings_ui/          # 设置页：ImGui + GLFW + OpenGL3（跨平台，Windows 已验证）
 │   └── tray/                 # 托盘入口：数据驱动菜单 + 图标（仅 Windows）
 ├── document/

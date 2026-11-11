@@ -18,9 +18,10 @@
 namespace Host {
 
 /**
- * @brief 宿主设置的提供者：直接把三个配置项映射到 Host::Logging 的实际状态。
+ * @brief 宿主设置的提供者：把语言、日志开关与主题色映射到宿主的实际状态。
  *
- * 读值返回的是"现在的真实状态"（不是缓存值），写值立即生效并同步影响日志。
+ * 读值返回的是"现在的真实状态"（不是磁盘缓存），写值立即生效并同步影响日志等
+ * 运行期状态。主题色的运行期值只保存在这里的静态存储里，落盘仍由配置目录负责。
  * 因为宿主本身不会被卸载，这份静态服务表在进程整个生命周期内都有效。
  */
 class HostConfigurable {
@@ -38,13 +39,13 @@ private:
     /**
      * @brief 配置项个数。
      * @param[in] self 忽略：宿主设置只有一个实现。
-     * @return 固定为 3。
+     * @return 当前 5 项：语言、日志级别、控制台日志、文件日志、主题色。
      */
     static uint32_t getConfigCount(void* self);
 
     /**
      * @brief 声明第 index 个配置项。
-     * @param[in]  index 0 .. 2。
+     * @param[in]  index 0 .. 4。
      * @param[out] out   调用方填好 struct_size；长度不够时返回 2。
      * @return 0 = 成功；1 = 参数非法；2 = out 太短。
      */

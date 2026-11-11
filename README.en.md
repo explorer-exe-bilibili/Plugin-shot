@@ -47,7 +47,7 @@ current main line.
 | Image saving `shot.image_saver` (`plugins/image_saver`, PNG/JPEG plus four config items) | ✅ working (`document/CAPTURE.md`) |
 | Capture → process → save pipeline (**worker thread + bounded queue of 4 + lifecycle lock for the whole run**; `capture.request` / `capture.done` / `capture.failed`) | ✅ working (`document/CAPTURE.md`) |
 | Host main loop (event-driven **blocking wait**, no 16 ms polling; `publish` / `post_to_host` / plugin enable-disable requests wake it) | ✅ working (`document/EVENT_BUS.md` §3) |
-| Region capture (`capture.request` with a valid `region`: the host grabs the full screen and crops it in physical virtual-desktop pixels, clamped; `plugins/region_selector` selection overlay; the no-region selection-trigger request is ignored by the pipeline and never captured; Windows only) | ✅ working (`document/CAPTURE.md` §3.1) |
+| Region capture (`capture.request` with a valid `region`: the host grabs the full screen and crops it in physical virtual-desktop pixels, clamped; `plugins/region_selector` selection overlay with hover-to-pick-window + click-to-capture-the-window + smooth hover animation; the no-region selection-trigger request is ignored by the pipeline and never captured; Windows only) | ✅ working (`document/CAPTURE.md` §3.1) |
 | Generic plugin type `PluginType::Generic` (only `shot.configurable` + subscriptions in `create`; loaded only when metadata declares it) | ✅ working (`document/SETTINGS.md` §3.3) |
 | Host event bus `shot.host.event_bus` (topic publish / subscribe) | ✅ working (`document/EVENT_BUS.md`) |
 | Generic list service `shot.host.plugin_lists` (JSON snapshot per list id: `config_list` / `tray_command_list` / `i18n_source_list` / `i18n_list`) | ✅ working (`document/LISTS.md`) |
@@ -65,7 +65,7 @@ current main line.
 | Settings-window DPI (dual-screen 150%+100%: live rescale while dragging across monitors, geometry clamped to the target screen's DPI, non-accumulating; other DPI mixes / 3+ screens unverified) | ✅ working (`document/SETTINGS.md` §6.1) |
 | Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--help` | ✅ working |
 | GitHub Actions cross-platform CI (Linux/macOS/Windows matrix + vcpkg cache + presets + `--help` smoke) | workflow ready; Actions blocked by the account's GitHub billing lock (Linux verified locally under WSL, see Platform) |
-| Host settings (`core` pseudo-plugin: UI language / log level / console / file log) | ✅ working |
+| Host settings (`core` pseudo-plugin: UI language / log level / console / file log / theme color) | ✅ working |
 | Plugin metadata appended to the DLL tail (`metadata.json`, CMake only) | ✅ working (the host reads it before loading: prefilter + dependency topological sort) |
 | Build-time metadata validation (unique ids / registered interfaces / abi matches the header / dependency syntax) | ✅ working (`cmake/ValidatePluginMeta.cmake`) |
 | Plugin-level dependencies (`requires` / `provides` with version ranges, `core` = the host) | ✅ working (`document/METADATA.md`) |
@@ -115,7 +115,7 @@ current main line.
 │   ├── clipboard/            # clipboard: capture.done → CF_DIB / CF_HDROP (Windows only)
 │   ├── notify/               # capture result notifications: hidden placeholder icon + Shell balloons (Windows only)
 │   ├── hotkey/               # global hotkeys → events (Windows only)
-│   ├── region_selector/      # region selection overlay: publishes capture.request with region (Windows only)
+│   ├── region_selector/      # selection overlay: hover-to-pick-window, click captures that window, theme-colored corner brackets (Windows only)
 │   ├── settings_ui/          # settings window: ImGui + GLFW + OpenGL3 (cross-platform, Windows verified)
 │   └── tray/                 # tray entry: data-driven menu + icon (Windows only)
 ├── document/

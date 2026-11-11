@@ -150,6 +150,14 @@ warn，不计入）。`path` 可能为空（保存插件返回成功但没写回
 `region_selector` 发布的区域也是物理虚拟桌面像素：`region.x = 覆盖窗口屏幕位置 +
 窗口内光标位置 − 虚拟桌面原点`（详见 `plugins/region_selector/README.md` §4）。
 
+**悬停窗口与单击截窗**：覆盖层显示后用 `EnumWindows` + `GetTopWindow/GW_HWNDNEXT` 的真实
+Z 序找光标下的顶层窗口（排除覆盖层自身、不可见、最小化、DWM cloaked、`WS_EX_TOOLWINDOW`、
+完全在虚拟桌面外的窗口），矩形优先 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`
+（去掉 Win10/11 的不可见边框）；坐标是物理像素。鼠标移到别的窗口时预选框用约 100ms 的
+指数平滑跟过去，显示首帧直接等于目标；**单击**（位移 ≤4px 且按住 ≤400ms）把该窗口矩形
+作为 region 发起采集（进入上面第 2 态）；**拖动**超过阈值后改为普通选区，不做窗口吸附、
+不做动画。四角用主题色（`core/theme_color`）画折角。**不做子控件级命中**（UIA）。
+
 ## 4. 执行顺序与失败语义
 
 | 阶段 | 取哪些实例 | 失败语义 |

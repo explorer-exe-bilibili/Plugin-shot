@@ -6,6 +6,7 @@
 #include <iterator>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include "hostI18n.h"
 #include "hostLogging.h"
@@ -18,9 +19,22 @@ const char kKeyLanguage[] = "language";  // 与 Host::I18n::preferenceKey() 相�
 const char kKeyLoggingLevel[] = "logging.level";
 const char kKeyDebugConsole[] = "debug.console";
 const char kKeyLoggingFile[] = "logging.file";
+const char kKeyThemeColor[] = "theme_color";  // config_list 投影后是 core/theme_color
 
 // ENUM 的候选值按契约用 | 分隔；写值时会逐项比对，不认识的候选直接拒绝。
 const char kLevelOptions[] = "debug|info|warn|error";
+
+// 主题色的预设候选：设置页把 options 开头的 '#' 识别成"颜色控件"，再按 | 切出
+// 6 个预设色块（见 document/SETTINGS.md §6、plugins/settings_ui/README.md §4.2）。
+// 值本身也写在 default_value 里，两者必须一致：新装用户的初始色就是第一个预设。
+const char kDefaultThemeColor[] = "#4C9AFF";
+const char kThemeColorOptions[] = "#4C9AFF|#34C759|#FF9F0A|#FF453A|#BF5AF2|#8E8E93";
+
+// 主题色的当前值。宿主设置没有实例状态，进程内一份就够；set_config 由设置页写值
+// 路径调用，get_config 可能被任意插件线程读取，所以用锁保护这一份 std::string。
+// 落盘仍由配置目录负责（core/theme_color），这里只保存运行期值。
+std::mutex themeColorMutex;
+std::string themeColor = kDefaultThemeColor;
 
 /**
  * @brief 语言 ENUM 的候选值：auto + 语言目录（内置先、外部语言包声明按 tag 排序）。
@@ -64,6 +78,8 @@ const char kLabelDebugConsole[] = "config.debug.console.label";
 const char kTooltipDebugConsole[] = "config.debug.console.tooltip";
 const char kLabelLoggingFile[] = "config.logging.file.label";
 const char kTooltipLoggingFile[] = "config.logging.file.tooltip";
+const char kLabelThemeColor[] = "config.theme_color.label";
+const char kTooltipThemeColor[] = "config.theme_color.tooltip";
 
 const ShotConfigDesc kConfig[] = {
     {
@@ -115,6 +131,20 @@ const ShotConfigDesc kConfig[] = {
         .step          = 1.0,
         .tooltip       = kTooltipLoggingFile,
     },
+    {
+        .struct_size   = sizeof(ShotConfigDesc),
+        .kind          = SHOT_CONFIG_KIND_STRING,
+        .key           = kKeyThemeColor,
+        .label         = kLabelThemeColor,
+        .default_value = kDefaultThemeColor,
+        // options 以 '#' 开头：设置页据此渲染"预设色块 + 任意取色"控件，
+        // 不新增 ABI 枚举值（options 语义本来就看设置页，见 LISTS.md §5.1）。
+        .options       = kThemeColorOptions,
+        .min           = 0.0,
+        .max           = 0.0,
+        .step          = 0.0,
+        .tooltip       = kTooltipThemeColor,
+    },
 };
 
 constexpr uint32_t kConfigCount = static_cast<uint32_t>(std::size(kConfig));
@@ -155,6 +185,41 @@ bool isValidLevel(const char* text) {
         }
     }
     return false;
+}
+
+/**
+ * @brief 校验并规范化主题色：只接受 `#RRGGBB`，输出统一大写。
+ *
+ * 不接受 `#RGB` / `#RRGGBBAA` / 不带 `#` / 非十六进制字符：主题色最终会交给
+ * 区域框选之类自己解析颜色的插件，多一种写法就多一处解析分歧，所以只留最窄的一种。
+ * 大小写不敏感是给用户的方便（手输 `#4c9aff` 很常见），存进内存的值统一成大写，
+ * 让配置快照、日志和后续比较都只有一种形态。
+ *
+ * @param[in]  text 候选值；nullptr 视为非法。
+ * @param[out] out  合法时写入规范化后的 `#RRGGBB`；非法时不改。
+ * @return true = 合法。
+ */
+bool normalizeThemeColor(const char* text, std::string& out) {
+    if (text == nullptr || text[0] != '#' || std::strlen(text) != 7) {
+        return false;
+    }
+    std::string normalized(text);
+    for (std::size_t index = 1; index < normalized.size(); ++index) {
+        const char c = normalized[index];
+        if (c >= '0' && c <= '9') {
+            continue;
+        }
+        if (c >= 'a' && c <= 'f') {
+            normalized[index] = static_cast<char>(c - 'a' + 'A');
+            continue;
+        }
+        if (c >= 'A' && c <= 'F') {
+            continue;
+        }
+        return false;
+    }
+    out = std::move(normalized);
+    return true;
 }
 
 }  // namespace
@@ -214,6 +279,15 @@ int32_t Host::HostConfigurable::getConfig(void* /*self*/, const char* key, char*
     if (std::strcmp(key, kKeyLoggingFile) == 0) {
         return copyValue(buf, bufSize, Logging::fileEnabled() ? "1" : "0");
     }
+    if (std::strcmp(key, kKeyThemeColor) == 0) {
+        // 先在锁内拷一份再锁外拷贝：copyValue 只碰调用方缓冲，不持锁做无关工作。
+        std::string value;
+        {
+            std::lock_guard<std::mutex> lock(themeColorMutex);
+            value = themeColor;
+        }
+        return copyValue(buf, bufSize, value);
+    }
     return -1;  // 不认识的 key 安全忽略：宿主升级后多传配置项也不会踩这里
 }
 
@@ -231,6 +305,16 @@ int32_t Host::HostConfigurable::setConfig(void* /*self*/, const char* key, const
             return -1;
         }
         Logging::setLevel(value);
+        return 0;
+    }
+    if (std::strcmp(key, kKeyThemeColor) == 0) {
+        // 只接受 #RRGGBB；非法值返回 -1，不改当前值（旧配置里的坏值因此显示成默认色）。
+        std::string normalized;
+        if (!normalizeThemeColor(value, normalized)) {
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(themeColorMutex);
+        themeColor = std::move(normalized);
         return 0;
     }
     bool enabled = false;

@@ -6,7 +6,8 @@
 //
 // PATH 项的"浏览…"通过 settings_dialog.cpp 调 nativefiledialog-extended；本文件不
 // 直接依赖任何平台 API，对话框不可用时把提示写在配置项旁边、用户可手输路径。
-// STRING 项里 options == "hotkey" 的走"按组合键录入"控件，实现在 settings_hotkey.cpp。
+// STRING 项里 options == "hotkey" 的走"按组合键录入"控件，实现在 settings_hotkey.cpp；
+// options 以 '#' 开头的走"预设色块 + 自定义取色"控件，实现在 settings_color.cpp。
 
 #include <cmath>
 #include <cstdarg>
@@ -342,6 +343,11 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item, const std::string&
             if (isHotkeyDesc(desc)) {
                 renderHotkeyControl(item, owner);
                 return false;
+            }
+            // options 以 '#' 开头：颜色控件（预设色块 + 自定义取色 + hex 输入），
+            // 与热键同属"设置页解释 options"的约定，见 settings_color.cpp。
+            if (isColorStringDesc(desc)) {
+                return renderColorControl(item, owner);
             }
             ImGui::SetNextItemWidth(320.0f);
             return ImGui::InputText("##string", &item.value);
