@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "translator.main",
+      "name": "Translator",
+      "version": "0.1.0",
+      "description": "读取外部语言包（官方 files/lang 与用户目录）并贡献到 i18n_source_list：用户包覆盖官方包、两者都覆盖内置文案；零 ABI 改动",
+      "interfaces": ["shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}
