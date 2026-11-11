@@ -82,7 +82,9 @@
 ├── .github/
 │   └── workflows/cmake.yml # 跨平台 CI（Linux/macOS/Windows；当前受账号 billing 限制）
 ├── include/
-│   ├── plugin_api.h          # ★ 宿主 ⇄ 插件的 ABI 契约（唯一的跨边界头，纯 C）
+│   ├── plugin_api.h          # ★ 宿主 ⇄ 插件的 ABI 契约汇总头（只 include；跨边界入口仍是它）
+│   ├── plugin_api/           # ★ 契约正文：按主题一个子头（basics / interfaces / 各能力 /
+│   │                         # host_services / module / abi_layout）
 │   ├── plugin_api_export.h   # 导出宏：插件默认 dllexport，宿主定义 SCREENSHOT_HOST_EXPORTS
 │   ├── shot_plugin_helpers.h # 插件侧工具汇总头（只 include，不声明类）
 │   ├── shot_plugin_helpers/  # 每类一个头文件：iface_entry / logger / config /
@@ -235,7 +237,10 @@ cd build/Windows/bin && ./Plugin-shot.exe --help     # 打印用法
 
 ## 插件契约
 
-跨边界头只有一个：`include/plugin_api.h`（纯 C，不依赖 STL）。整个插件包只导出**一个** C 函数：
+跨边界的入口头只有一个：`include/plugin_api.h`（纯 C，不依赖 STL）。它只是汇总头，
+正文按主题拆在 `include/plugin_api/*.h`（版本与读取规则、interface id、每个能力一张表、
+宿主服务、`ShotModule`、布局锚点）——插件源码照旧只写 `#include "plugin_api.h"`。
+整个插件包只导出**一个** C 函数：
 
 ```c
 SCREENSHOT_API const ShotModule* shot_module_entry(void);
@@ -263,8 +268,9 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void);
 3. **能力用字符串 id 问**：`query_interface(instance, "shot.image_processor", 1)` 返回函数表，没有就返回 `NULL`，宿主安静跳过。新增一类能力 = 新增一个 id + 一个结构体，不动任何已有结构体。
 4. **数据形状不进 ABI**：新增一类 UI/宿主数据（菜单项、配置项、目标列表……）= 新 list id + JSON schema + `lists.*` 事件；ABI 只描述能力与行为，不描述数据结构，见 `document/LISTS.md`。
 
-`plugin_api.h` 末尾用 `static_assert` 钉住了每个结构体的字段偏移与总大小：
-重排或改类型会直接编译失败，而"追加字段"必须手动更新那一行——把破坏 ABI 变成一次有意识的行为。
+`include/plugin_api/abi_layout.h` 用 `static_assert` 钉住了每个结构体的字段偏移与总大小
+（汇总头里最后 include 它）：重排或改类型会直接编译失败，而"追加字段"必须手动更新那一行——
+把破坏 ABI 变成一次有意识的行为。
 
 ### 已注册的能力
 
@@ -404,7 +410,8 @@ schema**，运行期用 `lists.add` 注册、宿主用 `lists.changed` 通知；
 - 纯文本标记，不需要 Python、不需要贴尾小工具，宿主 `rfind` 就能取出来。
 - 文件尾的额外数据不在 PE/ELF 的节表里，加载器直接忽略，不影响装载。
 - 元数据跟着文件走：用户复制或重命名插件也不会出现「清单与 DLL 分家」。
-- 标记字面量只在 `plugin_api.h` 里定义一次，构建脚本构建期直接读头文件取宏值。
+- 标记字面量只在 `plugin_api/plugin_info.h` 里定义一次；构建脚本构建期把汇总头 + 全部子头
+  拼成整份文本再取宏值（`cmake/ReadContractHeader.cmake`）。
 - 贴尾之前会先校验：`plugins[]` 非空、`id` 唯一、`interfaces` 里的 id 在契约头里有定义、
   `abi` 与 `SHOT_ABI_*` 一致、`package` 与目标名一致。写错就构建失败，不用等宿主发现。
 - 字段定义、权威规则（谁是权威、为什么不写配置项、依赖怎么解析）见 [`document/METADATA.md`](document/METADATA.md)。

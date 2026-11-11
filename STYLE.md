@@ -44,7 +44,7 @@
 
 | 世界 | 位置 | 语言 | 规则 |
 | --- | --- | --- | --- |
-| **契约（跨边界）** | `include/plugin_api.h`、`plugin_api_export.h` | 纯 C（不依赖 STL） | 只追加、定宽类型、`struct_size` + `SHOT_HAS_FIELD`、异常不过界 |
+| **契约（跨边界）** | `include/plugin_api.h`（汇总头，只 include）+ `include/plugin_api/*.h`（按主题的子头）、`plugin_api_export.h` | 纯 C（不依赖 STL） | 只追加、定宽类型、`struct_size` + `SHOT_HAS_FIELD`、异常不过界 |
 | **插件侧辅助头（不走 ABI）** | `include/shot_plugin_helpers.h` + `include/shot_plugin_helpers/` | C++17，可用 STL | 只被插件源码包含；不跨边界、不参与宿主编译 |
 | **宿主** | `src/`、`include/`（除契约头）、`include/PluginInstances/` | C++23 | 正常 C++，但**不得 delete 插件对象** |
 | **插件** | `plugins/<name>/` | C++23，但出口是纯 C | 一个 DLL = 一个包；`shot_module_entry` 是唯一导出符号 |
@@ -188,7 +188,7 @@ const ShotModule kModule = {
 
 **这是最容易一眼认出"不是本仓库代码"的地方。**
 
-1. **用中文散文写注释**，标识符/API 名保持英文。实测 `include/plugin_api.h` 347 行里 120 行含中文（35%），`document/ABI_POLICY.md` 88 行里 54 行含中文。
+1. **用中文散文写注释**，标识符/API 名保持英文。实测契约头（`include/plugin_api.h` 汇总头 + `plugin_api/*.h` 子头，共 1147 行）里 486 行含中文（42%），`document/ABI_POLICY.md` 142 行里 95 行含中文。
 2. **解释"为什么"，不解释"是什么"**。反例：`// 遍历行`。正例（本仓真实写法）：
    - `// 插件分配的对象只能由插件自己释放，宿主绝不 delete。`
    - `// 顺序有讲究：先让插件实例走完自己的 destroy，再 shutdown 模块，最后才放手 DLL。`
@@ -236,7 +236,7 @@ Doxygen 只写"调用者必须知道的东西"（约束、单位、返回码、�
 "为什么这么实现"仍用普通中文注释写。
 
 - **必写**：头文件里的 `class` / `struct` / `enum class` / 公开与 protected 函数 / 公共常量 /
-  导出宏 / 契约头 `include/plugin_api.h` 里的每个跨边界结构体与 `extern "C"` 入口。
+  导出宏 / 契约头 `include/plugin_api/*.h` 里的每个跨边界结构体与 `extern "C"` 入口。
 - **不写**：`.cpp` 里的私有实现、局部 lambda——那里继续用普通注释。
 - 格式：`/** ... */` 块；首行 `@brief` 一句话（中文、动宾），需要时补 1~3 行正文，
   再按需 `@param` / `@return` / `@note` / `@warning`。
@@ -315,7 +315,7 @@ bool readFromFile(const std::string& dllPath, std::string& error);
 - **插件侧用 `shot::Logger` / `shot::Config`**（`include/shot_plugin_helpers.h`）：前者包 `host->log`（含老宿主降级），
   后者包宿主配置服务（`SHOT_HOST_IFACE_CONFIG` + fallback）。**不要**在每个调用点手写 `SHOT_HAS_FIELD` 判空或两次长度查询。
 - 日志格式由 spdlog pattern 统一（`[时间] [级别] [host|plugin] 消息`），**不要**在消息里手写级别/时间前缀。
-- 级别语义见 `include/plugin_api.h` 的 `SHOT_LOG_*`（DEBUG / INFO / WARN / ERROR）。
+- 级别语义见 `include/plugin_api/basics.h` 的 `SHOT_LOG_*`（DEBUG / INFO / WARN / ERROR）。
 
 ### 6.5 降级（degradation）是常态，不是可选项
 
@@ -446,7 +446,7 @@ shot_add_plugin(my_plugin
 - **SDK 说明只有一个源**：`document/README_SDK.md`；`export_sdk` 用 `configure_file(... COPYONLY)` 把它复制成 `sdk/README.md`。改 SDK 说明只改 document 那份，**不要**在 CMake 脚本里再硬编码一份（以前就是这么漂移的）。
 - **产物布局是硬约束**（`README.md`「产物布局」）：`bin/` 只有 exe 与运行时库（Windows 禁 pdb）；`bin/plugins/` 只有插件自己的动态库（禁基础依赖）；`build/<cfg>/pdb/` 放符号；`sdk/` 是导出产物、**不入库**。动态库扩展名随平台（`.dll` / `.dylib` / `.so`，由 `SHOT_DYN_EXT` 统一），非 Windows 运行库靠 RPATH 指向 vcpkg `lib/`。
 - **版本链**：`0.1.0` 来自 `CMakeLists.txt:32-34` → `version.h`（`include/version.h.in` 生成）→ `.rc`。`build_number.txt` 在**每次 configure 时自增并被写回**（`CMakeLists.txt:290-297`），所以它会一直脏，**不要**手工改它，也**不要**把它当成自己的改动提交（除非单独提交）。
-- **不要手改生成物**：`build/generated/version.h`、`sdk/` 全是产物。`sdk/include/plugin_api.h` 是**旧快照**（比 `include/` 少能力），永远以仓库里的 `include/` 为准。
+- **不要手改生成物**：`build/generated/version.h`、`sdk/` 全是产物。`sdk/include/plugin_api.h`（及 `sdk/include/plugin_api/`）是**旧快照**（比 `include/` 少能力），永远以仓库里的 `include/` 为准。
 
 ---
 
@@ -473,7 +473,7 @@ shot_add_plugin(my_plugin
 
 | 你改了什么 | 必须同步的文档 |
 | --- | --- |
-| 契约 `include/plugin_api.h`（能力 id / 结构体 / 布局 / `SHOT_ABI_*`） | `document/ABI_POLICY.md`（登记表 + 布局锚点表 + `static_assert`）、`README.md`/`README.en.md` 的「插件契约」段 |
+| 契约 `include/plugin_api.h` + `include/plugin_api/*.h`（能力 id / 结构体 / 布局 / `SHOT_ABI_*`） | `document/ABI_POLICY.md`（登记表 + 布局锚点表 + `static_assert`）、`README.md`/`README.en.md` 的「插件契约」段 |
 | `metadata.json` 的字段或语义 | `document/METADATA.md`、`cmake/ValidatePluginMeta.cmake`、相关插件的 `metadata.json` 与 `README.md` |
 | 插件新增/删除/行为变化 | 该插件 `README.md`、`README.md`/`README.en.md` 的「当前状态」表与目录树 |
 | 配置项、设置页、插件启停（热卸载）行为 | `document/SETTINGS.md`、相关插件 `README.md`、`README.md`/`README.en.md` 的状态表 |
@@ -576,7 +576,8 @@ shot_add_plugin(my_plugin
 
 1. `README.md` 的「设计理念 / 当前状态 / 目录结构」——知道这东西现在能干什么。
 2. `document/ABI_POLICY.md`——只追加规则与 interface 登记表。
-3. `include/plugin_api.h` 开头的几段 banner（`:8-100`）——整个契约的三条纪律。
+3. `include/plugin_api/basics.h` 开头的几段 banner——整个契约的三条纪律（版本、
+   `plugin_api/plugin_info.h` 的元数据标记、`plugin_api/interfaces.h` 的 interface id 登记）。
 4. `src/PluginManager.cpp` 的 `loadPlugins()`——五个阶段的加载流程。
 5. `include/config.h`、`include/hostServices.h`、`include/hostRuntime.h`、`include/hostListCatalog.h`——宿主基础设施（配置 / 服务表 / 运行期装配 / 列表目录），每件一个类或一组文件，是 §6.6 的范本；日志直接用 spdlog，初始化在 `Host::Logging`（`src/hostLogging.cpp`）。
 6. `plugins/example_processor/`（整个目录，尤其 `src/plugin_entry.cpp`）——最完整的插件模板。

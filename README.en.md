@@ -89,7 +89,9 @@ current main line.
 ├── .github/
 │   └── workflows/cmake.yml # cross-platform CI (Linux/macOS/Windows; currently blocked by account billing)
 ├── include/
-│   ├── plugin_api.h          # ★ the host ⇄ plugin ABI contract (only cross-boundary header, plain C)
+│   ├── plugin_api.h          # ★ umbrella header for the host ⇄ plugin ABI contract (includes only)
+│   ├── plugin_api/           # ★ the contract body, one header per topic (basics / interfaces /
+│   │                         # capabilities / host_services / module / abi_layout)
 │   ├── plugin_api_export.h   # export macro: dllexport for plugins, SCREENSHOT_HOST_EXPORTS for the host
 │   ├── shot_plugin_helpers.h # umbrella header only includes; one header per helper class
 │   ├── shot_plugin_helpers/  # iface_entry / logger / config / event_bus /
@@ -249,8 +251,10 @@ own OpenCV puts two instances into one process.
 
 ## Plugin contract
 
-There is exactly one cross-boundary header: `include/plugin_api.h` (plain C, no STL).
-A plugin package exports **one** C function:
+There is exactly one entry header crossing the boundary: `include/plugin_api.h` (plain C, no STL).
+It is an umbrella that only includes; the body lives in `include/plugin_api/*.h` (version and
+field-reading rules, interface ids, one table per capability, host services, `ShotModule`, layout
+anchors), and plugin sources still write just `#include "plugin_api.h"`. A plugin package exports **one** C function:
 
 ```c
 SCREENSHOT_API const ShotModule* shot_module_entry(void);
@@ -278,7 +282,7 @@ know the contents in advance, and `plugins[]` in `metadata.json` maps index for 
 3. **Ask for capabilities by string id.** `query_interface(instance, "shot.image_processor", 1)` returns a function table or `NULL`, and the host quietly skips what it does not get. A new capability kind is a new id plus a new struct; no existing struct changes.
 4. **Data shapes never enter the ABI.** A new kind of UI/host data (menu items, config items, target lists, …) is a new list id + JSON schema + `lists.*` events; the ABI describes capabilities and behaviour only, never data structures — see `document/LISTS.md`.
 
-`plugin_api.h` ends with `static_assert`s pinning the offset and size of every struct: reordering or retyping fails the build, while appending a field forces you to update that line by hand — making an ABI break a deliberate act.
+`include/plugin_api/abi_layout.h` (included last by the umbrella header) pins the offset and size of every struct with `static_assert`s: reordering or retyping fails the build, while appending a field forces you to update that line by hand — making an ABI break a deliberate act.
 
 ### Registered capabilities
 
@@ -437,8 +441,9 @@ host has no main window:
 - Trailing data is outside the PE/ELF section table, so the loader ignores it entirely.
 - The metadata travels with the file: copying or renaming a plugin can never separate a
   manifest from its DLL.
-- The marker literals exist once, in `plugin_api.h`; the build script reads those macros at
-  build time instead of duplicating them.
+- The marker literals exist once, in `plugin_api/plugin_info.h`; at build time the script joins the
+  umbrella header and every sub-header into one text (via `cmake/ReadContractHeader.cmake`) and
+  reads those macros from it.
 - Before appending, the metadata is validated: `plugins[]` non-empty, ids unique, every
   `interfaces` entry defined in the contract header, `abi` matching `SHOT_ABI_*`, and
   `package` matching the target name. A mistake fails the build instead of surfacing in the host.

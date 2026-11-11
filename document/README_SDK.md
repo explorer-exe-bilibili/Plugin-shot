@@ -7,12 +7,17 @@
 
 | 目录 | 内容 | 用途 |
 | --- | --- | --- |
-| `include/` | `plugin_api.h`、`plugin_api_export.h`、`shot_plugin_helpers.h`（汇总头，只做 include）、`shot_plugin_helpers/`（每类一个头文件）、`opencv4/` | 契约头 + 插件侧小工具（能力目录 / `shot::Logger` / `shot::Config` / `shot::EventBus` / `shot::PluginLists` / `shot::PluginRegistry`） + OpenCV 头 |
+| `include/` | `plugin_api.h`（契约汇总头，只做 include）、`plugin_api/`（契约正文，每类一个子头）、`plugin_api_export.h`、`shot_plugin_helpers.h`（汇总头，只做 include）、`shot_plugin_helpers/`（每类一个头文件）、`opencv4/` | 契约头 + 插件侧小工具（能力目录 / `shot::Logger` / `shot::Config` / `shot::EventBus` / `shot::PluginLists` / `shot::PluginRegistry`） + OpenCV 头 |
 | `lib/` | release 版 `*.lib` 导入库 | Release 构建链接期使用 |
 | `lib/debug/` | debug 版 `*.lib`（`opencv_*4d.lib` 等） | Debug 构建链接期使用 |
 | `bin/` | release 版 `*.dll` 运行时库 | **不要拷进插件目录**，见下 |
 | `bin/debug/` | debug 版 `*.dll`（`opencv_*4d.dll` 等） | Debug 宿主/插件运行时使用 |
-| `cmake/` | `ShotPlugin.cmake`、`AppendPluginMeta.cmake`、`ValidatePluginMeta.cmake`、`prune_output_dir.cmake` | 用 `shot_add_plugin()` 构建插件工程（含 metadata 校验） |
+| `cmake/` | `ShotPlugin.cmake`、`AppendPluginMeta.cmake`、`ValidatePluginMeta.cmake`、`ReadContractHeader.cmake`、`prune_output_dir.cmake` | 用 `shot_add_plugin()` 构建插件工程（含 metadata 校验） |
+
+`include/plugin_api/` 是契约正文：版本宏与读取规则（`basics.h`）、interface id
+（`interfaces.h`）、各能力与宿主服务（`image_processor.h` / `host_services.h` …）、
+布局锚点（`abi_layout.h`）。插件源码**不要**直接 include 子头，照旧只写
+`#include "plugin_api.h"`——汇总头会按依赖顺序把子头全部带进来。
 
 ## 编译
 
@@ -84,7 +89,7 @@ target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
 
 5. **只加字段，不加符号**
    加能力靠往结构体末尾追加字段；读任何字段前先检查 struct_size
-   （plugin_api.h 里的 SHOT_HAS_FIELD）。这样加东西永远不需要改版本号。
+   （契约头 `plugin_api/basics.h` 里的 SHOT_HAS_FIELD）。这样加东西永远不需要改版本号。
 
 6. **能力用 interface id 查询**
    query_interface(instance, "shot.image_processor", 1) 返回函数表，
@@ -100,7 +105,7 @@ target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
    升级 SDK 后请整体替换 include/，不要新旧混用。
 
 8. **metadata.json 会被贴到 DLL 尾部**
-   构建期由 `cmake/AppendPluginMeta.cmake` 追加纯文本标记（见 `plugin_api.h` 的
+   构建期由 `cmake/AppendPluginMeta.cmake` 追加纯文本标记（见 `plugin_api/plugin_info.h` 的
    `PLUGIN_META_START_MARKER` / `PLUGIN_META_END_MARKER`）。文件尾的额外数据不影响
    装载，元数据跟着插件文件走，不会与 DLL 分家。
 

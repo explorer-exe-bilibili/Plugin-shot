@@ -10,7 +10,7 @@
 #          -P cmake/export_sdk.cmake
 #
 #  交付规则（硬约束）：
-#    sdk/include  契约头(plugin_api*.h) + opencv4 头
+#    sdk/include  契约头(plugin_api*.h + plugin_api/ 子目录) + opencv4 头
 #    sdk/lib      仅 *.lib
 #    sdk/bin      仅 *.dll
 #    全树无 *.pdb，无 pkgconfig 噪音，附 README.md
@@ -88,7 +88,8 @@ else()
 endif()
 
 # 契约头 + 插件侧工具头：plugin_api*.h / shot_*.h
-# （shot_plugin_helpers.h 是汇总头，其余 shot_* 是它包含的每类一个头文件；
+# （plugin_api.h 是契约汇总头，只 include；正文在 plugin_api/ 子目录，见下一段。
+#   shot_plugin_helpers.h 是工具汇总头，其余 shot_* 是它包含的每类一个头文件；
 #   第三方必须一起拿到，所以按前缀整组复制）
 file(GLOB _contract_headers
     "${CONTRACT_INCLUDE_DIR}/plugin_api*.h"
@@ -98,6 +99,19 @@ if(_contract_headers)
     _copy_files_flat("${SDK_OUTPUT_DIR}/include" ${_contract_headers})
 else()
     message(WARNING "export_sdk: 未找到契约头 plugin_api*.h（源码 include/ 可能尚未就绪）")
+endif()
+
+# 契约正文已经拆到 plugin_api/ 子目录里：汇总头 plugin_api.h 只 include，
+# 每个子头对应一个主题（版本 / interface id / 各能力 / 宿主服务 / 布局锚点）。
+# 必须保留相对目录结构复制 —— 汇总头里写的是 #include "plugin_api/xxx.h"，
+# 平铺进 sdk/include 会让离线 SDK 编译直接报找不到头文件。
+file(GLOB _contract_parts "${CONTRACT_INCLUDE_DIR}/plugin_api/*.h")
+if(_contract_parts)
+    _copy_files_tree("${CONTRACT_INCLUDE_DIR}" "${SDK_OUTPUT_DIR}/include" ${_contract_parts})
+    list(LENGTH _contract_parts _contract_part_count)
+    message(STATUS "export_sdk: ${_contract_part_count} 个契约子头 -> sdk/include/plugin_api")
+else()
+    message(WARNING "export_sdk: 未找到 plugin_api/*.h（契约子头，汇总头会 include 不到）")
 endif()
 
 # 插件侧工具的实现头在 shot_plugin_helpers/ 子目录里：保留相对目录结构复制，
@@ -201,7 +215,8 @@ endif()
 # 5.5 cmake/：插件工程构建模块，让 SDK 用户也能直接用 shot_add_plugin()
 # ---------------------------------------------------------------------------
 file(MAKE_DIRECTORY "${SDK_OUTPUT_DIR}/cmake")
-foreach(_module ShotPlugin.cmake AppendPluginMeta.cmake ValidatePluginMeta.cmake prune_output_dir.cmake)
+foreach(_module ShotPlugin.cmake AppendPluginMeta.cmake ValidatePluginMeta.cmake
+        ReadContractHeader.cmake prune_output_dir.cmake)
     if(EXISTS "${SHOT_CMAKE_DIR}/${_module}")
         configure_file("${SHOT_CMAKE_DIR}/${_module}" "${SDK_OUTPUT_DIR}/cmake/${_module}" COPYONLY)
     else()

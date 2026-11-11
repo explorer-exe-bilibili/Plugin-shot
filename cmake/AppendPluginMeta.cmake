@@ -18,8 +18,10 @@
 #    也因此不处理"重复贴尾"：宿主读取用 rfind 取【最后一对】标记，
 #    多贴一份只会被后一份覆盖，不会解析错。
 #
-#  标记字面量不在这里硬编码：从契约头 plugin_api.h 的
-#  PLUGIN_META_START_MARKER / PLUGIN_META_END_MARKER 宏读出来，单一事实来源。
+#  标记字面量不在这里硬编码：从契约头的 PLUGIN_META_START_MARKER /
+#  PLUGIN_META_END_MARKER 宏读出来，单一事实来源。契约头已拆成
+#  include/plugin_api.h（汇总）+ include/plugin_api/*.h（子头），标记宏在
+#  plugin_api/plugin_info.h 里，所以这里经 ReadContractHeader.cmake 读整份文本。
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
@@ -32,7 +34,10 @@ foreach(_required TARGET_FILE METADATA_FILE CONTRACT_HEADER)
     endif()
 endforeach()
 
-file(READ "${CONTRACT_HEADER}" _contract)
+# 契约头已拆分：汇总头只 include，标记宏在 plugin_api/plugin_info.h 里，
+# 必须读 ReadContractHeader.cmake 拼出的整份文本，否则下面两个 MATCH 都会落空。
+include("${CMAKE_CURRENT_LIST_DIR}/ReadContractHeader.cmake")
+shot_read_contract_header(_contract "${CONTRACT_HEADER}")
 
 string(REGEX MATCH "#define[ \t]+PLUGIN_META_START_MARKER[ \t]+\"([^\"]+)\"" _match "${_contract}")
 if(NOT CMAKE_MATCH_1)

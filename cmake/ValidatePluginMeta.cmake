@@ -17,6 +17,9 @@
 #    4. "abi.major" 与契约头 SHOT_ABI_MAJOR 相等；"abi.minor" 不大于 SHOT_ABI_MINOR
 #       （允许用旧 minor 构建的插件继续加载，追加能力不需要全量改 metadata）
 #
+#  注意：契约头已经拆成 include/plugin_api.h（汇总）+ include/plugin_api/*.h（子头），
+#  所以这里的"契约头"指的是 ReadContractHeader.cmake 拼出来的整份文本，不是单个文件。
+#
 #  刻意不校验 "package"：这个字段已经从 metadata 里删掉了 —— 它和目标 DLL 名重复，
 #  而宿主做配置键用的是全局唯一的 plugins[].id（改名、换目录都不受影响）。
 #
@@ -37,7 +40,11 @@ if(NOT EXISTS "${CONTRACT_HEADER}")
     message(FATAL_ERROR "ValidatePluginMeta: 契约头不存在 ${CONTRACT_HEADER}")
 endif()
 
-file(READ "${CONTRACT_HEADER}" _contract)
+# 契约头已拆分：汇总头 plugin_api.h 只 include，正文在 include/plugin_api/*.h。
+# 必须读【整份】契约文本，只 READ 汇总头会让下面的 SHOT_ABI_* / SHOT_IFACE_* 查找
+# 全部落空（第 3 步会把每个 interface 都报成"契约里没有"，等于校验坏了）。
+include("${CMAKE_CURRENT_LIST_DIR}/ReadContractHeader.cmake")
+shot_read_contract_header(_contract "${CONTRACT_HEADER}")
 file(READ "${METADATA_FILE}" _json)
 
 set(_problems "")

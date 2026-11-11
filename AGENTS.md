@@ -19,7 +19,7 @@
 | 配置文件 | `%LOCALAPPDATA%\screen-shot\config.json` |
 | 日志 | `%LOCALAPPDATA%\screen-shot\logs\host.log`（UTF-8，中文会显示成乱码是编码问题，不是 bug） |
 | CLI | `--capture` 截一张存盘后退出 / `--settings` 打开设置页后常驻 / `--help` |
-| 契约头 | `include/plugin_api.h`（纯 C、append-only、**当前 2.0**） |
+| 契约头 | `include/plugin_api.h`（汇总头，只 include）＋ `include/plugin_api/*.h`（按主题的子头；纯 C、append-only、**当前 2.0**） |
 
 最小验证（本机路径见 §8）：
 
@@ -38,7 +38,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify/smoke_capture.p
 
 ```
 include/            宿主与契约头
-  plugin_api.h        ★ ABI 契约（纯 C，唯一跨边界头）
+  plugin_api.h        ★ ABI 契约汇总头（纯 C，只 include；正文在 plugin_api/）
+  plugin_api/         ★ 契约正文，按主题一个子头（basics / interfaces / 各能力 / host_services /
+                      module / abi_layout；不要嵌套子目录）
   shot_plugin_helpers/ 插件侧 C++ 封装（每类一个头，汇总头只 include）
   PluginInstances/   宿主侧插件包装（ImageProcessor / ScreenCapture / ImageSaver / UIProvider / LibProvider）
   hostRuntime.h      宿主编排（生命周期锁 + tick）
@@ -115,14 +117,20 @@ capture.request（事件，main 线程入队） → worker 线程：
 
 ## 3. 契约（ABI）规则
 
-- 契约头 `include/plugin_api.h` **只追加**：末尾加字段、加新 interface id + 新结构体；
+- 契约头是**汇总头 + 子头**：`include/plugin_api.h` 只 include，正文在
+  `include/plugin_api/*.h`（basics / interfaces / 各能力 / host_services / module / abi_layout）。
+  改契约 = 改对应子头，**不要**把内容塞回汇总头；子头之间用 `#include "plugin_api/xxx.h"`。
+- 契约头 **只追加**：末尾加字段、加新 interface id + 新结构体；
   永不重排/改类型/删字段。破坏性变更才涨 `SHOT_ABI_MAJOR`（当前 2）。
 - 每个跨边界结构体第一个字段是 `struct_size`；读取前用 `SHOT_HAS_FIELD`。
 - `abi_minor`：追加能力时 +1；`cmake/ValidatePluginMeta.cmake` 要求
   **metadata.abimajor == 头文件 major** 且 **minor ≤ 头文件 minor**。
 - 所有 interface id / 配置 key 约定登记在 [`document/ABI_POLICY.md`](document/ABI_POLICY.md)，
   加新的必须补表。
-- 布局锚点：文件末尾的 `static_assert` 是 ABI 的机器可读副本，改结构体必须同步。
+- 布局锚点：`include/plugin_api/abi_layout.h` 里的 `static_assert` 是 ABI 的机器可读副本
+  （汇总头里最后 include），改结构体必须同步。
+- 构建期脚本按文本读契约（`cmake/ReadContractHeader.cmake` 拼接汇总头 + 全部子头），
+  所以子头里的宏名/字面量格式不能随便改，`plugin_api/` 下也不要再嵌套子目录。
 
 ---
 
@@ -198,8 +206,9 @@ plugins/<name>/{CMakeLists.txt, metadata.json, README.md, include/, src/}
 
 ### 5.5 新增一种能力（ABI minor +1）
 
-1. `plugin_api.h`：新 interface id 宏 + 新 `...V1` 结构体（末尾定义，带 `struct_size`）
-   + 文件末尾布局 `static_assert`；
+1. 契约头：新 interface id 宏加进 `plugin_api/interfaces.h`，新 `...V1` 结构体加进对应的
+   能力子头（`plugin_api/*.h`，末尾定义、带 `struct_size`），布局 `static_assert` 加进
+   `plugin_api/abi_layout.h`；汇总头 `plugin_api.h` 只 include，不用动；
 2. `SHOT_ABI_MINOR` +1；所有插件 `metadata.json` 的 `abi.minor` 可以不跟（校验只要求 ≤）；
 3. `document/ABI_POLICY.md` §4/§6 登记；
 4. 宿主 `PluginInstances/` 加包装 + `PluginManager::createPlugin` 识别 + `PluginType` 枚举；

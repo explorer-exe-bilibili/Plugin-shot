@@ -1,7 +1,35 @@
 # ABI 政策与登记表
 
-这份文档是 `include/plugin_api.h` 的人读部分：契约为什么这么写、什么能改、
-什么绝对不能改，以及所有跨边界标识符的登记表。**改契约之前先读这里。**
+这份文档是契约头（`include/plugin_api.h` 汇总头 + `include/plugin_api/*.h` 子头）的
+人读部分：契约为什么这么写、什么能改、什么绝对不能改，以及所有跨边界标识符的登记表。
+**改契约之前先读这里。**
+
+## 0. 契约头的结构
+
+`include/plugin_api.h` 现在只是**汇总头，只做 include**；正文按主题拆在同目录的
+`plugin_api/` 下（与 `include/shot_plugin_helpers.h` + `shot_plugin_helpers/` 同一套组织方式）。
+子头之间用 `#include "plugin_api/xxx.h"` 显式声明依赖，每个子头各自 `#pragma once`（不用
+include guard）；插件源码照旧只写 `#include "plugin_api.h"`，子头位置对插件透明。
+
+| 文件 | 负责什么 |
+| --- | --- |
+| `plugin_api/basics.h` | 契约 banner 与三条纪律、`SHOT_ABI_MAJOR` / `SHOT_ABI_MINOR`、前向 typedef、`struct_size` 读取规则（`SHOT_REQUIRES` / `SHOT_HAS_FIELD` / `SHOT_STATIC_ASSERT`）、`SHOT_LOG_*` |
+| `plugin_api/interfaces.h` | 全部 interface id 宏（`SHOT_IFACE_*` 与 `SHOT_HOST_IFACE_*`），本文档 §4 登记表在代码里的副本 |
+| `plugin_api/image.h` | `ShotImage` 与 `SHOT_PIXEL_FORMAT_*`（图像数据契约） |
+| `plugin_api/plugin_info.h` | `ShotPluginInfo` 与 `PLUGIN_META_START_MARKER` / `PLUGIN_META_END_MARKER` |
+| `plugin_api/image_processor.h` | `shot.image_processor` 函数表 |
+| `plugin_api/lib_provider.h` | `shot.lib_provider` 函数表 |
+| `plugin_api/configurable.h` | `SHOT_CONFIG_KIND_*`、`ShotConfigDesc`、`shot.configurable` 函数表 |
+| `plugin_api/ui_provider.h` | `ShotEvent` 与 `shot.ui_provider` 函数表 |
+| `plugin_api/screen_capture.h` | `ShotCaptureInfo` 与 `shot.screen_capture` 函数表 |
+| `plugin_api/image_saver.h` | `shot.image_saver` 函数表 |
+| `plugin_api/host_services.h` | `ShotHostServices` 与五个宿主服务结构体（config / board_msg / event_bus / plugin_lists / plugin_registry，含 `ShotPluginStatus` 与 `SHOT_PLUGIN_STATE_*`） |
+| `plugin_api/module.h` | `ShotModule` 与唯一导出 `shot_module_entry()` |
+| `plugin_api/abi_layout.h` | 全部 `static_assert` 布局锚点（§6 的机器可读副本），汇总头里**最后** include |
+
+构建期按文本读契约的脚本（`cmake/ValidatePluginMeta.cmake`、`cmake/AppendPluginMeta.cmake`）
+经 `cmake/ReadContractHeader.cmake` 把汇总头与全部子头拼成整份文本再匹配，
+所以别把宏或结构体放回汇总头，也别在 `plugin_api/` 下再嵌套子目录。
 
 ## 1. 版本规则
 
@@ -76,7 +104,7 @@ major 涨到 2。**从 2.0 起，新增一种 UI/宿主数据不再改 ABI**：�
 
 ## 6. 布局锚点（改这里 = 改 ABI）
 
-`plugin_api.h` 末尾的 `static_assert` 是 ABI 的机器可读副本。当前值：
+`plugin_api/abi_layout.h` 里的 `static_assert` 是 ABI 的机器可读副本（汇总头最后 include 它）。当前值：
 
 | 结构体 | `sizeof` | 关键偏移 |
 | --- | --- | --- |
@@ -104,10 +132,11 @@ major 涨到 2。**从 2.0 起，新增一种 UI/宿主数据不再改 ABI**：�
 ## 7. 改契约前的检查清单
 
 - [ ] 我只在结构体**末尾**加了字段？（没有重排、没有改类型）
+- [ ] 我改的是 `plugin_api/*.h` 里的子头，没有把内容塞回只做 include 的汇总头？
 - [ ] 新字段在"老宿主不调用它"的情况下语义仍然正确？
 - [ ] 新能力用的是新的 interface id，而不是往老 id 里塞不相关的东西？
 - [ ] `struct_size` 由构造方填好了（插件用 `SHOT_OPS` 宏就不会漏）？
-- [ ] `static_assert` 与上面的布局表同步更新了？
+- [ ] `plugin_api/abi_layout.h` 的 `static_assert` 与上面的布局表同步更新了？
 - [ ] `abi_minor`（或 major）按规则递增了？
 - [ ] 新增的 id / key 登记进本文档了？
 - [ ] `document/README_SDK.md` 里的约定与实现一致？
