@@ -22,8 +22,11 @@ namespace region_selector {
  *     window，原因见 README §3.1）；
  *   - 收到 `capture.request`（`mode = "region"` 且没有可用的 `region` 对象）后，
  *     在鼠标所在显示器上显示无边框、置顶、整屏的覆盖层，进入框选；
- *   - 松开左键 = 确认：先隐藏窗口并等待遮罩从合成器消失，再发布带 `region` 的
- *     `capture.request`；Esc / 右键 / 任一边小于 8 像素 = 取消，不发布任何事件；
+ *   - 覆盖层显示后：鼠标停在某个顶层窗口上时选框吸附到该窗口（指数平滑）；单击
+ *     （位移 ≤4px、按住 ≤400ms）= 直接采集该窗口；拖动（位移 >4px）= 手绘选区，
+ *     拖动期间严格跟手、不做吸附与动画；
+ *   - 确认时先隐藏窗口并等待遮罩从合成器消失，再发布带 `region` 的
+ *     `capture.request`；Esc / 右键 / 拖动选区任一边小于 8 像素 = 取消，不发布事件；
  *   - stop() 退订事件总线、停线程、销毁自己的窗口，返回前线程已 join。
  *
  * GLFW / OpenGL / ImGui 类型全部关在 Impl 里（内部头 region_window_impl.h），

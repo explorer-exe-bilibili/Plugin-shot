@@ -7,24 +7,29 @@
 //  等前置声明出现在这里，本头不拖 <GLFW/glfw3.h>，也不含任何平台头；公共头
 //  region_window.h 不包含任何图形库类型。
 //
-//  定义按职责拆成四个 .cpp（STYLE.md §6.7/§6.8）：
+//  定义按职责拆成多个 .cpp（STYLE.md §6.7/§6.8）：
 //    region_window.cpp   —— 生命周期 / 窗口线程 / GLFW 事件循环 / 事件队列 /
 //                           触发负载解析 / 隐藏后发布（提交）
-//    region_overlay.cpp  —— 框选交互状态机 + ImGui 遮罩绘制
+//    region_overlay.cpp  —— 框选交互状态机 + 悬停吸附动画
+//    region_overlay_draw.cpp —— ImGui 遮罩 / 选区 / 折角 / 标签绘制
 //    region_graphics.cpp —— ImGui 后端、字体与 DPI 缩放、每帧渲染
 //    region_background.cpp —— 触发瞬间的桌面快照（Win32 GDI）+ 上传成 GL 纹理
 //    region_geometry.cpp —— 显示器矩形 / 光标 / 物理虚拟桌面坐标换算（Win32 平台层）
+//    window_target.cpp   —— 顶层窗口枚举 / Z 序 / DWM 边界 / 命中测试（纯 Win32 查询）
 // ============================================================================
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "plugin_api.h"
 #include "region_window.h"
+#include "window_target.h"
 
 struct GLFWwindow;   // 前置声明：内部头不拖 GLFW/GL 头文件
 struct GLFWmonitor;
@@ -57,6 +62,23 @@ inline constexpr int kHideSettleDelayMs = 100;
 /** @brief 框选时的事件轮询间隔（秒）：鼠标拖动要跟手，有事件时 glfwWaitEventsTimeout 立即返回。 */
 inline constexpr double kSelectionPollSeconds = 1.0 / 120.0;
 
+/**
+ * @brief 悬停吸附的指数平滑时间常数（秒）。
+ *
+ * 100ms 是本需求拍板的观感：窗口切换时选框"滑"过去而不是瞬移，但 3~4 帧内就能
+ * 走完大部分距离，不会让用户觉得延迟。实现是每帧 alpha = 1 - exp(-dt/tau)。
+ */
+inline constexpr double kHoverSmoothTimeConstantSeconds = 0.1;
+
+/** @brief 窗口枚举节流间隔（毫秒）：覆盖层铺满屏幕，每帧枚举上百个窗口太浪费。 */
+inline constexpr int kWindowScanIntervalMs = 30;
+
+/** @brief 单击判定：按下到松开的最大位移（物理像素）。超过就进入拖动模式。 */
+inline constexpr int kClickMaxMovePixels = 4;
+
+/** @brief 单击判定：按下到松开的最长按住时间（毫秒）。 */
+inline constexpr int kClickMaxHoldMs = 400;
+
 /** @brief 队列里的一个事件：主题名 + 负载字节（总线单条负载上限 64 KiB）。 */
 struct QueuedEvent {
     std::string name;
@@ -78,12 +100,34 @@ struct ScreenRect {
  * framebuffer == window size，所以直接等于绘制用的像素坐标）。
  */
 struct DragState {
-    bool dragging = false;    /**< 已经看到一次左键按下，正在拖。 */
+    bool dragging = false;    /**< 已越过单击阈值：选框跟手，不做吸附/动画。 */
+    bool pressed = false;     /**< 左键已按下：可能是单击，也可能是拖拽的第一个阶段。 */
     bool waitRelease = false; /**< 显示覆盖层时左键还按着：先等它松开，别把菜单点击当确认。 */
-    int startX = 0;           /**< 拖拽起点 x。 */
-    int startY = 0;           /**< 拖拽起点 y。 */
+    int startX = 0;           /**< 按下 / 拖拽起点 x。 */
+    int startY = 0;           /**< 按下 / 拖拽起点 y。 */
     int cursorX = 0;          /**< 当前光标 x。 */
     int cursorY = 0;          /**< 当前光标 y。 */
+    /** 按下时刻：松开时用它判断"按住 ≤400ms"的单击。 */
+    std::chrono::steady_clock::time_point pressTime;
+};
+
+/**
+ * @brief 悬停吸附框：锚点目标矩形 + 当前显示矩形 + 上次动画时刻。
+ *
+ * 坐标是覆盖层内容坐标（物理像素）。当前显示矩形用 float：每帧按指数曲线逼近
+ * 目标，若存整数会因反复取整产生 ±1px 抖动。目标矩形保持整数——它是真实窗口
+ * 矩形，单击确认时直接用 target，而不是动画中的 current。
+ */
+struct HoverBox {
+    bool active = false;       /**< 光标当前是否落在某个候选窗口上。 */
+    bool initialized = false;  /**< 是否已经有过显示位置：显示首帧直接对齐，不从 (0,0) 飞入。 */
+    std::uintptr_t hwnd = 0;   /**< 当前目标窗口句柄（只用于变化时打 debug 日志）。 */
+    ScreenRect target;         /**< 目标矩形（内容坐标）；单击确认时用这个。 */
+    float x = 0.0f;            /**< 当前显示矩形左边缘（内容坐标）。 */
+    float y = 0.0f;            /**< 当前显示矩形上边缘。 */
+    float width = 0.0f;        /**< 当前显示矩形宽度。 */
+    float height = 0.0f;       /**< 当前显示矩形高度。 */
+    std::chrono::steady_clock::time_point lastTick; /**< 上一帧动画时刻（算 dt 用）。 */
 };
 
 /**
@@ -121,7 +165,14 @@ struct RegionWindow::Impl {
     bool metricsLogged = false;   // 显示器几何实测日志只打一次
     bool overlayVisible = false;  // 覆盖层是否正在显示
     DragState drag;               // 当前框选状态
-    ScreenRect monitorRect;       // 当前覆盖的显示器矩形（绝对物理像素）
+    HoverBox hover;               // 悬停窗口吸附框（目标 + 动画中的显示矩形）
+    std::vector<WindowTarget> windowTargets;  // 最近一次枚举结果（绝对物理像素，Z 序）
+    std::chrono::steady_clock::time_point lastWindowScan;  // 上次枚举时刻（30ms 节流）
+    bool windowScanValid = false;      // windowTargets 是否有有效快照
+    std::uintptr_t overlayHwnd = 0;    // 覆盖层自己的 HWND：枚举时必须排除
+    std::uint32_t themeColorRgb = 0x4C9AFFu;  // 主题色（0xRRGGBB，每次显示读一次配置）
+    float uiScale = 1.0f;              // 当前显示器 content scale：只放大字号与装饰
+    ScreenRect monitorRect;            // 当前覆盖的显示器矩形（绝对物理像素）
     // 触发瞬间的桌面快照纹理：覆盖层窗口是不透明的，靠它当"背景画面"，
     // 这样就不依赖透明窗口（透明帧缓冲在 hide/show 之后会丢 DWM 合成，导致黑屏）。
     unsigned int backgroundTexture = 0;
@@ -142,16 +193,22 @@ struct RegionWindow::Impl {
     void shutdownWindow();
     bool startSelection();
     void cancelSelection();
-    void finishSelection(int localX, int localY, int localWidth, int localHeight);
+    void finishSelection(int localX, int localY, int localWidth, int localHeight, bool windowClick);
     void hideOverlay();
     void publishRegion(const ScreenRect& region) const;
     static void onBusEvent(void* user, const char* topic, const void* data, std::uint32_t len);
     static void onGlfwError(int errorCode, const char* description);
 
-    // ---- 覆盖层交互与绘制（region_overlay.cpp） ----
+    // ---- 覆盖层交互与绘制（region_overlay.cpp / region_overlay_draw.cpp） ----
     void updateSelection();
+    void updateHover();
+    void animateHover();
+    void loadThemeColor();
     void drawOverlay() const;
     void applyMonitorScale(float scale);
+    /** @brief 由任意两个对角点生成左上角 + 非负宽高；交互与绘制两个 TU 共用。 */
+    static void normalizeRect(int ax, int ay, int bx, int by, int& x, int& y, int& width,
+                              int& height);
 
     // ---- 图形层：ImGui 后端 / 字体 / 每帧渲染（region_graphics.cpp） ----
     bool initImGui();
@@ -166,6 +223,7 @@ struct RegionWindow::Impl {
     // ---- 平台几何：显示器与物理坐标（region_geometry.cpp） ----
     bool monitorUnderCursor(ScreenRect& out, float& contentScale) const;
     void virtualDesktopOrigin(int& x, int& y) const;
+    std::uintptr_t nativeWindowHandle() const;
     void logMonitorMetrics() const;
     static ScreenRect monitorRectOf(GLFWmonitor* monitor);
 };

@@ -1,73 +1,245 @@
-// region_overlay —— 框选交互状态机 + ImGui 遮罩/十字线/选区绘制。
+// region_overlay —— 框选交互状态机 + 悬停窗口吸附与指数平滑动画。
 //
 // 交互全部在 UI 线程上轮询（glfwGetMouseButton / glfwGetKey），不接 GLFW 回调：
 // 这里只需要"当前按没按下"，轮询比回调 + 状态标志更好读，也不会漏掉回调顺序。
 //
 // 状态机（每次覆盖层显示都是一次全新的会话）：
-//   显示覆盖层        → 记录光标位置；若左键还按着，先等它松开（waitRelease）
-//   左键按下          → dragging = true，记下起点
-//   移动              → 每帧刷新 drag.cursor，绘制用
-//   左键松开          → 确认：任一边 < 8 物理像素按取消处理；否则交给
-//                       region_window.cpp 的 finishSelection（隐藏 → 等待 → 发布）
+//   显示覆盖层        → 定位光标；若左键还按着，先等它松开（waitRelease）
+//   空闲（无按键）    → 每帧枚举/命中光标下的顶层窗口，选框用指数平滑吸附过去
+//   左键按下          → 记下起点与时刻（pressed）；此时还可能是单击
+//   位移 > 4px        → 进入拖动模式（dragging）：选框严格跟手，**禁用**吸附与动画
+//   松开（单击）      → 位移 ≤4px 且按住 ≤400ms：直接用悬停窗口矩形确认采集
+//   松开（拖动）      → 用跟手矩形确认；任一边 < 8 物理像素按取消处理
 //   Esc / 右键        → 取消：只隐藏窗口，不发布任何事件（v1 不定义 capture.cancelled）
 //
-// 绘制全部用 ImGui 的 background draw list，不创建 ImGui 窗口：覆盖层没有布局、
-// 没有控件，只是把桌面快照当背景铺满、把选区外画暗、把选区挖空（露出背景快照）、
-// 画十字线和一个尺寸标签。
+// 为什么拖动时禁用动画/吸附（需求硬约束）：
+//   拖动时用户期待选框边缘和鼠标之间没有延迟；平滑动画会让选框"追"鼠标，选出来的
+//   区域和松手位置对不上。悬停吸附还会在拖过窗口边界时突然跳变，所以两者都关掉。
+//
+// 绘制全部在 region_overlay_draw.cpp：本文件只维护"当前应该画哪个矩形"的状态。
 //
 // 坐标：drag 里存的是窗口内容坐标（物理像素）。绘制用 framebuffer 坐标，两者在
-// Windows PMv2 下相等（实测 2560x1600 == 2560x1600）；这里仍按 ActualScale 换算一次，
-// 万一将来窗口被系统缩放也不会画歪。
+// Windows PMv2 下相等（实测 2560x1600 == 2560x1600）；绘制侧仍按 ActualScale 换算一次，
+// 万一将来窗口被系统缩放也不会画歪。content scale 只放大字号与折角/边框这类装饰，
+// 绝不乘进区域坐标。
 
 #include <algorithm>
-#include <cfloat>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <string>
 
 #include "region_window_impl.h"
 #include "shot_plugin_helpers.h"
 
 #include <GLFW/glfw3.h>
 
-#include "imgui.h"
-
 namespace region_selector {
 namespace {
 
-/** @brief 遮罩：纯黑约 51% 不透明度，压暗但不至于看不清下面的内容。 */
-constexpr ImU32 kDimColor = IM_COL32(0, 0, 0, 130);
-/** @brief 选区边框：亮蓝色，和深色遮罩对比度足够。 */
-constexpr ImU32 kSelectionBorderColor = IM_COL32(90, 200, 250, 255);
-/** @brief 十字线：半透明白，不抢选区边框的视觉焦点。 */
-constexpr ImU32 kCrosshairColor = IM_COL32(255, 255, 255, 110);
-/** @brief 提示文字与它的底色。 */
-constexpr ImU32 kHintTextColor = IM_COL32(235, 235, 235, 255);
-constexpr ImU32 kHintBackColor = IM_COL32(0, 0, 0, 170);
-/** @brief 选区边框粗细（像素）。 */
-constexpr float kBorderThickness = 2.0f;
-/** @brief 尺寸标签与选区之间的间距（像素）。 */
-constexpr float kLabelGap = 8.0f;
+/** @brief 主题色默认值：配置项 `core/theme_color` 缺失 / 非法时用它。 */
+constexpr char kDefaultThemeColorHex[] = "#4C9AFF";
+constexpr std::uint32_t kDefaultThemeRgb = 0x4C9AFFu;
 
-/** @brief 让矩形从任意两个对角点生成（左上 + 宽高，宽高非负）。 */
-void normalizeRect(int ax, int ay, int bx, int by, int& x, int& y, int& width, int& height) {
+/**
+ * @brief 解析 `#RRGGBB`（`#` 可省略）成 0xRRGGBB。
+ *
+ * 只接受 6 位十六进制：宿主配置项约定就是这个格式，多支持 #RGB/#AARRGGBB 只会让
+ * "非法时用默认色"的边界变得含糊。解析失败返回 false，由调用方回退默认色。
+ */
+bool parseThemeColor(const std::string& text, std::uint32_t& out) {
+    std::size_t index = 0;
+    if (!text.empty() && text[0] == '#') {
+        index = 1;
+    }
+    if (text.size() - index != 6) {
+        return false;
+    }
+    std::uint32_t value = 0;
+    for (; index < text.size(); ++index) {
+        const char ch = text[index];
+        int digit = -1;
+        if (ch >= '0' && ch <= '9') {
+            digit = ch - '0';
+        } else if (ch >= 'a' && ch <= 'f') {
+            digit = ch - 'a' + 10;
+        } else if (ch >= 'A' && ch <= 'F') {
+            digit = ch - 'A' + 10;
+        } else {
+            return false;
+        }
+        value = value * 16u + static_cast<std::uint32_t>(digit);
+    }
+    out = value;
+    return true;
+}
+
+/** @brief 把浮点值按指数平滑逼近目标；足够近时直接吸附，避免永远差零点几像素。 */
+void approachValue(float& value, float target, float alpha) {
+    const float delta = target - value;
+    if (std::abs(delta) <= 0.5f) {
+        value = target;
+        return;
+    }
+    value += delta * alpha;
+}
+
+}  // namespace
+
+void RegionWindow::Impl::normalizeRect(int ax, int ay, int bx, int by, int& x, int& y,
+                                       int& width, int& height) {
     x = std::min(ax, bx);
     y = std::min(ay, by);
     width = std::abs(bx - ax);
     height = std::abs(by - ay);
 }
 
-/**
- * @brief 取覆盖层文案：i18n 不可用（老宿主 / 初始化失败）时退回中文原文。
- *
- * 只是把空指针判断收在一处；tr() 查的是插件本地表（O(1)、不碰宿主），所以每帧
- * 直接调用没有问题。返回值指向语言表节点，窗口存活期间一直有效，但不要跨帧缓存。
- * 与任何类无关、只在本 TU 用，所以放匿名命名空间（STYLE.md §6.7）。
- */
-const char* overlayText(const shot::I18n* i18n, const char* key, const char* fallback) {
-    return (i18n != nullptr) ? i18n->tr(key, fallback) : fallback;
+// ---------------------------------------------------------------------------
+// 主题色：每次显示覆盖层读一次（配置变化不需要实时刷新）
+// ---------------------------------------------------------------------------
+void RegionWindow::Impl::loadThemeColor() {
+    shot::Config config(host);
+    const std::string text = config.getString("core/theme_color", kDefaultThemeColorHex);
+    std::uint32_t rgb = kDefaultThemeRgb;
+    if (!parseThemeColor(text, rgb)) {
+        // 读不到（老宿主没有配置服务）或格式非法都走这里：用需求给定的默认亮蓝色，
+        // 保证覆盖层永远有可见的颜色，而不是画成黑色。
+        rgb = kDefaultThemeRgb;
+        if (!text.empty() && text != kDefaultThemeColorHex) {
+            shot::Logger(host).debug(
+                "region_selector：core/theme_color 不是 #RRGGBB，使用默认 #4C9AFF");
+        }
+    }
+    themeColorRgb = rgb;
 }
 
-}  // namespace
+// ---------------------------------------------------------------------------
+// 悬停窗口：节流枚举 + 命中 + 指数平滑
+// ---------------------------------------------------------------------------
+void RegionWindow::Impl::updateHover() {
+    if (window == nullptr || overlayHwnd == 0) {
+        // 拿不到自己的 HWND 时宁可关掉吸附：否则枚举结果里可能包含覆盖层自己，
+        // 选框会永远吸附在一块全屏矩形上。拖动框选不受影响。
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    // 最多每 30ms 枚举一次：覆盖层每帧 120Hz，逐帧 EnumWindows + DWM 查询上百个窗口
+    // 会白白吃掉 UI 线程。30ms 的 hover 延迟用户感觉不出来。
+    if (!windowScanValid ||
+        now - lastWindowScan >= std::chrono::milliseconds(kWindowScanIntervalMs)) {
+        windowTargets = listWindowTargets(overlayHwnd);
+        lastWindowScan = now;
+        windowScanValid = true;
+    }
 
+    // 光标屏幕坐标 = 窗口位置 + 窗口内坐标。用未夹取的原始值：鼠标暂时移出窗口
+    // 边缘时，夹取后的坐标会命中错误的窗口。
+    int windowX = 0;
+    int windowY = 0;
+    glfwGetWindowPos(window, &windowX, &windowY);
+    double cursorX = 0.0;
+    double cursorY = 0.0;
+    glfwGetCursorPos(window, &cursorX, &cursorY);
+    int windowWidth = 0;
+    int windowHeight = 0;
+    glfwGetWindowSize(window, &windowWidth, &windowHeight);
+    if (windowWidth <= 0 || windowHeight <= 0 || cursorX < 0.0 || cursorY < 0.0 ||
+        cursorX >= static_cast<double>(windowWidth) ||
+        cursorY >= static_cast<double>(windowHeight)) {
+        // 光标已移出本屏（覆盖层只铺当前显示器）：不要吸附到另一块屏上的窗口——
+        // 选框画不出来，用户会盲点。跨屏选择是 README §7 的已知限制。
+        if (hover.active) {
+            shot::Logger(host).debug("region_selector：光标移出覆盖层所在显示器，隐藏悬停框");
+        }
+        hover.active = false;
+        hover.initialized = false;
+        hover.hwnd = 0;
+        return;
+    }
+    const int screenX = windowX + static_cast<int>(cursorX);
+    const int screenY = windowY + static_cast<int>(cursorY);
+
+    const WindowTarget* hit = nullptr;
+    for (const WindowTarget& target : windowTargets) {
+        if (screenX >= target.x && screenX < target.x + target.width && screenY >= target.y &&
+            screenY < target.y + target.height) {
+            hit = &target;  // 列表已按 Z 序排好，第一个包含点的就是最上层窗口
+            break;
+        }
+    }
+
+    if (hit == nullptr) {
+        if (hover.active) {
+            shot::Logger(host).debug("region_selector：光标下没有候选窗口，隐藏悬停框");
+        }
+        // 下次从"无框"变"有框"时直接落位，不要从上一个窗口的旧位置飞进来。
+        hover.active = false;
+        hover.initialized = false;
+        hover.hwnd = 0;
+        return;
+    }
+
+    ScreenRect local;
+    local.x = hit->x - windowX;
+    local.y = hit->y - windowY;
+    local.width = hit->width;
+    local.height = hit->height;
+
+    const bool changed = !hover.active || hover.hwnd != hit->hwnd ||
+                         hover.target.x != local.x || hover.target.y != local.y ||
+                         hover.target.width != local.width ||
+                         hover.target.height != local.height;
+    if (!hover.active) {
+        // 无框 → 有框：直接等于目标，不从旧位置飞入（与"显示首帧不飞入"同一原则）。
+        hover.x = static_cast<float>(local.x);
+        hover.y = static_cast<float>(local.y);
+        hover.width = static_cast<float>(local.width);
+        hover.height = static_cast<float>(local.height);
+        hover.initialized = true;
+        hover.lastTick = now;
+    } else if (changed) {
+        // 目标变了：从这一帧开始计时，避免把上一帧到现在的 dt 也算进新目标。
+        hover.lastTick = now;
+    }
+    if (changed) {
+        char text[192] = {};
+        std::snprintf(text, sizeof(text),
+                      "region_selector：悬停窗口 hwnd=0x%llx rect=(%d,%d) %dx%d（已换算到覆盖层坐标）",
+                      static_cast<unsigned long long>(hit->hwnd), local.x, local.y, local.width,
+                      local.height);
+        shot::Logger(host).debug(text);
+    }
+    hover.active = true;
+    hover.hwnd = hit->hwnd;
+    hover.target = local;
+    animateHover();
+}
+
+void RegionWindow::Impl::animateHover() {
+    if (!hover.active || !hover.initialized) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    double dt = std::chrono::duration<double>(now - hover.lastTick).count();
+    hover.lastTick = now;
+    if (dt <= 0.0) {
+        return;
+    }
+    // 卡顿/断点恢复时不让一步跳过大半个屏幕：夹到 250ms，最多一次走完约 92%。
+    dt = std::min(dt, 0.25);
+    // 指数平滑：alpha = 1 - exp(-dt/tau)；tau=100ms 时每帧约完成 8%（120Hz）。
+    const float alpha =
+        static_cast<float>(1.0 - std::exp(-dt / kHoverSmoothTimeConstantSeconds));
+    approachValue(hover.x, static_cast<float>(hover.target.x), alpha);
+    approachValue(hover.y, static_cast<float>(hover.target.y), alpha);
+    approachValue(hover.width, static_cast<float>(hover.target.width), alpha);
+    approachValue(hover.height, static_cast<float>(hover.target.height), alpha);
+}
+
+// ---------------------------------------------------------------------------
+// 交互状态机
+// ---------------------------------------------------------------------------
 void RegionWindow::Impl::updateSelection() {
     if (window == nullptr || !imguiInitialized) {
         return;
@@ -94,160 +266,76 @@ void RegionWindow::Impl::updateSelection() {
     }
 
     const bool leftDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    const auto now = std::chrono::steady_clock::now();
+
     if (drag.waitRelease) {
         // 覆盖层显示时左键还按着（例如从托盘菜单触发、菜单收起前事件已经发出）：
-        // 先等它松开，否则这次按下会被当成拖拽起点，松手立刻确认出一个 0x0 选区。
+        // 先等它松开，否则这次按下会被当成单击/拖拽起点。
         if (!leftDown) {
             drag.waitRelease = false;
         }
+        updateHover();  // 等松手期间仍然显示吸附框，用户能看到即将截哪块
         return;
     }
-    if (!drag.dragging) {
-        if (leftDown) {
-            drag.dragging = true;
-            drag.startX = drag.cursorX;
-            drag.startY = drag.cursorY;
-        }
-        return;
-    }
-    if (leftDown) {
-        return;  // 还在拖：drag.cursor 每帧已刷新，绘制直接用
-    }
 
-    // 左键松开 = 确认。尺寸检查与"隐藏 → 等待 → 发布"的时序在 finishSelection 里，
-    // 因为那是窗口生命周期/提交关注点，不属于交互绘制文件。
-    int x = 0;
-    int y = 0;
-    int width = 0;
-    int height = 0;
-    normalizeRect(drag.startX, drag.startY, drag.cursorX, drag.cursorY, x, y, width, height);
-    finishSelection(x, y, width, height);
-}
-
-void RegionWindow::Impl::drawOverlay() const {
-    if (window == nullptr || !imguiInitialized) {
-        return;
-    }
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    if (viewport == nullptr) {
-        return;
-    }
-    const ImVec2 origin = viewport->Pos;
-    const ImVec2 size = viewport->Size;
-    if (size.x <= 0.0f || size.y <= 0.0f) {
-        return;
-    }
-    const ImVec2 bottomRight(origin.x + size.x, origin.y + size.y);
-
-    // 窗口坐标 → ImGui 绘制坐标的换算系数。PMv2 下窗口物理像素 == framebuffer 像素，
-    // 系数恒为 1；保留换算是为了不把"坐标空间相同"当成硬编码假设写死。
-    int windowWidth = 0;
-    int windowHeight = 0;
-    int framebufferWidth = 0;
-    int framebufferHeight = 0;
-    glfwGetWindowSize(window, &windowWidth, &windowHeight);
-    glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-    const float scaleX = (windowWidth > 0 && framebufferWidth > 0)
-                             ? static_cast<float>(framebufferWidth) / static_cast<float>(windowWidth)
-                             : 1.0f;
-    const float scaleY = (windowHeight > 0 && framebufferHeight > 0)
-                             ? static_cast<float>(framebufferHeight) / static_cast<float>(windowHeight)
-                             : 1.0f;
-    const auto toOverlay = [&](int localX, int localY) {
-        return ImVec2(origin.x + static_cast<float>(localX) * scaleX,
-                      origin.y + static_cast<float>(localY) * scaleY);
-    };
-
-    ImDrawList* draw = ImGui::GetBackgroundDrawList();
-    if (draw == nullptr) {
-        return;
-    }
-    ImFont* font = ImGui::GetFont();
-    const float fontSize = ImGui::GetFontSize();
-
-    // 0. 背景：触发瞬间的桌面快照。窗口是不透明的，这张图就是用户看到的"桌面"，
-    //    遮罩与挖空都画在它上面（等价于透明覆盖层，但不依赖 DWM 合成）。
-    if (backgroundTexture != 0) {
-        // 按纹理原始尺寸画（= 显示器尺寸），不要拉满整个窗口：窗口比显示器大 1px，
-        // 拉满会把快照整体拉伸 1px。多出来的那条边在屏幕外，看不见。
-        const ImVec2 backgroundMax(origin.x + static_cast<float>(backgroundWidth),
-                                   origin.y + static_cast<float>(backgroundHeight));
-        draw->AddImage(static_cast<ImTextureID>(backgroundTexture), origin, backgroundMax);
-    }
-
-    // 1. 暗色遮罩：拖拽中只压暗"选区之外"的四块，选区本身保持完全透明——
-    //    窗口是透明帧缓冲，挖空的地方能直接看到真实桌面，所见即所截。
-    bool hasSelection = false;
-    ImVec2 selectionMin;
-    ImVec2 selectionMax;
-    int localWidth = 0;
-    int localHeight = 0;
     if (drag.dragging) {
-        int localX = 0;
-        int localY = 0;
-        normalizeRect(drag.startX, drag.startY, drag.cursorX, drag.cursorY, localX, localY,
-                      localWidth, localHeight);
-        if (localWidth > 0 && localHeight > 0) {
-            hasSelection = true;
-            selectionMin = toOverlay(localX, localY);
-            selectionMax = toOverlay(localX + localWidth, localY + localHeight);
+        // 拖动中**不枚举窗口、不做动画**：需求要求选框严格跟手。这里提前返回，
+        // 连 windowTargets 都不刷新，避免拖拽时每 30ms 偷偷枚举一次。
+        if (leftDown) {
+            return;  // drag.cursor 每帧已刷新，绘制直接用
         }
-    }
-    if (hasSelection) {
-        // 上 / 下 / 左 / 右 四块遮罩（顺序：先上下整行，再左右只盖选区高度）。
-        draw->AddRectFilled(origin, ImVec2(bottomRight.x, selectionMin.y), kDimColor);
-        draw->AddRectFilled(ImVec2(origin.x, selectionMax.y), bottomRight, kDimColor);
-        draw->AddRectFilled(ImVec2(origin.x, selectionMin.y),
-                            ImVec2(selectionMin.x, selectionMax.y), kDimColor);
-        draw->AddRectFilled(ImVec2(selectionMax.x, selectionMin.y),
-                            ImVec2(bottomRight.x, selectionMax.y), kDimColor);
-    } else {
-        draw->AddRectFilled(origin, bottomRight, kDimColor);
+        // 左键松开 = 确认。尺寸检查与"隐藏 → 等待 → 发布"的时序在 finishSelection 里，
+        // 因为那是窗口生命周期/提交关注点，不属于交互绘制文件。
+        int x = 0;
+        int y = 0;
+        int width = 0;
+        int height = 0;
+        normalizeRect(drag.startX, drag.startY, drag.cursorX, drag.cursorY, x, y, width, height);
+        finishSelection(x, y, width, height, false);
+        return;
     }
 
-    // 2. 十字线：贯穿整屏，方便对齐边缘。
-    const ImVec2 cursor = toOverlay(drag.cursorX, drag.cursorY);
-    draw->AddLine(ImVec2(origin.x, cursor.y), ImVec2(bottomRight.x, cursor.y), kCrosshairColor,
-                  1.0f);
-    draw->AddLine(ImVec2(cursor.x, origin.y), ImVec2(cursor.x, bottomRight.y), kCrosshairColor,
-                  1.0f);
-
-    // 3. 选区边框 + 尺寸标签（选区内部不填充：透明窗口已经能透出真实桌面）。
-    if (hasSelection) {
-        draw->AddRect(selectionMin, selectionMax, kSelectionBorderColor, 0.0f, 0,
-                      kBorderThickness);
-
-        // 尺寸标签：优先放选区上方，上方没空间就放下方；再夹进屏幕内。
-        // 数字本身与语言无关，只有单位跟着界面语言走（zh-CN"像素" / en-US"px"）。
-        char label[64] = {};
-        const char* unit = overlayText(i18n, "overlay.size.unit", "像素");
-        std::snprintf(label, sizeof(label), "%d x %d %s", localWidth, localHeight, unit);
-        const ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label);
-        ImVec2 textPos(selectionMin.x, selectionMin.y - textSize.y - kLabelGap);
-        if (textPos.y < origin.y + 4.0f) {
-            textPos.y = selectionMax.y + kLabelGap;
+    if (drag.pressed) {
+        if (leftDown) {
+            // 还没越过阈值：仍然算"悬停"，选框可以平滑到新窗口（用户可能只想单击）。
+            updateHover();
+            const int moveX = std::abs(drag.cursorX - drag.startX);
+            const int moveY = std::abs(drag.cursorY - drag.startY);
+            if (moveX > kClickMaxMovePixels || moveY > kClickMaxMovePixels) {
+                drag.dragging = true;
+                shot::Logger(host).debug(
+                    "region_selector：位移超过 4px，进入拖动模式（禁用窗口吸附与动画）");
+            }
+            return;
         }
-        if (textPos.y + textSize.y > bottomRight.y - 4.0f) {
-            textPos.y = selectionMin.y + kLabelGap;
+
+        // 松开：位移 ≤4px 且按住 ≤400ms 才是"单击截窗口"；否则按取消处理。
+        const int moveX = std::abs(drag.cursorX - drag.startX);
+        const int moveY = std::abs(drag.cursorY - drag.startY);
+        const auto heldMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - drag.pressTime).count();
+        const bool isClick = moveX <= kClickMaxMovePixels &&
+                             moveY <= kClickMaxMovePixels && heldMs <= kClickMaxHoldMs;
+        drag.pressed = false;
+        if (isClick && hover.active) {
+            // 用 hover.target（真实窗口矩形），不要用 hover.current（动画中的中间值）。
+            finishSelection(hover.target.x, hover.target.y, hover.target.width,
+                            hover.target.height, true);
+        } else {
+            // 按住超时或点在空白处：与旧版 0x0 选区一致，按取消处理，不发布事件。
+            cancelSelection();
         }
-        textPos.x = std::clamp(textPos.x, origin.x + 4.0f,
-                               std::max(origin.x + 4.0f, bottomRight.x - textSize.x - 12.0f));
-        draw->AddRectFilled(ImVec2(textPos.x - 6.0f, textPos.y - 4.0f),
-                            ImVec2(textPos.x + textSize.x + 6.0f, textPos.y + textSize.y + 4.0f),
-                            kHintBackColor, 4.0f);
-        draw->AddText(font, fontSize, textPos, kHintTextColor, label);
+        return;
     }
 
-    // 4. 顶部提示：说明怎么用、怎么取消。始终画在最上层。
-    //    文案来自语言表（overlay.hint）；日志才是固定中文，别把这里改回写死的中文。
-    const char* hint =
-        overlayText(i18n, "overlay.hint", "拖拽选择区域（物理像素） · Esc / 右键取消");
-    const ImVec2 hintSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, hint);
-    const ImVec2 hintPos(origin.x + (size.x - hintSize.x) * 0.5f, origin.y + 24.0f);
-    draw->AddRectFilled(ImVec2(hintPos.x - 8.0f, hintPos.y - 5.0f),
-                        ImVec2(hintPos.x + hintSize.x + 8.0f, hintPos.y + hintSize.y + 5.0f),
-                        kHintBackColor, 5.0f);
-    draw->AddText(font, fontSize, hintPos, kHintTextColor, hint);
+    // 空闲：先刷新悬停框（这是唯一会触发枚举/动画的路径），再处理本次按下。
+    updateHover();
+    if (leftDown) {
+        drag.pressed = true;
+        drag.startX = drag.cursorX;
+        drag.startY = drag.cursorY;
+        drag.pressTime = now;
+    }
 }
 
 }  // namespace region_selector

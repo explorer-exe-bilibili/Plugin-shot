@@ -11,10 +11,12 @@
 //     所以发布前要做 absolute - virtualDesktopOrigin 的减法（本机两块屏都在原点的
 //     右侧/下方，减法结果为 0，但代码不能省）。
 //
-// 只有本文件包含 <windows.h>：Win32 类型留在平台层，公共头与其它 .cpp 不碰它。
-// 本文件里的函数只服务覆盖层的显示与换算，与窗口生命周期无关。
+// 只有平台层文件包含 <windows.h>（本文件 / region_background.cpp / window_target.cpp）：
+// Win32 类型留在平台层，公共头与其它 .cpp 不碰它。本文件里的函数只服务覆盖层的
+// 显示与换算，与窗口生命周期无关。
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 
 #define WIN32_LEAN_AND_MEAN
@@ -22,10 +24,22 @@
 
 #include <GLFW/glfw3.h>  // 跨平台窗口库：显示器位置、视频模式、内容缩放
 
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>  // glfwGetWin32Window：把覆盖层 HWND 交给窗口枚举排除
+
 #include "region_window_impl.h"
 #include "shot_plugin_helpers.h"
 
 namespace region_selector {
+
+std::uintptr_t RegionWindow::Impl::nativeWindowHandle() const {
+    // 覆盖层自己是全屏置顶窗口，枚举时如果不按 HWND 排除，命中测试永远选中它。
+    // HWND 只在平台层出现；交给窗口枚举时转成整数，避免 Impl 头拖入 windows.h。
+    if (window == nullptr) {
+        return 0;
+    }
+    return reinterpret_cast<std::uintptr_t>(glfwGetWin32Window(window));
+}
 
 ScreenRect RegionWindow::Impl::monitorRectOf(GLFWmonitor* monitor) {
     ScreenRect rect;

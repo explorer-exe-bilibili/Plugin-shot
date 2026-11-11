@@ -60,16 +60,20 @@ find_package(imgui CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 
-# user32 用于 GetCursorPos / GetSystemMetrics（物理屏幕坐标，见 region_geometry.cpp）；
-# opengl32 用于 ImGui OpenGL3 后端的 GL 1.x 入口（与 settings_ui 同一套链接）。
+# user32 用于 GetCursorPos / GetSystemMetrics / EnumWindows（物理屏幕坐标与窗口枚举，
+# 见 region_geometry.cpp / window_target.cpp）；dwmapi 用于 DWMWA_EXTENDED_FRAME_BOUNDS
+# 与 DWMWA_CLOAKED（去掉不可见边框、排除 cloaked 窗口）；opengl32 用于 ImGui OpenGL3
+# 后端的 GL 1.x 入口（与 settings_ui 同一套链接）。
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
     SOURCES      src/plugin_entry.cpp
                  src/region_window.cpp
                  src/region_overlay.cpp
+                 src/region_overlay_draw.cpp
                  src/region_graphics.cpp
-    src/region_background.cpp
+                 src/region_background.cpp
                  src/region_geometry.cpp
+                 src/window_target.cpp
     INCLUDE_DIRS include
     LINK_LIBRARIES
                  imgui::imgui
@@ -77,4 +81,5 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  glfw
                  opengl32
                  user32
+                 dwmapi
 )

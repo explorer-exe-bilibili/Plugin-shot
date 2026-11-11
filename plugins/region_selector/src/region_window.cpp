@@ -24,6 +24,11 @@
 // 的订阅里，如果把它也当成触发就会"框选一次 → 又弹一次"无限循环。所以只有
 // **mode=region 但没有可用 region 对象** 的负载才是"请开始框选"。
 //
+// 本次会话的两种确认方式（交互细节在 region_overlay.cpp）：
+//   · 单击悬停的顶层窗口：window_target.cpp 枚举/命中，直接用窗口矩形发布；
+//   · 拖动：跟手选区，松开后发布。
+// 窗口枚举必须排除覆盖层自己的 HWND（它是全屏置顶窗口，否则永远命中自己）。
+//
 // 提交时序（需求硬约束）：先 glfwHideWindow + glfwPollEvents，再 sleep
 // kHideSettleDelayMs（100ms），最后才 publish capture.request。DWM 合成是异步的，
 // 隐藏函数返回不代表遮罩已经消失；宿主 worker 收到事件就抓屏，中间没有同步点。
@@ -407,8 +412,16 @@ bool RegionWindow::Impl::startSelection() {
     glfwSetWindowSize(window, monitor.width + kOverlayOversize,
                       monitor.height + kOverlayOversize);
     glfwSetWindowPos(window, monitor.x, monitor.y);
-    // content scale 只用来放大字号：坐标已经是物理像素，不能再乘它。
+    // content scale 只用来放大字号/折角：坐标已经是物理像素，不能再乘它。
     applyMonitorScale(contentScale);
+    uiScale = contentScale;
+
+    // 主题色每次显示覆盖层读一次（需求：配置变化不需要实时刷新）。读不到或格式非法
+    // 时 loadThemeColor 内部回退默认 #4C9AFF。
+    loadThemeColor();
+    // 枚举时必须排除覆盖层自己：它是全屏置顶窗口，不排除的话命中测试永远选中自己。
+    // HWND 只在平台层取（region_geometry.cpp），这里拿到的是整型句柄。
+    overlayHwnd = nativeWindowHandle();
 
     // 记录初始光标位置：覆盖层显示的第一帧就能画出十字线。
     int windowWidth = 0;
@@ -424,6 +437,32 @@ bool RegionWindow::Impl::startSelection() {
     drag.startY = drag.cursorY;
     // 显示覆盖层时左键可能还按着（从托盘菜单触发）：先等松开，别把菜单点击当确认。
     drag.waitRelease = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+
+    // 初始悬停目标：显示第一帧就落在光标下的窗口矩形上，**不从 (0,0) 飞入**
+    // （需求：动画只在非拖动、非显示首帧时生效）。找不到窗口就保持无框状态。
+    hover = HoverBox{};
+    windowTargets.clear();
+    windowScanValid = false;
+    int windowX = 0;
+    int windowY = 0;
+    glfwGetWindowPos(window, &windowX, &windowY);
+    WindowTarget initialTarget;
+    if (overlayHwnd != 0 &&
+        findWindowAt(windowX + static_cast<int>(cursorX), windowY + static_cast<int>(cursorY),
+                     overlayHwnd, initialTarget)) {
+        hover.active = true;
+        hover.initialized = true;
+        hover.hwnd = initialTarget.hwnd;
+        hover.target.x = initialTarget.x - windowX;
+        hover.target.y = initialTarget.y - windowY;
+        hover.target.width = initialTarget.width;
+        hover.target.height = initialTarget.height;
+        hover.x = static_cast<float>(hover.target.x);
+        hover.y = static_cast<float>(hover.target.y);
+        hover.width = static_cast<float>(hover.target.width);
+        hover.height = static_cast<float>(hover.target.height);
+        hover.lastTick = std::chrono::steady_clock::now();
+    }
 
     if (crosshairCursor != nullptr) {
         glfwSetCursor(window, crosshairCursor);
@@ -472,12 +511,20 @@ void RegionWindow::Impl::hideOverlay() {
     }
     overlayVisible = false;
     drag = DragState{};
+    // 取消/完成时复位吸附动画与枚举缓存：下次显示必须从"首帧直接对齐"开始，
+    // 不能带着上一次会话的动画中间值飞入。
+    hover = HoverBox{};
+    windowTargets.clear();
+    windowScanValid = false;
 }
 
-void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth, int localHeight) {
+void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth, int localHeight,
+                                         bool windowClick) {
     drag = DragState{};
-    // 任一边小于最小尺寸 = 没选中什么（误点/手抖）：按取消处理，不发布事件。
-    if (localWidth < kMinimumSelectionSize || localHeight < kMinimumSelectionSize) {
+    // 拖动时任一边小于最小尺寸 = 没选中什么（误点/手抖）：按取消处理，不发布事件。
+    // 单击窗口是例外：矩形由系统给出，再小也是用户真实看到的窗口，不受 8px 阈值限制。
+    if (!windowClick &&
+        (localWidth < kMinimumSelectionSize || localHeight < kMinimumSelectionSize)) {
         char text[128] = {};
         std::snprintf(text, sizeof(text),
                       "region_selector：选区过小（%dx%d < %dpx），按取消处理", localWidth,
@@ -485,6 +532,13 @@ void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth,
         shot::Logger(host).info(text);
         hideOverlay();
         return;
+    }
+    if (windowClick) {
+        char text[160] = {};
+        std::snprintf(text, sizeof(text),
+                      "region_selector：单击窗口确认 矩形=(%d,%d) %dx%d（覆盖层内容坐标）",
+                      localX, localY, localWidth, localHeight);
+        shot::Logger(host).info(text);
     }
 
     // 窗口内容坐标 → 绝对屏幕坐标 → 虚拟桌面坐标。
@@ -671,9 +725,14 @@ void RegionWindow::stop() {
         m_impl->glfwInitialized = false;
         std::queue<QueuedEvent>().swap(m_impl->queue);
     }
-    // UI 线程已经结束，这两个只属于 UI 线程的状态可以安全复位。
+    // UI 线程已经结束，下面这些只属于 UI 线程的状态可以安全复位。
     m_impl->overlayVisible = false;
     m_impl->drag = DragState{};
+    m_impl->hover = HoverBox{};
+    m_impl->windowTargets.clear();
+    m_impl->windowScanValid = false;
+    m_impl->overlayHwnd = 0;
+    m_impl->uiScale = 1.0f;
     // 线程已 join：不再有渲染帧读文案，放开对插件状态里语言表的借用关系。
     m_impl->i18n = nullptr;
 }

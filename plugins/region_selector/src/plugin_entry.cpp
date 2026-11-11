@@ -149,11 +149,11 @@ namespace {
 // ---------------------------------------------------------------------------
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
-    R"json("overlay.hint":"拖拽选择区域（物理像素） · Esc / 右键取消",)json"
+    R"json("region.hint":"单击截取窗口 · 拖拽选择区域 · Esc / 右键取消",)json"
     R"json("overlay.size.unit":"像素",)json"
     R"json("overlay.window_title":"Plugin-shot 区域选择"})json",
     R"json({"@meta":"en-US",)json"
-    R"json("overlay.hint":"Drag to select (physical pixels) · Esc / right-click to cancel",)json"
+    R"json("region.hint":"Click a window to capture · Drag to select · Esc / right-click to cancel",)json"
     R"json("overlay.size.unit":"px",)json"
     R"json("overlay.window_title":"Plugin-shot Region Select"})json",
 };

@@ -1,12 +1,15 @@
 # region_selector —— 区域选择覆盖层插件（`shot.ui_provider`）
 
-在**鼠标所在显示器**上弹出一个无边框、置顶、**半透明**、整屏的覆盖层，让用户拖拽框出一块矩形；
-确认后先隐藏覆盖层、等遮罩从屏幕上消失，再发布带 `region` 的 `capture.request`。
+在**鼠标所在显示器**上弹出一个无边框、置顶、**半透明**、整屏的覆盖层。覆盖层显示后：
+鼠标停在某个顶层窗口上时，选框会**吸附到该窗口**并带 100ms 指数平滑地平移/缩放过去；
+**单击**（位移 ≤4px、按住 ≤400ms）直接把当前悬停窗口的矩形作为采集区域；**拖动**则退化成
+原来的手绘选区（拖动期间严格跟手，不做吸附和动画）。确认后先隐藏覆盖层、等遮罩从屏幕上
+消失，再发布带 `region` 的 `capture.request`。
 
 覆盖层是**不透明窗口 + 触发瞬间的桌面快照**（`region_background.cpp`）：先 GDI 截一张该
-显示器的快照、上传成 GL 纹理，窗口用这张纹理铺满当背景，遮罩/挖空/十字线都画在它上面。
-窗口先隐藏、`glfwSetWindowSize/SetWindowPos` 覆盖整块显示器、**隐藏状态下先渲染两帧**再
-`glfwShowWindow`；刻意**不用** `glfwSetWindowMonitor`（那条路径会切窗口模式，表现为黑屏闪烁）。
+显示器的快照、上传成 GL 纹理，窗口用这张纹理铺满当背景，遮罩/挖空/十字线/主题色折角都画在
+它上面。窗口先隐藏、`glfwSetWindowSize/SetWindowPos` 覆盖整块显示器、**隐藏状态下先渲染两帧**
+再 `glfwShowWindow`；刻意**不用** `glfwSetWindowMonitor`（那条路径会切窗口模式，表现为黑屏闪烁）。
 窗口尺寸是**显示器尺寸 + 1 像素**（`kOverlayOversize`）：刚好等于显示器尺寸时 Windows 会把它
 当成"全屏窗口"走 fullscreen optimization，导致每次显示/隐藏闪一下、进程退出后甚至留下黑色
 残影（真机踩过，详见 §6）。
@@ -31,24 +34,32 @@
 
 ```
 plugins/region_selector/
-├── CMakeLists.txt                  # shot_add_plugin + imgui / nlohmann-json / glfw3
+├── CMakeLists.txt                  # shot_add_plugin + imgui / nlohmann-json / glfw3 / dwmapi
 ├── metadata.json                   # 插件清单（id region_selector.main，接口 shot.ui_provider）
 ├── README.md
 ├── include/
 │   ├── plugin_entry.h              # PluginEntry / PluginInstance / state_of（插件样板）
 │   ├── region_window.h             # RegionWindow 公共接口（契约层，不含任何图形库类型）
-│   └── region_window_impl.h        # 内部头：Impl 声明 / 事件队列 / 拖拽状态
+│   ├── region_window_impl.h        # 内部头：Impl 声明 / 事件队列 / 拖拽与悬停吸附状态
+│   └── window_target.h             # 内部头：窗口目标结构 + 枚举/命中接口（纯 Win32 查询）
 └── src/
     ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + kEntries + ABI 胶水 + 语言表
     ├── region_window.cpp           # 生命周期 / 窗口线程 / 事件循环 / 触发解析 / 隐藏后发布
-    ├── region_overlay.cpp          # 框选交互状态机 + ImGui 遮罩/十字线/选区绘制（用户文案走 i18n）
+    ├── region_overlay.cpp          # 交互状态机 + 悬停吸附动画 + 主题色读取
+    ├── region_overlay_draw.cpp     # ImGui 遮罩 / 选区 / 折角 / 十字线 / 标签绘制
     ├── region_graphics.cpp         # ImGui 后端 / 中文字体 / DPI 字号缩放 / 每帧渲染
-    └── region_geometry.cpp         # 显示器矩形 / 光标 / 物理虚拟桌面坐标换算（Win32 层）
+    ├── region_background.cpp       # 触发瞬间的桌面快照（GDI）+ 上传 GL 纹理
+    ├── region_geometry.cpp         # 显示器矩形 / 光标 / 覆盖层 HWND / 物理坐标换算（Win32 层）
+    └── window_target.cpp           # 顶层窗口枚举 / Z 序 / DWM 边界 / 命中测试（纯 Win32 查询）
 ```
 
-公共头 `region_window.h` 只声明一个类；内部头 `region_window_impl.h` 是**内部头**
-（只被本插件的 `.cpp` 包含，开头注明"不是插件对外接口"）。`.cpp` 按关注点拆成
-"生命周期 / 交互绘制 / 图形 / 平台几何 / ABI 胶水"五个文件（`STYLE.md` §6.7/§6.8）。
+公共头 `region_window.h` 只声明一个类；内部头 `region_window_impl.h` 与 `window_target.h`
+是**内部头**（只被本插件的 `.cpp` 包含，开头注明"不是插件对外接口"）。`.cpp` 按关注点拆成
+"生命周期 / 交互 / 绘制 / 图形 / 平台几何 / 窗口枚举 / ABI 胶水"七个文件（`STYLE.md` §6.7/§6.8）。
+
+窗口枚举独立成 `window_target.cpp`：它只回答"光标下有没有窗口、矩形是多少"，不碰 ImGui
+和覆盖层状态；覆盖层交互文件负责把结果变成吸附/动画/采集。两者分开后，窗口筛选规则
+（DWM cloaked、`WS_EX_TOOLWINDOW`、扩展帧边界等）可以单独审查，不会淹没在绘制代码里。
 
 ## 2. 构建
 
@@ -74,7 +85,7 @@ cmake --build build
 | `imgui`（glfw-binding + opengl3-binding） | 覆盖层绘制；后端源码已编进 `imgui.lib`，不抄进本工程 |
 | `glfw3` | 窗口、事件循环、显示器几何、光标 |
 | `nlohmann-json` | 触发负载解析 + 区域结果组包 + 多语言表解析（header-only） |
-| `opengl32` / `user32` | ImGui OpenGL3 后端 / `GetCursorPos`、`GetSystemMetrics` |
+| `opengl32` / `user32` / `dwmapi` | ImGui OpenGL3 后端 / `GetCursorPos`、`EnumWindows` / 窗口扩展帧边界与 cloaked 检测 |
 
 产物：`<构建树>/bin/plugins/region_selector.dll`；`metadata.json` 由 `shot_add_plugin()`
 在链接后贴到 DLL 尾部。插件不链接 spdlog：日志统一走 `shot::Logger`（宿主 `log` 服务）。
@@ -99,18 +110,19 @@ ImGui 调用都在插件的 UI 线程上执行（GLFW 和 ImGui 都不是线程�
 | --- | --- | --- |
 | 1 | 任意线程 | 发布 `capture.request`，负载 `{"mode":"region"}`（**没有** `region` 对象） |
 | 2 | 总线分发线程 | 插件回调只把事件入队并唤醒 UI 线程 |
-| 3 | UI 线程 | 取鼠标位置 → 找所在显示器 → 把隐藏窗口搬过去铺满整屏 → 显示并聚焦 |
-| 4 | UI 线程 | 拖拽：左键按下记起点，移动更新光标，**松开左键 = 确认**；右键 / Esc = 取消 |
-| 5 | UI 线程 | 确认后先 `glfwHideWindow` + `glfwPollEvents`，再 `sleep 100ms`（`kHideSettleDelayMs`） |
-| 6 | UI 线程 | 发布 `capture.request`：`{"mode":"region","region":{"x","y","width","height"}}` |
-| 7 | 宿主 worker | 抓整屏 → 按 `region` 裁剪 → 处理 → 保存，发 `capture.done` |
+| 3 | UI 线程 | 取鼠标位置 → 找所在显示器 → 把隐藏窗口搬过去铺满整屏；读主题色、记录覆盖层 HWND、按 Z 序枚举顶层窗口命中光标下的窗口 → 显示并聚焦 |
+| 4 | UI 线程 | 空闲：每 30ms 枚举一次顶层窗口，命中窗口后选框用 100ms 指数平滑吸附过去；鼠标移到别的窗口就平滑平移/缩放 |
+| 5 | UI 线程 | 单击（位移 ≤4px 且按住 ≤400ms）：直接把当前悬停窗口矩形当 region 确认；拖动（位移 >4px）：选框严格跟手，松开左键确认；右键 / Esc = 取消 |
+| 6 | UI 线程 | 确认后先 `glfwHideWindow` + `glfwPollEvents`，再 `sleep 100ms`（`kHideSettleDelayMs`） |
+| 7 | UI 线程 | 发布 `capture.request`：`{"mode":"region","region":{"x","y","width","height"}}` |
+| 8 | 宿主 worker | 抓整屏 → 按 `region` 裁剪 → 处理 → 保存，发 `capture.done` |
 
 **覆盖层整屏全黑、只剩十字线**：说明背景快照没画出来——要么 `captureBackground()` 失败
 （日志有"桌面快照失败"WARN，`GetDC/BitBlt/GetDIBits` 任一步失败），要么纹理上传后没在
 `drawOverlay` 里 `AddImage`（检查 `backgroundTexture != 0`）。透明窗口方案已被证实会在
 hide/show 后失效，不要再改回 `GLFW_TRANSPARENT_FRAMEBUFFER`。
 
-**为什么第 5 步要先隐藏再等 100ms**：DWM 合成是异步的，`glfwHideWindow` 返回时覆盖层
+**为什么第 6 步要先隐藏再等 100ms**：DWM 合成是异步的，`glfwHideWindow` 返回时覆盖层
 可能还没从屏幕上消失；宿主 worker 收到事件就抓屏，中间没有任何同步点。宁可慢 100ms，
 也不能把半透明遮罩截进图里。
 
@@ -131,12 +143,13 @@ settings_ui 的 deinit**（实测：本插件 deinit 14ms 返回，宿主 30s+ �
 - 覆盖层隐藏时用条件变量唤醒 UI 线程，不依赖 `glfwPostEmptyEvent`；框选态本来就按
   120Hz 超时轮询，也不依赖它。
 
-**自触发保护**：第 6 步发布的负载同样带 `mode=region`，也会回到本插件的订阅里。所以
+**自触发保护**：第 7 步发布的负载同样带 `mode=region`，也会回到本插件的订阅里。所以
 只有"`mode=region` **且没有可用 `region` 对象**"的负载才是"请开始框选"；带
 `x/y/width/height`（整数且宽高 > 0）的请求一律忽略，否则会"框选一次 → 又弹一次"无限循环。
 
-**取消**：Esc、右键、任一边小于 8 物理像素（`kMinimumSelectionSize`，防误点）都只隐藏
-覆盖层，**不发布任何事件**——v1 不定义 `capture.cancelled`。
+**取消**：Esc、右键、拖动时任一边小于 8 物理像素（`kMinimumSelectionSize`，防误点）都只
+隐藏覆盖层，**不发布任何事件**——v1 不定义 `capture.cancelled`。单击窗口不受 8px 限制：
+矩形是系统给出的真实窗口，再小也是用户明确点中的目标。
 
 **限一屏**：覆盖层铺满"鼠标所在显示器"，选区被夹在这块屏内；跨显示器拖拽不生效
 （见 §7）。
@@ -150,7 +163,7 @@ settings_ui 的 deinit**（实测：本插件 deinit 14ms 返回，宿主 30s+ �
 
 | key | zh-CN | en-US |
 | --- | --- | --- |
-| `overlay.hint` | 拖拽选择区域（物理像素） · Esc / 右键取消 | Drag to select (physical pixels) · Esc / right-click to cancel |
+| `region.hint` | 单击截取窗口 · 拖拽选择区域 · Esc / 右键取消 | Click a window to capture · Drag to select · Esc / right-click to cancel |
 | `overlay.size.unit` | 像素 | px |
 | `overlay.window_title` | Plugin-shot 区域选择 | Plugin-shot Region Select |
 
@@ -224,19 +237,39 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
 
 | 输入 | 行为 |
 | --- | --- |
-| 左键按下并拖动 | 画选区（选区内部露出**背景快照原图**、四周压暗 + 亮蓝色 2px 边框 + 实时尺寸标签） |
-| 松开左键 | 确认；任一边 < 8 物理像素按取消处理 |
-| 右键 | 取消 |
-| Esc | 取消 |
+| 鼠标移动（未拖动） | 每 30ms 枚举一次顶层窗口，命中光标下的窗口后把选框**平滑吸附**到它的矩形（100ms 指数平滑）；命中不到窗口时只显示遮罩与十字线 |
+| 单击（位移 ≤4px 且按住 ≤400ms） | 直接用当前悬停窗口的矩形确认采集，不经过拖动 |
+| 左键按下并拖动（位移 >4px） | 进入拖动模式：选框**严格跟手**，不做窗口吸附、不做动画；松开确认，任一边 < 8 物理像素按取消处理 |
+| 松开左键（未越过阈值但按住 >400ms） | 按取消处理（不发布事件） |
+| 右键 / Esc | 取消 |
 | 鼠标移动 | 全屏十字线 + 选区尺寸标签（`宽 x 高` + 单位，物理像素） |
 
-视觉：整屏 51% 黑色遮罩 + 十字线 + 选区高亮/边框 + 顶部提示（`overlay.hint`，中文为
-「拖拽选择区域（物理像素） · Esc / 右键取消」，英文为 "Drag to select (physical pixels) ·
-Esc / right-click to cancel"）。背景是触发瞬间的桌面快照，选区内部保持
-快照原样（等价于"挖空"），框选结果与快照内容一致。
+视觉：整屏 51% 黑色遮罩 + 十字线 + 选区边框 + **四角主题色折角** + 顶部提示
+（`region.hint`，中文为「单击截取窗口 · 拖拽选择区域 · Esc / 右键取消」，英文为
+"Click a window to capture · Drag to select · Esc / right-click to cancel"）。背景是触发瞬间
+的桌面快照，选区内部保持快照原样（等价于"挖空"），框选结果与快照内容一致。
 
-覆盖层显示时鼠标换成十字光标；DPI 变化只影响字号（100% 屏 18px、150% 屏 27px 物理像素），
-坐标不受影响。
+- **主题色**：边框与四角折角都用宿主配置项 `core/theme_color`（形如 `#4C9AFF`），通过
+  `shot.host.config` 读取；每次显示覆盖层读一次，配置变化不实时刷新。读不到或格式非法时
+  回退默认 `#4C9AFF`（见 `region_overlay.cpp` 的 `parseThemeColor`）。
+- **折角**：四个角各画 L 形两段，长度 = `clamp(min(宽,高) * 0.2, 12, 40)` 逻辑像素，
+  线宽 2 逻辑像素；两者都乘显示器 content scale 变成物理像素（150% 屏上是 18~60 / 3）。
+  极小的拖动选框会把折角长度夹到半边长以内，避免四个 L 叠在一起。
+- **边框/折角主题色**：选区边框同样用主题色，粗细与折角一致（2 逻辑像素）。
+
+窗口检测算法（`window_target.cpp`，**刻意不用 Win32 的逐点窗口命中 API**）：
+
+1. `EnumWindows` 枚举顶层窗口（不遍历子控件；本版本明确不做 UIA / 子控件命中）；
+2. 排除：覆盖层自身 HWND、不可见、最小化、零尺寸、DWM cloaked（`DWMWA_CLOAKED`）、
+   `WS_EX_TOOLWINDOW`（工具窗口/提示/输入法候选）；
+3. 矩形优先 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`（去掉 Win10/11 不可见
+   边框），失败退回 `GetWindowRect`；再裁剪到虚拟桌面内；
+4. `EnumWindows` 的顺序不保证是 Z 序，代码用 `GetTopWindow + GW_HWNDNEXT` 建立真实的
+   Z 序排名后稳定排序，命中测试取第一个包含光标的窗口；
+5. 枚举节流：最多每 30ms 一次（`kWindowScanIntervalMs`），120Hz 渲染循环里不会每帧枚举。
+
+覆盖层显示时鼠标换成十字光标；DPI 变化只影响字号与折角/边框尺寸（100% 屏 18px 字号、
+150% 屏 27px 物理像素），坐标不受影响。
 
 ## 6. 降级与边界情况
 
@@ -256,6 +289,14 @@ Esc / right-click to cancel"）。背景是触发瞬间的桌面快照，选区�
 | `capture.request` 已带合法 `region`（本插件自己发布的那条 / 别处选好区域的请求） | 安静忽略，避免自触发循环 |
 | 光标不在任何显示器矩形里（显示器缝隙 / 远程会话刚断开） | 退回主显示器并记 WARN |
 | 框选过程中再次收到触发 | 忽略重复触发，不覆盖用户正在拖的选区 |
+| 光标下没有候选窗口（桌面空白 / 枚举到的最小化或 cloaked 窗口） | 不显示悬停框；单击只取消，不发布事件 |
+| 光标移出覆盖层所在显示器 | 悬停框隐藏（不在另一块屏上"盲吸附"）；覆盖层本身仍只覆盖原显示器 |
+| 悬停目标在枚举间隔内被关闭 / 移到别处 | 下一次枚举（≤30ms）后自动换成新目标；选框平滑过去 |
+| 按下后位移 ≤4px、按住 >400ms 才松开 | 不算单击也不算拖动，按取消处理（与旧版的 0x0 选区一致） |
+| 单击窗口时窗口宽度/高度小于 8 物理像素 | 仍然采集：窗口矩形由系统给出，不受拖动最小选区限制 |
+| `core/theme_color` 缺失 / 不是 `#RRGGBB` | 使用默认 `#4C9AFF`；只在 debug 日志里记一句，不反复刷屏 |
+| `DwmGetWindowAttribute` 失败（合成关闭等） | 扩展帧边界退回 `GetWindowRect`；cloaked 检测失败按"未 cloaked"处理 |
+| `EnumWindows` 枚举不到任何窗口 | 悬停框为空，拖动框选仍然可用（拖动不依赖窗口枚举） |
 | 框选过程中收到 `host.shutdown` / 宿主热卸载 | 事件循环退出，覆盖层按取消处理，不发布事件 |
 | 显示器几何在框选期间变化（拔屏/改分辨率） | 本次框选仍按开始时的窗口坐标结束；下次触发重新取显示器 |
 | 第一次框选时 GLFW/窗口/ImGui 初始化失败 | 放弃本次框选并记 ERROR，不发布事件；`init` 本身不会因此失败（它不碰图形栈） |
@@ -265,18 +306,27 @@ Esc / right-click to cancel"）。背景是触发瞬间的桌面快照，选区�
 
 | 限制 | 说明 |
 | --- | --- |
-| 只支持单显示器框选 | 覆盖层铺满鼠标所在显示器，选区被夹在该屏内；跨屏选择需要在虚拟桌面矩形上开一个覆盖所有显示器的窗口（代码里有 `// TODO:` 说明） |
+| 只支持单显示器框选 | 覆盖层铺满鼠标所在显示器，拖动选区被夹在该屏内；跨屏选择需要在虚拟桌面矩形上开一个覆盖所有显示器的窗口（代码里有 `// TODO:` 说明）。悬停窗口可以横跨多屏：矩形会裁剪到虚拟桌面，绘制只显示落在覆盖层里的部分 |
+| 窗口枚举依赖 Z 序假设 | Z 序用 `GetTopWindow + GW_HWNDNEXT` 显式排序，但仍有一些特殊窗口可能不符合用户直觉：置顶工具窗口（任务栏、自绘浮层）会按 Z 序优先命中；完全透明的点击穿透窗口（`WS_EX_TRANSPARENT` + layered）没有被额外过滤 |
+| 不做子控件检测 | 用户明确取消：不实现 UIA / 子控件命中，命中单位是顶层窗口（浏览器内部分栏、IDE 内部编辑器都算整个窗口） |
+| 主题色只在显示覆盖层时读取 | 覆盖层显示期间改设置不会实时生效；下次弹出覆盖层才用新颜色（需求约定） |
 | 负虚拟桌面原点未实测 | 本机虚拟桌面原点 `(0,0)`，左侧/上方有显示器时的负 origin 布局无法在这台机器上验证；换算公式按"绝对坐标 − 最小显示器坐标"实现，理论上正确 |
 | 触发请求也会被流水线看到 | `{"mode":"region"}`（无 region）是"开始框选"约定；宿主流水线会**忽略**这条请求（不抓屏、不落盘、不发 `capture.*` 事件），只有本插件消费它来弹覆盖层。"框选触发顺带存一张全屏图"是旧行为，已由宿主改掉 |
 | 与其它插件共用 GLFW 全局运行时 | 见 §3.1：本插件延迟初始化、**不调用 `glfwTerminate`**。若 `settings_ui` 启动时被禁用、本插件先初始化过 GLFW 后它才被启用，它的退出唤醒可能失效（GLFW 单 helper window 的固有限制） |
-| 不提供 `shot.configurable` | 目前没有需要用户配置的项：最小选区、遮罩透明度、颜色都是实现细节。要加配置项时再声明 `shot.configurable` |
+| 不提供 `shot.configurable` | 本插件没有自己的配置项：最小选区、遮罩透明度是内部常量；主题色来自**宿主**配置 `core/theme_color`（不是插件配置项）。要加插件自己的配置时再声明 `shot.configurable` |
 
 ## 8. 检查清单
 
 - [ ] `region` 的 x/y/width/height 都是**物理虚拟桌面像素**，且减过虚拟桌面原点？
-- [ ] content scale 只用于字号、没有乘进坐标？
+- [ ] content scale 只用于字号/折角/边框，没有乘进区域坐标？
+- [ ] 窗口枚举排除了覆盖层自己的 HWND（否则永远命中自己）？
+- [ ] 窗口矩形优先用 `DWMWA_EXTENDED_FRAME_BOUNDS`，失败才退回 `GetWindowRect`？
+- [ ] 拖动时真的没有走窗口枚举/动画（选框严格跟手）？
+- [ ] 单击阈值是位移 ≤4px 且按住 ≤400ms，用的是悬停**目标**矩形而不是动画中间值？
+- [ ] 每次显示覆盖层只读一次 `core/theme_color`，非法值回退 `#4C9AFF`？
+- [ ] 枚举有 30ms 节流，没有在 120Hz 渲染循环里每帧 `EnumWindows`？
 - [ ] 确认时序是"隐藏 → 等 100ms → 发布"，而不是隐藏后立即发布？
-- [ ] 取消（Esc / 右键 / 过小选区）真的没有发布任何事件？
+- [ ] 取消（Esc / 右键 / 过小选区 / 无窗口时单击）真的没有发布任何事件？
 - [ ] 带 `region` 的 `capture.request` 不会再次触发框选（防自触发循环）？
 - [ ] 事件总线回调里只有入队 + 唤醒，没有 GLFW/ImGui 调用？
 - [ ] `deinit` 返回前已退订事件总线、join 线程、销毁窗口？
