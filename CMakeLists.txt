@@ -631,17 +631,29 @@ endif()
 #  18. 安装规则
 # ============================================================================
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${RESOURCE_DIR}")
+    # 运行期资源（如语言包 files/lang/）也必须进安装产物，否则 cmake --install
+    # 出来的是一份少了语言包的残包。
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${RESOURCE_DIR}/"
+            DESTINATION bin/files)
+endif()
 
 
 # ============================================================================
-#  19. 复制资源文件到输出目录
+#  19. 同步资源文件到输出目录
+#
+#  为什么是 ALL 级 target 而不是宿主目标的 POST_BUILD：语言包这类资源改了以后
+#  宿主通常不需要重新链接，POST_BUILD 就不会触发，表现是"往 files/ 里加了语言包，
+#  bin/files 里却没有"，还很难查。copy_directory 幂等、资源体积又小，每次构建
+#  同步一遍没有代价。
 # ============================================================================
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${RESOURCE_DIR}")
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    add_custom_target(sync_resources ALL
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/${RESOURCE_DIR}"
             "${APP_OUTPUT_DIR}/files"
-        COMMENT "Copying resources if files changed"
+        COMMENT "Syncing resources (files/)"
+        VERBATIM
     )
 endif()
 
