@@ -74,7 +74,7 @@ bool HostRuntime::init(const std::string& pluginDir) {
         m_listCatalog.applyStoredLocked();
         m_listCatalog.rebuildConfigListLocked();
         // i18n_list 至少要有 core 文案：设置页/托盘在 init 完成后就可能打开。
-        m_listCatalog.rebuildI18nListIfDirtyLocked();
+        m_listCatalog.rebuildI18nListIfDirty();
     }
 
     m_pluginRegistry.bind(&m_manager);
@@ -162,13 +162,20 @@ void HostRuntime::tick() {
         m_configDirty = true;  // 禁用列表可能变了，下一段落盘
     }
 
-    // i18n_list 的重建不调用插件能力，不需要生命周期锁：core/language 的 set_config
-    // 与 i18n_source_list 的贡献都只在 main 线程改脏标记，这里统一重建一次再 flush。
-    m_listCatalog.rebuildI18nListIfDirtyLocked();
-    // 语言变了：注册表快照里的 reason 文本要按新语言重新生成（快照由 main 线程重建）。
-    const std::string& language = Host::I18n::instance().language();
-    if (language != m_lastLanguage) {
+    // 语言也可能被非 lists.update 的路径改掉（applyStored 回灌 core/language、
+    // host.config 写入）：所以重建前先对比一次，发现变化就强制标脏。否则这种路径
+    // 切了语言却不重建，dirty 为假后再也不会补，i18n_list 会永久停在旧语言。
+    const std::string language = Host::I18n::instance().language();
+    const bool languageChanged = language != m_lastLanguage;
+    if (languageChanged) {
         m_lastLanguage = language;
+        m_listCatalog.requestI18nRebuild();
+    }
+    // i18n_list 的重建不调用插件能力，不需要生命周期锁；脏标记只在 main 线程改，
+    // 这里统一重建一次再 flush。
+    m_listCatalog.rebuildI18nListIfDirty();
+    if (languageChanged) {
+        // 注册表快照里的 reason 文本要按新语言重新生成（快照由 main 线程重建）。
         m_pluginRegistry.refresh();
     }
 

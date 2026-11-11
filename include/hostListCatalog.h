@@ -85,7 +85,7 @@ class HostListCatalog {
         std::vector<Entry> entries; /**< 已按 order 稳定排序；generated 列表按生成顺序 */
         std::string cache;          /**< list_json 返回的内容（JSON 数组文本） */
         bool cacheValid = false;    /**< false = 下次读取时从 entries 重建缓存 */
-        bool generated = false;     /**< true = 宿主生成（config_list），不接受插件贡献 */
+        bool generated = false;     /**< true = 宿主生成（config_list / i18n_list），不接受插件贡献 */
     };
 
     /** @brief 一个可配置提供者：core（instance 为空）或某个插件实例。 */
@@ -173,13 +173,24 @@ public:
     void rebuildConfigListLocked();
 
     /**
+     * @brief 请求重建 i18n_list（只置脏标记，只允许 main 线程调用）。
+     *
+     * 用于"语言被非 lists.update 路径改变"的场景（applyStored 回灌、host.config
+     * 写入）：HostRuntime::tick 在重建之前对比当前语言，发现变化就调用这里。
+     */
+    void requestI18nRebuild();
+
+    /**
      * @brief 需要时重建 i18n_list（当前语言快照，宿主生成、只读）。
      *
      * 触发点：启动（构造时标脏）、`core/language` 变化、`i18n_source_list` 贡献
      * 变化、插件启停/卸载清理。重建只读列表与事件，不调用插件能力，因此不需要
-     * 生命周期锁；由 HostRuntime 在 tick 里 flushChanged 之前调用。
+     * 生命周期锁；由 HostRuntime 在 init 与 tick 里 flushChanged 之前调用。
+     *
+     * @note 内部自己加 m_mutex，**调用方不得持有 m_mutex**（它不叫 Locked 就是为了
+     *       和"调用方持生命周期锁"的 rebuildConfigListLocked 区分开）。
      */
-    void rebuildI18nListIfDirtyLocked();
+    void rebuildI18nListIfDirty();
 
     /**
      * @brief 清掉某个 owner 在全部插件贡献列表里的条目，并标记 lists.changed。
@@ -295,13 +306,13 @@ private:
     void installGeneratedList(const std::string& list, std::vector<Entry> entries);
 
     /**
-     * @brief 重建 i18n_list 的实现（标记脏之后由 rebuildI18nListIfDirtyLocked 调用）。
+     * @brief 重建 i18n_list 的实现（标记脏之后由 rebuildI18nListIfDirty 调用）。
      *
      * 条目顺序固定：首条 `@meta`（language/fallback），然后 core 文案，最后按
      * i18n_source_list 的条目顺序逐个投影成 {owner,id,text}。源条目里的
      * `texts` 按当前语言回退链选一条；一个可用文本都没有的条目跳过。
      */
-    void rebuildI18nListLocked();
+    void rebuildI18nList();
 
     /**
      * @brief 把条目数组序列化成 list_json 的返回文本（JSON 数组）。

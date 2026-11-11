@@ -22,6 +22,7 @@ Backup-Config
 
 # ---- 1. 英文界面 ----------------------------------------------------------
 Set-ConfigValue "core/language" "en-US"
+$markEn = Get-LogMark
 $processEn = Start-Host @("--settings") -WarmupSeconds 6
 Check "宿主进程仍在运行（en-US）" (-not $processEn.HasExited)
 
@@ -36,12 +37,19 @@ if ($windowEn -ne [IntPtr]::Zero) {
 
 $anchorEn = Wait-LogPattern "界面语言 = en-US" 10
 Check "日志锚点：界面语言 = en-US" ($null -ne $anchorEn) ([string]$anchorEn)
+# i18n_list 必须真的生成并通知；托盘菜单 label 必须按 owner+key 解析成英文
+# （这条同时锁住"宿主给 tray_command_list 条目注入 owner"的回归点）。
+$i18nChangedEn = Wait-LogPattern "发布 lists.changed: list=i18n_list" 10 $markEn
+Check "i18n_list 已重建并发布 lists.changed" ($null -ne $i18nChangedEn) ([string]$i18nChangedEn)
+$trayMenuEn = Wait-LogPattern "[Capture→capture.request]" 10 $markEn
+Check "托盘菜单 label 已解析成英文" ($null -ne $trayMenuEn) ([string]$trayMenuEn)
 $errorEn = Get-LogTail 80 | Select-String -Pattern "\[error"
 Check "英文界面近期日志无 error" ($null -eq $errorEn) ([string]$errorEn)
 Stop-Host
 
 # ---- 2. 切回中文界面 ------------------------------------------------------
 Set-ConfigValue "core/language" "zh-CN"
+$markZh = Get-LogMark
 $processZh = Start-Host @("--settings") -WarmupSeconds 6
 Check "宿主进程仍在运行（zh-CN）" (-not $processZh.HasExited)
 
@@ -56,6 +64,8 @@ if ($windowZh -ne [IntPtr]::Zero) {
 
 $anchorZh = Wait-LogPattern "界面语言 = zh-CN" 10
 Check "日志锚点：界面语言 = zh-CN" ($null -ne $anchorZh) ([string]$anchorZh)
+$trayMenuZh = Wait-LogPattern "[截屏→capture.request]" 10 $markZh
+Check "托盘菜单 label 已解析成中文" ($null -ne $trayMenuZh) ([string]$trayMenuZh)
 $errorZh = Get-LogTail 80 | Select-String -Pattern "\[error"
 Check "中文界面近期日志无 error" ($null -eq $errorZh) ([string]$errorZh)
 Stop-Host

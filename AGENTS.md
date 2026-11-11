@@ -174,7 +174,7 @@ shot::EventBus(host).publish("lists.add", R"json({
 
 ### 5.3 新增一类 UI 数据（新 list）
 
-1. 在 `document/LISTS.md` §5.3 登记新 list id + JSON schema；
+1. 在 `document/LISTS.md` §5.5 登记新 list id + JSON schema；
 2. 提供方用 `lists.add` 注册、变化时（数据变化后由宿主）发 `lists.changed`；
 3. 消费方读 `shot::PluginLists(host).json("<list id>")`；
 4. 需要写值就定义 `lists.update` 语义并在宿主 `HostListCatalog` 里实现对应分支

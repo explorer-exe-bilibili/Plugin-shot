@@ -298,6 +298,16 @@ std::string I18n::detectSystemLanguage() {
         if (findLanguage(tag) != nullptr) {
             return tag;
         }
+        // Windows 可能报 zh-HK / zh-Hans-CN 这类注册表里没有的标签：按主语言族
+        // 落到已注册的同族语言（zh 族 → zh-CN），而不是直接掉到 en-US。
+        const std::string primary = primaryTag(tag);
+        if (!primary.empty()) {
+            for (const Language& language : kLanguages) {
+                if (primaryTag(language.tag) == primary) {
+                    return normalizeTag(language.tag);
+                }
+            }
+        }
     }
 #endif
     // 非 Windows 平台本期不做系统语言探测：统一回退默认语言（document/I18N.md 限制）。
@@ -318,26 +328,48 @@ void I18n::loadPreference() {
 }
 
 bool I18n::setPreference(std::string_view value) {
+    // 先在锁外算好两个字符串（含 auto 的系统探测），锁内只做赋值：临界区最短，
+    // 也不会在持锁时调用可能阻塞的 Win32 API。
     const std::string normalized = normalizeTag(value);
     if (normalized.empty()) {
         return false;
     }
+    std::string preference;
+    std::string language;
     if (normalized == autoPreference()) {
-        m_preference = autoPreference();
-        m_language = resolveLanguage(m_preference);
-        return true;
+        preference = autoPreference();
+        language = resolveLanguage(preference);
+    } else {
+        const Language* entry = findLanguage(normalized);
+        if (entry == nullptr) {
+            return false;
+        }
+        preference = normalizeTag(entry->tag);
+        language = preference;
     }
-    const Language* language = findLanguage(normalized);
-    if (language == nullptr) {
-        return false;
-    }
-    m_preference = normalizeTag(language->tag);
-    m_language = m_preference;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_preference = std::move(preference);
+    m_language = std::move(language);
     return true;
 }
 
+std::string I18n::preference() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_preference;
+}
+
+std::string I18n::language() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_language;
+}
+
+std::string I18n::currentLanguage() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_language;
+}
+
 std::string I18n::fallbackLanguage() const {
-    const Language* language = findLanguage(m_language);
+    const Language* language = findLanguage(currentLanguage());
     if (language != nullptr && language->fallback != nullptr && language->fallback[0] != '\0') {
         return normalizeTag(language->fallback);
     }
@@ -371,7 +403,7 @@ const char* I18n::text(const char* id) const {
     if (entry == nullptr) {
         return id;
     }
-    const std::string column = textColumn(m_language);
+    const std::string column = textColumn(currentLanguage());
     return (column == "zh-CN") ? entry->zhCN : entry->enUS;
 }
 
@@ -380,12 +412,13 @@ std::string I18n::textIn(std::string_view language, const char* id) const {
     if (entry == nullptr) {
         return (id != nullptr) ? std::string(id) : std::string();
     }
-    const std::string column = textColumn(language.empty() ? m_language : language);
+    const std::string column =
+        textColumn(language.empty() ? std::string_view(currentLanguage()) : language);
     return (column == "zh-CN") ? std::string(entry->zhCN) : std::string(entry->enUS);
 }
 
 std::string I18n::format(const char* id, const std::vector<std::string>& args) const {
-    return formatIn(m_language, id, args);
+    return formatIn(currentLanguage(), id, args);
 }
 
 std::string I18n::formatIn(std::string_view language, const char* id,
@@ -425,7 +458,7 @@ bool I18n::findTextFor(const std::map<std::string, std::string>& texts, std::str
 }
 
 std::string I18n::pickText(const std::map<std::string, std::string>& texts) const {
-    return pickTextIn(m_language, texts);
+    return pickTextIn(currentLanguage(), texts);
 }
 
 std::string I18n::pickTextIn(std::string_view language,
@@ -434,7 +467,7 @@ std::string I18n::pickTextIn(std::string_view language,
         return {};
     }
     const std::string normalized =
-        normalizeTag(language.empty() ? std::string_view(m_language) : language);
+        normalizeTag(language.empty() ? std::string_view(currentLanguage()) : language);
     // 回退链：完全匹配 -> 主语言 -> 默认语言 -> 默认语言的主语言；同族匹配在
     // findTextFor 里做，所以主语言那一步也能命中 zh-CN 表。
     std::vector<std::string> candidates;
@@ -488,8 +521,11 @@ std::string I18n::Message::localized() const {
     if (m_id.empty()) {
         return {};
     }
+    // 先在锁内拷一份语言标签（language() 返回拷贝），再查静态表：本函数可能在
+    // 采集 worker 线程调用（capture.failed.reason），不能直接读宿主状态。
     const I18n& i18n = I18n::instance();
-    return substitutePlaceholders(i18n.textIn(i18n.language(), m_id.c_str()), m_args);
+    const std::string language = i18n.language();
+    return substitutePlaceholders(i18n.textIn(language, m_id.c_str()), m_args);
 }
 
 }  // namespace Host

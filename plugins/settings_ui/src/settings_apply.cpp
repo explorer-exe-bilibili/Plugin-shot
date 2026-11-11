@@ -337,14 +337,20 @@ void SettingsPanel::Impl::onListsChanged(std::string_view payload) {
     if (host == nullptr) {
         return;
     }
+    std::string listId;
     if (!payload.empty()) {
         const nlohmann::json document = parseObject(payload);
         if (!document.is_discarded() && document.is_object()) {
-            const std::string listId = document.value("list", std::string());
+            listId = document.value("list", std::string());
             if (!listId.empty() && listId != "config_list" && listId != "i18n_list") {
                 return;
             }
         }
+    }
+    if (listId == "i18n_list") {
+        // 语言变了：注册表快照里的 reason 文本已按新语言重建（宿主 tick 里 refresh），
+        // 这里重读插件管理表，已经显示在界面上的失败原因才会换成新语言。
+        refreshPlugins();
     }
     // 收到事件才刷新，不要每帧读 JSON；刷新会按 owner+id 合并回未应用的本地修改。
     refreshConfig();

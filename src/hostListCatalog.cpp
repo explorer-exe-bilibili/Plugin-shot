@@ -844,14 +844,16 @@ void HostListCatalog::rebuildConfigListLocked() {
     installGeneratedList(kConfigListId, std::move(entries));
 }
 
-void HostListCatalog::rebuildI18nListIfDirtyLocked() {
+void HostListCatalog::requestI18nRebuild() { m_i18nDirty = true; }
+
+void HostListCatalog::rebuildI18nListIfDirty() {
     if (!m_i18nDirty) {
         return;
     }
-    rebuildI18nListLocked();
+    rebuildI18nList();
 }
 
-void HostListCatalog::rebuildI18nListLocked() {
+void HostListCatalog::rebuildI18nList() {
     const Host::I18n& i18n = Host::I18n::instance();
 
     // 先把 i18n_source_list 的条目拷出来（不持 m_mutex 时解析 JSON，避免长时间锁）。

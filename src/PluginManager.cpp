@@ -40,6 +40,13 @@ Reason::Reason(const char* messageId, std::string arg0, std::string arg1) : Reas
     args[1] = std::move(arg1);
 }
 
+Reason::Reason(const char* messageId, std::string arg0, const Reason& causeReason)
+    : Reason(messageId, std::move(arg0)) {
+    if (!causeReason.empty()) {
+        cause = std::make_shared<Reason>(causeReason);
+    }
+}
+
 bool Reason::empty() const noexcept { return id.empty(); }
 
 void Reason::clear() noexcept {
@@ -52,14 +59,22 @@ std::string Reason::chinese() const {
     if (id.empty()) {
         return {};
     }
-    return Host::I18n::instance().formatIn("zh-CN", id.c_str(), {args[0], args[1]});
+    std::array<std::string, 2> rendered = args;
+    if (cause != nullptr) {
+        rendered[1] = cause->chinese();  // 下级原因也按中文渲染，避免混排
+    }
+    return Host::I18n::instance().formatIn("zh-CN", id.c_str(), {rendered[0], rendered[1]});
 }
 
 std::string Reason::localized() const {
     if (id.empty()) {
         return {};
     }
-    return Host::I18n::instance().format(id.c_str(), {args[0], args[1]});
+    std::array<std::string, 2> rendered = args;
+    if (cause != nullptr) {
+        rendered[1] = cause->localized();  // 整条链用同一语言
+    }
+    return Host::I18n::instance().format(id.c_str(), {rendered[0], rendered[1]});
 }
 
 namespace {
@@ -957,7 +972,7 @@ bool PluginManager::enableDependenciesRecursive(const std::string& id,
     for (const std::string& providerId : providers) {
         Reason providerReason;
         if (!enableDependenciesRecursive(providerId, visited, providerReason)) {
-            reason = Reason("plugin.error.dependency_enable_failed", providerId, providerReason.chinese());
+            reason = Reason("plugin.error.dependency_enable_failed", providerId, providerReason);
             return false;
         }
     }

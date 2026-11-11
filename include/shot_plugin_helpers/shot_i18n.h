@@ -109,6 +109,8 @@ public:
      *
      * @param[in] tables 语言表数组（每语言一个 JSON 文本）。
      * @param[in] count  表个数；0 表示没有文案。
+     * @note 发布的是各语言 key 的**并集**（按首次出现顺序）：某语言独有的 key 也会
+     *       进 i18n_source_list，漏翻时消费方仍能显示该语言文本。
      * @return true = 至少解析成功一张表（即使没有发布成功）；false = 一张都没解析出来。
      * @note 只在 create()/init() 里调用一次；重复调用会先撤回旧贡献再重新发布。
      */
@@ -225,7 +227,6 @@ private:
     mutable std::string m_language;            /**< 当前界面语言（BCP-47） */
     mutable std::atomic<bool> m_dirty{true};   /**< i18n_list 快照需要重读 */
     bool m_subscribed = false;                 /**< 是否订阅了 lists.changed */
-    bool m_loaded = false;                     /**< 是否已成功加载过语言表 */
 };
 
 inline const char* I18n::sourceListId() { return "i18n_source_list"; }
@@ -358,8 +359,13 @@ inline bool I18n::parseTable(
         canonical.push_back(',');
     }
     keySets.push_back(std::move(canonical));
-    if (keys.empty()) {
-        keys = tableKeys;
+    // keys 维护"首次出现顺序的并集"：第一张表全收，后续表只追加新 key。否则某语言
+    // 独有的 key 只存在本地表里，不会发布进 i18n_source_list，宿主 i18n_list 没有它，
+    // 设置页/托盘按 display(owner,key) 解析时只能显示 key 原文。
+    for (const std::string& key : tableKeys) {
+        if (std::find(keys.begin(), keys.end(), key) == keys.end()) {
+            keys.push_back(key);
+        }
     }
     return true;
 }
@@ -371,6 +377,14 @@ inline void I18n::publishSourceEntry(
     if (!m_bus.available() || m_owner.empty()) {
         return;
     }
+    // 事件总线满 / 参数非法时 publish 返回 false：这里只 WARN，不影响插件其余功能
+    // （文案降级成"消费方显示 key 原文"）。
+    const auto publishPayload = [this](const char* topic, const nlohmann::json& payload) {
+        if (!m_bus.publish(topic, payload.dump())) {
+            m_log.warn("[i18n] 发布 " + std::string(topic) + " 失败（总线不可用或队列满），" +
+                       "部分文案可能不生效");
+        }
+    };
     // 重复 loadTables：先撤回旧 key，避免删掉的文案残留在源列表里。
     if (!m_keys.empty()) {
         nlohmann::json removePayload = {
@@ -378,10 +392,11 @@ inline void I18n::publishSourceEntry(
             {"owner", m_owner},
             {"ids", m_keys},
         };
-        m_bus.publish("lists.remove", removePayload.dump());
+        publishPayload("lists.remove", removePayload);
     }
     // 单条事件负载上限 64 KiB（document/EVENT_BUS.md §5）：按估算大小分块，
-    // 留 8 KiB 给 list/owner/items 外壳与 JSON 转义。
+    // 留 8 KiB 给 list/owner/items 外壳与 JSON 转义。单条 item 本身就超限时跳过
+    // 并 WARN——发出去也只会被宿主整条丢弃。
     constexpr std::size_t kChunkLimit = 56 * 1024;
     nlohmann::json chunk = nlohmann::json::array();
     std::size_t chunkBytes = 0;
@@ -398,13 +413,18 @@ inline void I18n::publishSourceEntry(
             item["texts"][tag] = text;
         }
         const std::size_t itemBytes = item.dump().size() + 1;
+        if (itemBytes > kChunkLimit) {
+            m_log.warn("[i18n] 文案条目过大（" + std::to_string(itemBytes) + " 字节），已跳过：" +
+                       key);
+            continue;
+        }
         if (!chunk.empty() && chunkBytes + itemBytes > kChunkLimit) {
             const nlohmann::json payload = {
                 {"list", sourceListId()},
                 {"owner", m_owner},
                 {"items", chunk},
             };
-            m_bus.publish("lists.add", payload.dump());
+            publishPayload("lists.add", payload);
             chunk = nlohmann::json::array();
             chunkBytes = 0;
         }
@@ -417,7 +437,7 @@ inline void I18n::publishSourceEntry(
             {"owner", m_owner},
             {"items", chunk},
         };
-        m_bus.publish("lists.add", payload.dump());
+        publishPayload("lists.add", payload);
     }
 }
 
@@ -461,7 +481,6 @@ inline bool I18n::loadTables(const char* const* tables, std::size_t count) {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_local = std::move(local);
         m_keys = std::move(keys);
-        m_loaded = true;
         // 首次 load 前没有 i18n_list 可读：用第一张表的语言作为当前语言。
         if (m_language.empty() || m_dirty.load()) {
             m_language = firstLanguage.empty() ? "en-US" : firstLanguage;
@@ -479,8 +498,9 @@ inline void I18n::onListsChanged(void* user, const char* /*topic*/, const void* 
         return;
     }
     // 宿主同一轮对每个 list 只发一条 lists.changed；只关心 i18n_list。
-    // 负载为空按"可能是任意列表"保守处理。回调里只置脏标记：重读与解析放到
-    // 插件自己的线程（tr/resolve 里），不占宿主分发线程。
+    // 负载为空按"可能是任意列表"保守处理。回调在宿主分发线程执行，只做一次薄
+    // JSON 解析并置原子脏位；真正的列表重读与缓存重建留到插件自己线程的
+    // tr/resolve 里，不占宿主分发线程。
     if (data == nullptr || len == 0) {
         self->m_dirty.store(true);
         return;

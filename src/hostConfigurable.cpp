@@ -176,7 +176,7 @@ int32_t Host::HostConfigurable::getConfigDesc(void* /*self*/, uint32_t index, Sh
         return 2;
     }
     *out = kConfig[index];
-    if (out->key == kKeyLanguage) {
+    if (out->key != nullptr && std::strcmp(out->key, kKeyLanguage) == 0) {
         out->options = languageOptions().c_str();
     }
     return 0;

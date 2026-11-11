@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <map>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,8 +25,10 @@
 //  消费方拿到就该直接显示（document/I18N.md §4）。反过来说，插件贡献给
 //  config_list / tray_command_list 的 label 是 key，由消费方用 i18n_list 解析。
 //
-//  线程模型：当前语言、偏好与文案表只在宿主 main 线程读写（lists.update 的
-//  set_config 与 tick 都在 main 线程）；text()/format() 是纯查表，任意线程可调。
+//  线程模型：当前语言/偏好只在宿主 main 线程写（set_config 与 tick），但查询函数
+//  可能在插件线程调用（例如采集 worker 线程生成 capture.failed.reason）。因此
+//  m_preference / m_language 由一把小锁保护、查询先拷一份字符串再查静态文案表，
+//  锁内不调用任何外部代码；Message::localized() 在任意线程都安全。
 // ============================================================================
 
 namespace Host {
@@ -153,15 +156,15 @@ public:
 
     /**
      * @brief 当前语言偏好（"auto" 或规范标签）。
-     * @return 偏好字符串，生命周期与单例相同。
+     * @return 偏好字符串的拷贝（内部状态由锁保护，不返回引用）。
      */
-    const std::string& preference() const noexcept { return m_preference; }
+    std::string preference() const;
 
     /**
      * @brief 当前生效语言（auto 已解析成具体标签）。
-     * @return 规范标签，如 "zh-CN"；生命周期与单例相同。
+     * @return 规范标签的拷贝，如 "zh-CN"。
      */
-    const std::string& language() const noexcept { return m_language; }
+    std::string language() const;
 
     /**
      * @brief 当前语言在回退链上的下一站。
@@ -172,8 +175,8 @@ public:
     /**
      * @brief 取宿主文案（当前语言）。
      * @param[in] id 文本 id；不能为 nullptr。
-     * @return 文本；id 不认识时原样返回 id（便于日志里看出漏登记的 key）。
-     * @note 返回静态字符串，进程生命周期内有效。
+     * @return 文本：认识的 id 返回静态表里的字符串（进程生命周期内有效），
+     *         不认识的 id 原样返回调用方传入的指针。
      */
     const char* text(const char* id) const;
 
@@ -261,8 +264,18 @@ private:
     static bool findTextFor(const std::map<std::string, std::string>& texts,
                             std::string_view tag, std::string& out);
 
-    std::string m_preference; /**< "auto" 或规范标签 */
-    std::string m_language;   /**< 当前生效的规范标签 */
+    /**
+     * @brief 取当前语言的拷贝（持锁）。
+     *
+     * 查询函数先取一次拷贝再查静态文案表：避免插件线程读 m_language 时与 main
+     * 线程的 setPreference 形成 std::string 数据竞争。
+     * @return 当前生效语言的规范标签；单例构造后非空。
+     */
+    std::string currentLanguage() const;
+
+    mutable std::mutex m_mutex;  /**< 保护 m_preference / m_language（读多写少） */
+    std::string m_preference;    /**< "auto" 或规范标签 */
+    std::string m_language;      /**< 当前生效的规范标签 */
 };
 
 }  // namespace Host

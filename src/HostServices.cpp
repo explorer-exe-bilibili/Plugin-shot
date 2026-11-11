@@ -13,6 +13,7 @@
 #include <spdlog/spdlog.h>
 
 #include "config.h"
+#include "hostI18n.h"
 #include "hostListCatalog.h"
 #include "hostPluginRegistry.h"
 
@@ -313,6 +314,12 @@ int32_t HostServices::hostGetConfig(void* /*ctx*/, const char* key, char* buf, u
 int32_t HostServices::hostSetConfig(void* /*ctx*/, const char* key, const char* value) {
     if (key == nullptr || value == nullptr) {
         return -1;
+    }
+    // core/language 同时作用于运行期语言中心：只写配置会让"当前语言"与配置不一致，
+    // 直到下次重启才生效。这里立刻切换；i18n_list 由 HostRuntime::tick 的语言检测重建。
+    if (std::strcmp(key, "core/language") == 0 &&
+        !Host::I18n::instance().setPreference(value)) {
+        return -1;  // 配置已写入但语言值非法：明确返回失败，调用方按需处理
     }
     core::Config::getInstance().set(key, core::ConfigItem(value));
     return 0;

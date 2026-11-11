@@ -47,6 +47,18 @@ struct Reason {
      * @param[in] arg1      替换模板里 {1} 的文本。
      */
     Reason(const char* messageId, std::string arg0, std::string arg1);
+    /**
+     * @brief 构造带"下级原因"的原因：{1} 由 cause 按渲染语言递归生成。
+     *
+     * 依赖级联失败时外层是"依赖 X 启用失败：<下层原因>"。如果直接把下层原因按
+     * 中文拼进来，英文界面上会变成"外英文 + 内中文"；所以保留结构，chinese() /
+     * localized() 各自递归渲染同一语言。
+     *
+     * @param[in] messageId 消息 id（模板里用 {0} 放 arg0、{1} 放下级原因）。
+     * @param[in] arg0      替换模板里 {0} 的文本。
+     * @param[in] cause     下级原因；为空时不替换 {1}。
+     */
+    Reason(const char* messageId, std::string arg0, const Reason& cause);
 
     /** @brief 是否为空原因。 */
     bool empty() const noexcept;
@@ -56,6 +68,8 @@ struct Reason {
     std::string chinese() const;
     /** @brief 当前界面语言的文本：给被消费方原样展示的字段用。 */
     std::string localized() const;
+
+    std::shared_ptr<const Reason> cause;  /**< 嵌套的下级原因；可为空 */
 };
 
 /**

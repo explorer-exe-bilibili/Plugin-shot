@@ -365,8 +365,9 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
 
 - 解析规则：`display(owner, textOrKey) = i18n_list[(owner,textOrKey)] ?? textOrKey`，
   设置页/托盘/插件 helper 都按这一条实现。
-- 生成时机：启动加载完成、`core/language` 变化、`i18n_source_list` 贡献变化、
-  插件启停/卸载清理；全部在 `HostRuntime::tick` 里重建完再统一 flush。
+- 生成时机：启动加载完成（`HostRuntime::init` 重建一次）、`core/language` 变化、
+  `i18n_source_list` 贡献变化、插件启停/卸载清理；之后在 `HostRuntime::tick` 里
+  重建完再统一 flush。
 - 消费方刷新：订阅 `lists.changed`，`list == "i18n_list"` 时刷新；不新增事件主题。
 
 ### 5.5 登记一个新列表的规则
