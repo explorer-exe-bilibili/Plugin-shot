@@ -9,8 +9,10 @@
 // STRING 项里 options == "hotkey" 的走"按组合键录入"控件，实现在 settings_hotkey.cpp。
 
 #include <cmath>
+#include <cstdarg>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -31,6 +33,25 @@ const char* SettingsPanel::Impl::tr(const char* key, const char* fallback) const
 const char* SettingsPanel::Impl::resolve(const char* owner, const char* textOrKey) const {
     // 查不到时原样返回 key/字面量：老宿主没有 i18n_list 时的兼容兜底，不是错误。
     return (i18n != nullptr) ? i18n->resolve(owner, textOrKey) : textOrKey;
+}
+
+std::string SettingsPanel::Impl::trFormat(const char* key, const char* fallbackFormat, ...) const {
+    const char* const translated = tr(key, fallbackFormat);  // i18n 为空时就是 fallback 本身
+    // 校验只比较"转换说明符序列"：译文可以调词序、改文字，但 %s/%d 的个数与类型必须与
+    // fallback 一致——译文来自用户可编辑的语言包，直接把 tr() 的结果交给 vsnprintf 是 UB。
+    const char* format = fallbackFormat;
+    if (samePrintfFormat(translated, fallbackFormat)) {
+        format = translated;
+    } else {
+        shot::Logger(host).warn(
+            std::string("settings_ui：译文格式串与内置 fallback 不一致，已退回中文原文：") +
+            ((key != nullptr) ? key : ""));
+    }
+    va_list args;
+    va_start(args, fallbackFormat);
+    const std::string text = formatTextVa(format, args);
+    va_end(args);
+    return text;
 }
 
 void SettingsPanel::Impl::renderActionBar() {
@@ -115,14 +136,24 @@ void SettingsPanel::Impl::renderConfigSections() {
 }
 
 void SettingsPanel::Impl::renderProviderSection(ProviderSection& section) {
-    // 分区标题就是 config_list 的 owner_name：core 现在是 key（core.owner_name），
-    // 老插件可能直接写中文（resolve 查不到会原样返回）。
-    const std::string displayName = resolve(section.id.c_str(), section.name.c_str());
+    // 分区标题优先用 owner_name_key：H1 在 config_list 里给插件条目投影了
+    // "owner_name_key":"plugin.name"（core 没有这个字段，继续用 core.owner_name）。
+    // 插件贡献了 plugin.name 的译文时显示译文，没贡献时 resolve 原样返回 key，
+    // 再退回 owner_name 的老路径——老插件、老宿主的行为都不变。
+    const char* const kPluginNameKey = "plugin.name";
+    const char* const localizedName =
+        (section.id == "core") ? nullptr : resolve(section.id.c_str(), kPluginNameKey);
+    // resolve 查不到时原样返回 key，所以"结果 != key"就是"宿主/插件真的给了译文"。
+    const bool hasLocalizedName =
+        (localizedName != nullptr) && std::string_view(localizedName) != kPluginNameKey;
+    const std::string displayName =
+        hasLocalizedName ? std::string(localizedName)
+                         : std::string(resolve(section.id.c_str(), section.name.c_str()));
     const std::string header =
         (displayName == section.id)
             ? displayName
-            : formatText(tr("settings_ui.name_with_id", "%s（%s）"), displayName.c_str(),
-                         section.id.c_str());
+            : trFormat("settings_ui.name_with_id", "%s（%s）", displayName.c_str(),
+                       section.id.c_str());
     ImGui::PushID(section.id.c_str());
     if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
         if (section.removed) {
@@ -197,8 +228,8 @@ void SettingsPanel::Impl::renderConfigItem(ConfigItem& item, const std::string& 
         ImGui::SameLine();
         // 失败原因来自 lists.updated 的 reason（宿主转述插件 set_config 的结果）。
         ImGui::TextColored(kToneError, "%s",
-                           formatText(tr("settings_ui.write_failed", "写入失败：%s"),
-                                      item.error.c_str())
+                           trFormat("settings_ui.write_failed", "写入失败：%s",
+                                    item.error.c_str())
                                .c_str());
     } else if (item.value != item.baseline) {
         ImGui::SameLine();
@@ -378,9 +409,8 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item, const std::string&
         }
         default:
             ImGui::TextDisabled("%s",
-                                formatText(tr("settings_ui.unsupported_kind",
-                                              "不支持的配置类型（kind=%u）"),
-                                           desc.kind)
+                                trFormat("settings_ui.unsupported_kind",
+                                         "不支持的配置类型（kind=%u）", desc.kind)
                                     .c_str());
             return false;
     }

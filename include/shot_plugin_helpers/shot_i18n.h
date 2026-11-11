@@ -103,15 +103,19 @@ public:
     /**
      * @brief 解析作者写的语言表并发布到 i18n_source_list。
      *
-     * 每张表是一个 JSON 对象，必须带字符串 "@meta"（语言标签）；其余键值都是
-     * 文案。非法 JSON / 缺 @meta / 各语言 key 集不一致只记 WARN，能用的部分照常
-     * 加载（插件不因此失败）。分块发布，单条事件负载不超过 64 KiB。
+     * 每张表是一个 JSON 对象，必须带 "@meta"：字符串语言标签，或
+     * `{"tag":"zh-CN","name":"简体中文","fallback":"en-US"}` 对象（外部语言包的写法，
+     * name/fallback 可省，helper 只取 tag）。表文本可以带 UTF-8 BOM；文本值是空串时
+     * 按"缺失"处理（不写进表，让它走回退链）。非法 JSON / 缺 @meta / 各语言 key 集
+     * 不一致只记 WARN，能用的部分照常加载（插件不因此失败）。分块发布，单条事件
+     * 负载不超过 64 KiB。
      *
      * @param[in] tables 语言表数组（每语言一个 JSON 文本）。
      * @param[in] count  表个数；0 表示没有文案。
      * @note 发布的是各语言 key 的**并集**（按首次出现顺序）：某语言独有的 key 也会
      *       进 i18n_source_list，漏翻时消费方仍能显示该语言文本。
-     * @return true = 至少解析成功一张表（即使没有发布成功）；false = 一张都没解析出来。
+     * @return true = 至少解析成功一张表（即使没有发布成功）；false = 一张都没解析出来，
+     *         此时旧表与旧缓存保持不动（失败不半更新）。
      * @note 只在 create()/init() 里调用一次；重复调用会先撤回旧贡献再重新发布。
      */
     bool loadTables(const char* const* tables, std::size_t count);
@@ -119,7 +123,10 @@ public:
     /**
      * @brief 当前界面语言（BCP-47 规范标签）。
      * @return 语言标签，如 "en-US"；未加载 i18n_list 时用第一张表的 @meta。
-     * @note 指针在下一次语言切换前有效；要长期持有请拷成 std::string。
+     * @warning 返回的是内部 std::string 的 c_str()，**随时可能悬空**：下一次
+     *          lists.changed（切换语言）后，或任一 tr()/resolve()/refresh() 触发快照
+     *          重读时，甚至对象析构之后，这个指针都可能失效；跨帧/跨线程持有就是 UB。
+     *          签名是为兼容保留的（全仓暂无调用方），新代码请立刻拷成 std::string 再用。
      */
     const char* language() const;
 
@@ -196,7 +203,13 @@ private:
 
     /**
      * @brief 解析一张语言表，把文本并进 local / keys；非法表只 WARN。
-     * @param[in] table     一张 R"json(...)json" 文本。
+     *
+     * @meta 兼容两种写法：`"@meta":"zh-CN"`（内置表）与
+     * `"@meta":{"tag":"zh-CN","name":"简体中文","fallback":"en-US"}`（外部语言包；
+     * name/fallback 是给宿主语言目录的元数据，这里只取 tag）。表文本允许以 UTF-8 BOM
+     * 开头；文本值为空串按"缺失"处理，不写进表。
+     *
+     * @param[in] table     一张 R"json(...)json" 文本（可带 BOM）。
      * @param[in] language  该表的 @meta 语言标签（已规范化）；非法时返回 false。
      * @param[in,out] local key -> (tag -> text)。
      * @param[in,out] keys  首次出现的 key 顺序（各语言合并后的并集）。
@@ -225,7 +238,9 @@ private:
     mutable std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
         m_resolved;                            /**< owner -> (id -> 当前语言文本) */
     mutable std::string m_language;            /**< 当前界面语言（BCP-47） */
+    mutable std::string m_fallback;            /**< 该语言声明的回退语言（@meta.fallback，可空） */
     mutable std::atomic<bool> m_dirty{true};   /**< i18n_list 快照需要重读 */
+    mutable bool m_warnedBadSnapshot = false;  /**< i18n_list 解析失败的 WARN 只打一次 */
     bool m_subscribed = false;                 /**< 是否订阅了 lists.changed */
 };
 
@@ -319,19 +334,59 @@ inline bool I18n::parseTable(
         m_log.warn("[i18n] 语言表是空指针，已跳过");
         return false;
     }
-    const nlohmann::json doc = nlohmann::json::parse(table, nullptr, false);
+    // 语言包文件常带 UTF-8 BOM（Windows 记事本、部分编辑器默认加）。当前 nlohmann 会在
+    // 位置 0 跳过合法 BOM，但这里显式剥掉：换解析库/换版本时不该依赖这个行为，而且
+    // BOM 前面多一个空白字符 nlohmann 就会判成非法 JSON。
+    std::string_view text(table);
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB &&
+        static_cast<unsigned char>(text[2]) == 0xBF) {
+        text.remove_prefix(3);
+    }
+    // 解析回调只做一件事：数一数顶层有几个 "@meta" 键。同一个对象里写两遍 @meta 时
+    // nlohmann 静默保留最后一个，作者会误以为第一个生效，所以这里留一条 WARN。
+    // depth <= 1 = 根对象的键（嵌套对象里的同名键不算）。
+    std::size_t metaKeys = 0;
+    const auto countMetaKey = [&metaKeys](int depth, nlohmann::json::parse_event_t event,
+                                          nlohmann::json& parsed) {
+        if (depth <= 1 && event == nlohmann::json::parse_event_t::key && parsed.is_string() &&
+            parsed.get_ref<const std::string&>() == "@meta") {
+            ++metaKeys;
+        }
+        return true;
+    };
+    const nlohmann::json doc = nlohmann::json::parse(text.begin(), text.end(), countMetaKey,
+                                                     /*allow_exceptions=*/false);
     if (doc.is_discarded() || !doc.is_object()) {
         m_log.warn("[i18n] 语言表不是合法 JSON 对象，已跳过");
         return false;
     }
+    if (metaKeys > 1) {
+        m_log.warn("[i18n] 语言表里有 " + std::to_string(metaKeys) + " 个 @meta，按最后一个解析");
+    }
+    // @meta 兼容两种写法（document/I18N.md §5）：
+    //   内置表/老插件： "@meta":"zh-CN"
+    //   外部语言包：   "@meta":{"tag":"zh-CN","name":"简体中文","fallback":"en-US"}
+    // name / fallback 是给宿主语言目录用的元数据，helper 只取 tag——当前语言与回退
+    // 语言以 i18n_list 的 @meta 为准（见 refreshLocked），少了它们不影响加载。
     const auto metaIt = doc.find("@meta");
-    if (metaIt == doc.end() || !metaIt->is_string()) {
-        m_log.warn("[i18n] 语言表缺少字符串 @meta，已跳过");
+    if (metaIt == doc.end()) {
+        m_log.warn("[i18n] 语言表缺少 @meta（字符串或 {tag,name,fallback} 对象），已跳过");
         return false;
     }
-    language = normalizeTag(metaIt->get<std::string>());
+    std::string metaTag;
+    if (metaIt->is_string()) {
+        metaTag = metaIt->get<std::string>();
+    } else if (metaIt->is_object()) {
+        const auto tagIt = metaIt->find("tag");
+        if (tagIt != metaIt->end() && tagIt->is_string()) {
+            metaTag = tagIt->get<std::string>();
+        }
+    }
+    // 空串视为缺失：@meta 是空字符串、对象里没有 tag、tag 是空串，都算这张表没有语言。
+    language = normalizeTag(metaTag);
     if (language.empty()) {
-        m_log.warn("[i18n] 语言表的 @meta 为空，已跳过");
+        m_log.warn("[i18n] 语言表的 @meta 没有有效语言标签，已跳过");
         return false;
     }
 
@@ -344,8 +399,18 @@ inline bool I18n::parseTable(
             m_log.warn("[i18n] 语言表 " + language + " 的键 " + it.key() + " 不是字符串，已跳过");
             continue;
         }
-        local[it.key()][language] = it->get<std::string>();
+        const std::string value = it->get<std::string>();
+        // 空串视为缺失（document/I18N.md §3.2）：外部语言包常用 "" 表示"这条还没翻"，
+        // 写进表里会让回退链命中一条空文本、界面出现空白，所以直接不收。
+        if (value.empty()) {
+            continue;
+        }
+        local[it.key()][language] = value;
         tableKeys.push_back(it.key());
+    }
+    if (tableKeys.empty()) {
+        m_log.warn("[i18n] 语言表 " + language + " 没有可用文案，已跳过");
+        return false;
     }
     // 各语言的 key 集必须一致：缺了某语言的 key 时该语言会落到回退链（可能显示
     // 英文或中文），能运行但通常是作者漏写，记 WARN 便于发现。这里存"排序后的
@@ -385,19 +450,45 @@ inline void I18n::publishSourceEntry(
                        "部分文案可能不生效");
         }
     };
-    // 重复 loadTables：先撤回旧 key，避免删掉的文案残留在源列表里。
-    if (!m_keys.empty()) {
-        nlohmann::json removePayload = {
-            {"list", sourceListId()},
-            {"owner", m_owner},
-            {"ids", m_keys},
-        };
-        publishPayload("lists.remove", removePayload);
-    }
     // 单条事件负载上限 64 KiB（document/EVENT_BUS.md §5）：按估算大小分块，
     // 留 8 KiB 给 list/owner/items 外壳与 JSON 转义。单条 item 本身就超限时跳过
-    // 并 WARN——发出去也只会被宿主整条丢弃。
+    // 并 WARN——发出去也只会被宿主整条丢弃。撤回（lists.remove）用同一套预算。
     constexpr std::size_t kChunkLimit = 56 * 1024;
+    // 重复 loadTables：先撤回旧 key，避免删掉的文案残留在源列表里。key 多了以后 ids
+    // 数组本身就能把单条 remove 撑过 64 KiB，会被宿主静默丢弃、旧文案永久残留，所以
+    // 和 lists.add 一样分块发。
+    if (!m_keys.empty()) {
+        nlohmann::json removeChunk = nlohmann::json::array();
+        std::size_t removeBytes = 0;
+        for (const std::string& key : m_keys) {
+            const std::size_t keyBytes = nlohmann::json(key).dump().size() + 1;
+            if (keyBytes > kChunkLimit) {
+                m_log.warn("[i18n] 要撤回的 key 过大（" + std::to_string(keyBytes) +
+                           " 字节），已跳过：" + key);
+                continue;
+            }
+            if (!removeChunk.empty() && removeBytes + keyBytes > kChunkLimit) {
+                const nlohmann::json removePayload = {
+                    {"list", sourceListId()},
+                    {"owner", m_owner},
+                    {"ids", removeChunk},
+                };
+                publishPayload("lists.remove", removePayload);
+                removeChunk = nlohmann::json::array();
+                removeBytes = 0;
+            }
+            removeChunk.push_back(key);
+            removeBytes += keyBytes;
+        }
+        if (!removeChunk.empty()) {
+            const nlohmann::json removePayload = {
+                {"list", sourceListId()},
+                {"owner", m_owner},
+                {"ids", removeChunk},
+            };
+            publishPayload("lists.remove", removePayload);
+        }
+    }
     nlohmann::json chunk = nlohmann::json::array();
     std::size_t chunkBytes = 0;
     for (const std::string& key : keys) {
@@ -461,6 +552,8 @@ inline bool I18n::loadTables(const char* const* tables, std::size_t count) {
         loadedAny = true;
     }
     if (!loadedAny) {
+        // 一张表都没解析出来：旧表、旧语言、旧缓存全部保持不动（失败不半更新）。
+        // 插件继续用上一次可用的文案，总比整页退化成 key 原文好。
         return false;
     }
     // 各语言 key 集不一致只记 WARN（缺的 key 会走回退链），不让插件失败。
@@ -519,19 +612,33 @@ inline void I18n::onListsChanged(void* user, const char* /*topic*/, const void* 
 }
 
 inline void I18n::refreshLocked() const {
-    m_dirty.store(false);
-    m_resolved.clear();
     if (!m_lists.available()) {
+        // 老宿主没有列表服务：本来就读不到快照，清缓存并把脏标记落下，别每次查询白跑。
+        m_resolved.clear();
+        m_dirty.store(false);
         return;
     }
     const std::string text = m_lists.json(resolvedListId());
     if (text.empty()) {
-        return;  // 宿主要么还没生成 i18n_list，要么是没有这个协议的老宿主
+        // 读失败：宿主还没生成 i18n_list（首帧），或者是根本没有这个协议的老宿主。
+        // **保留旧缓存，并且保留 dirty**，下一次查询再试——旧实现先清 dirty 再读，
+        // 首次读取落空就永久退化成 key 原文。
+        return;
     }
     const nlohmann::json doc = nlohmann::json::parse(text, nullptr, false);
     if (doc.is_discarded() || !doc.is_array()) {
+        if (!m_warnedBadSnapshot) {
+            // 宿主生成的列表理论上不会坏；真坏了只告警一次，别每帧刷日志。
+            m_log.warn("[i18n] i18n_list 不是合法 JSON 数组，保留上一份快照并下帧重试");
+            m_warnedBadSnapshot = true;
+        }
         return;
     }
+    // 先读进临时结构，全部成功后再一次性 swap：中途失败不能动旧缓存（半个快照会让
+    // 一部分文案突然变回 key 原文，另一部分还是旧语言）。
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> resolved;
+    std::string language;
+    std::string fallback;
     for (const nlohmann::json& entry : doc) {
         if (!entry.is_object()) {
             continue;
@@ -544,10 +651,13 @@ inline void I18n::refreshLocked() const {
         if (id == "@meta") {
             const auto languageIt = entry.find("language");
             if (languageIt != entry.end() && languageIt->is_string()) {
-                const std::string language = normalizeTag(languageIt->get<std::string>());
-                if (!language.empty()) {
-                    m_language = language;
-                }
+                language = normalizeTag(languageIt->get<std::string>());
+            }
+            // fallback 是该语言回退链的下一站（document/I18N.md §2.2）；缺省或空串
+            // 表示"没有声明"，pickTagged 会跳过第 2 步。
+            const auto fallbackIt = entry.find("fallback");
+            if (fallbackIt != entry.end() && fallbackIt->is_string()) {
+                fallback = normalizeTag(fallbackIt->get<std::string>());
             }
             continue;
         }
@@ -557,8 +667,16 @@ inline void I18n::refreshLocked() const {
             !textIt->is_string()) {
             continue;
         }
-        m_resolved[ownerIt->get<std::string>()][id] = textIt->get<std::string>();
+        resolved[ownerIt->get<std::string>()][id] = textIt->get<std::string>();
     }
+    // 快照完整解析完了：一次 swap 生效，然后才清 dirty（并允许下一次坏快照再告警）。
+    m_resolved = std::move(resolved);
+    if (!language.empty()) {
+        m_language = std::move(language);
+    }
+    m_fallback = std::move(fallback);
+    m_warnedBadSnapshot = false;
+    m_dirty.store(false);
 }
 
 inline void I18n::refreshIfDirty() const {
@@ -587,22 +705,52 @@ inline const std::string* I18n::pickTagged(
     if (texts.empty()) {
         return nullptr;
     }
-    // 回退链：完全匹配 -> 主语言族 -> 默认 en-US -> 默认语言的主语言 -> 第一条。
-    // texts 的 key 在解析时已经规范过，所以这里直接按规范标签比较。
-    const std::string primary = primaryTag(m_language);
-    const std::vector<std::string> candidates = {m_language, primary, "en-US", "en"};
-    for (const std::string& candidate : candidates) {
-        const auto exact = texts.find(candidate);
-        if (exact != texts.end()) {
-            return &exact->second;
+    // 回退链（document/I18N.md §3.2、i18n-p0 计划 §一），与宿主 src/hostI18n.cpp 的
+    // I18n::selectText（旧名 pickFromTexts）是同一套规则；改一处必须同步另一处：
+    //   1 归一化 tag 完全匹配 → 2 该语言声明的 fallback（i18n_list 的 @meta.fallback）
+    //   → 3 主语言族匹配（zh-TW 落 zh-CN）→ 4 默认语言 en-US → 5 en 族 →
+    //   6 第一条可用文本；第 7 步"显示 key 原文"由调用方 tr() 的 fallback 承担。
+    // 空串在 parseTable 里已经当缺失丢掉，所以第 6 步一定拿到非空文本；texts 的 key
+    // 也都规范化过，可以直接按规范标签比较。
+    const auto findExact = [&texts](const std::string& tag) -> const std::string* {
+        const auto it = texts.find(tag);
+        return (it != texts.end()) ? &it->second : nullptr;
+    };
+    const auto findFamily = [&texts](const std::string& tag) -> const std::string* {
+        const std::string family = primaryTag(tag);
+        if (family.empty()) {
+            return nullptr;
         }
-        const std::string candidatePrimary = primaryTag(candidate);
-        for (const auto& [tag, text] : texts) {
-            if (primaryTag(tag) == candidatePrimary) {
+        // 同主语言族里的第一条：unordered_map 的遍历顺序未定义，同族有两个方言时取哪条
+        // 不确定；但只要有文本就能显示，不会退化成 key 原文。
+        for (const auto& [candidate, text] : texts) {
+            if (primaryTag(candidate) == family) {
                 return &text;
             }
         }
+        return nullptr;
+    };
+    if (const std::string* exact = findExact(m_language)) {
+        return exact;
     }
+    if (!m_fallback.empty()) {
+        if (const std::string* declared = findExact(m_fallback)) {
+            return declared;
+        }
+        if (const std::string* declaredFamily = findFamily(m_fallback)) {
+            return declaredFamily;
+        }
+    }
+    if (const std::string* family = findFamily(m_language)) {
+        return family;
+    }
+    if (const std::string* english = findExact("en-US")) {
+        return english;
+    }
+    if (const std::string* englishFamily = findFamily("en-US")) {
+        return englishFamily;  // en 族（"en-GB"/"en" 之类）
+    }
+    // 6：所有语言都缺，取第一条可用文本（作者的表顺序）。
     return &texts.begin()->second;
 }
 

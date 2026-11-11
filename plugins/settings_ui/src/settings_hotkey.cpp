@@ -262,7 +262,7 @@ void SettingsPanel::Impl::renderHotkeyCapturePopup() {
     const char* currentText =
         current.empty() ? tr("settings_ui.hotkey_unset", "（未设置）") : current.c_str();
     ImGui::TextUnformatted(
-        formatText(tr("settings_ui.hotkey_current", "当前组合键：%s"), currentText).c_str());
+        trFormat("settings_ui.hotkey_current", "当前组合键：%s", currentText).c_str());
     ImGui::Separator();
 
     if (ImGui::Button(tr("settings_ui.cancel", "取消"))) {

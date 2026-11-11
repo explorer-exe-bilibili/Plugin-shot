@@ -29,6 +29,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -90,22 +91,159 @@ inline ImVec4 toneColor(Tone tone) {
 }
 
 /**
- * @brief 把已翻译的 printf 风格格式串和动态值拼成 std::string。
+ * @brief 判断一个字符是不是 printf 的 flag。
  *
- * 文案必须整句交给 tr()（不同语言词序不同，不能把中文前缀/后缀拆成多段硬拼），
- * 动态值作为格式参数传入。本插件的提示都很短，512 字节缓冲区足够；截断时返回
- * 已写入的前缀而不是越界。
- *
- * @param[in] format 已翻译的格式串（来自 tr()）。
- * @param[in] ...    格式参数。
- * @return 拼好的文本；格式化失败时返回空串（调用方按空提示处理）。
+ * 只认 C 标准与 MSVC 都支持的 `-` `+` 空格 `#` `0`；认不出来的字符会落到
+ * "conversion" 位置按字面比较，所以不会漏判（只是比较得更严）。
  */
-inline std::string formatText(const char* format, ...) {
+inline bool isPrintfFlag(char c) {
+    return c == '-' || c == '+' || c == ' ' || c == '#' || c == '0';
+}
+
+/**
+ * @brief 判断一个字符是不是 printf 的长度修饰符（`hh`/`ll` 由调用方先行处理）。
+ */
+inline bool isPrintfLength(char c) {
+    return c == 'h' || c == 'l' || c == 'j' || c == 'z' || c == 't' || c == 'L';
+}
+
+/**
+ * @brief 扫出格式串里的 printf 转换说明符序列（每个说明符不含 `%`）。
+ *
+ * 只做字符扫描，**绝不调用 printf 家族函数去"试一下"**：对用户可编辑的译文试跑本身
+ * 就是 UB（`%n` 会往内存写、参数个数/类型不匹配会读错栈），必须先静态判断。
+ *
+ * 语法：`%[flags][width][.precision][length]conversion`
+ *   flags      `-` `+` 空格 `#` `0`
+ *   width      十进制数字或 `*`
+ *   precision  `.` 后跟十进制数字或 `*`
+ *   length     `hh` `h` `ll` `l` `j` `z` `t` `L`
+ *   conversion 其余任意字符（与 fallback 逐字比较，认不出来的也照抄）
+ * `%%` 是字面百分号，不消耗参数，不写进序列。
+ *
+ * @param[in]  format 格式串；nullptr 视为空串。
+ * @param[out] specs  按出现顺序写入的转换说明符（如 `s`、`08d`、`*ld`）；先清空。
+ * @return true = 扫到结尾；false = 无法安全比较的写法（结尾悬空 `%`、只有修饰符没有
+ *         转换字符），调用方必须按"不可信"处理并退回 fallback。
+ */
+inline bool scanPrintfSpecs(const char* format, std::vector<std::string>& specs) {
+    specs.clear();
+    if (format == nullptr) {
+        return true;
+    }
+    const std::string_view text(format);
+    std::size_t index = 0;
+    while (index < text.size()) {
+        if (text[index] != '%') {
+            ++index;
+            continue;
+        }
+        ++index;  // 跳过 '%'
+        if (index >= text.size()) {
+            // 结尾一个孤零零的 '%'：printf 家族的行为未定义，按不可信处理。
+            return false;
+        }
+        if (text[index] == '%') {
+            ++index;  // 字面百分号，不消耗参数
+            continue;
+        }
+        std::string spec;
+        while (index < text.size() && isPrintfFlag(text[index])) {
+            spec.push_back(text[index]);
+            ++index;
+        }
+        if (index < text.size() && text[index] == '*') {
+            spec.push_back('*');
+            ++index;
+        } else {
+            while (index < text.size() && text[index] >= '0' && text[index] <= '9') {
+                spec.push_back(text[index]);
+                ++index;
+            }
+        }
+        if (index < text.size() && text[index] == '.') {
+            spec.push_back('.');
+            ++index;
+            if (index < text.size() && text[index] == '*') {
+                spec.push_back('*');
+                ++index;
+            } else {
+                while (index < text.size() && text[index] >= '0' && text[index] <= '9') {
+                    spec.push_back(text[index]);
+                    ++index;
+                }
+            }
+        }
+        // 长度修饰符：先看两字符的 hh / ll，再看单字符的 h/l/j/z/t/L。
+        if (index + 1 < text.size() && ((text[index] == 'h' && text[index + 1] == 'h') ||
+                                        (text[index] == 'l' && text[index + 1] == 'l'))) {
+            spec.push_back(text[index]);
+            spec.push_back(text[index + 1]);
+            index += 2;
+        } else if (index < text.size() && isPrintfLength(text[index])) {
+            spec.push_back(text[index]);
+            ++index;
+        }
+        if (index >= text.size()) {
+            return false;  // 只有修饰符、没有转换字符
+        }
+        spec.push_back(text[index]);
+        ++index;
+        specs.push_back(std::move(spec));
+    }
+    return true;
+}
+
+/**
+ * @brief 判断译文里的 printf 转换说明符序列是否与内置 fallback 完全一致。
+ *
+ * 只比较"参数怎么用"（个数、顺序、类型/长度/宽度），不比较文字——译文的职责就是改
+ * 文字、调词序。`%n` 是写内存的转换，译文里出现一律拒绝（哪怕 fallback 也有：那是
+ * 内置表自己的问题，不该被译文放大）。
+ *
+ * @param[in] translated 译文（来自 tr()，可能来自用户可编辑的语言包，不可信）。
+ * @param[in] fallback   内置 fallback 格式串（可信，与调用点实参一一对应）。
+ * @return true = 可以安全地把译文当格式串用；false = 必须退回 fallback。
+ */
+inline bool samePrintfFormat(const char* translated, const char* fallback) {
+    if (translated == nullptr || fallback == nullptr) {
+        return false;
+    }
+    if (std::strcmp(translated, fallback) == 0) {
+        // 未翻译（tr 原样返回 fallback）是最常见的情况，直接放行。
+        return true;
+    }
+    std::vector<std::string> translatedSpecs;
+    std::vector<std::string> fallbackSpecs;
+    if (!scanPrintfSpecs(translated, translatedSpecs) ||
+        !scanPrintfSpecs(fallback, fallbackSpecs)) {
+        return false;
+    }
+    for (const std::string& spec : translatedSpecs) {
+        if (!spec.empty() && spec.back() == 'n') {
+            return false;
+        }
+    }
+    return translatedSpecs == fallbackSpecs;
+}
+
+/**
+ * @brief 用**已经校验过**的格式串 + va_list 把文本拼出来（trFormat 的低层实现）。
+ *
+ * 调用方必须先拿到可信格式串（内置 fallback，或过了 samePrintfFormat 的译文）；
+ * 本函数不再校验，因为参数已经按 va_list 展开，没法回头改。
+ *
+ * @param[in] format 可信的 printf 格式串；nullptr 时返回空串。
+ * @param[in] args   与 format 的转换说明符一一对应的参数表（调用方负责 va_end）。
+ * @return 拼好的文本；本插件的提示都很短，512 字节缓冲够用，截断时返回已写入的前缀，
+ *         格式化失败（返回码 <= 0）时返回空串。
+ */
+inline std::string formatTextVa(const char* format, va_list args) {
+    if (format == nullptr) {
+        return std::string();
+    }
     char buffer[512] = {};
-    va_list args;
-    va_start(args, format);
     const int written = std::vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
     if (written <= 0) {
         return std::string();
     }
@@ -289,6 +427,22 @@ struct SettingsPanel::Impl {
      * @return 当前语言文本；i18n 为空或查不到时原样返回 textOrKey。
      */
     const char* resolve(const char* owner, const char* textOrKey) const;
+
+    /**
+     * @brief 取译文并按 printf 格式化；译文与内置 fallback 的转换说明符不一致时退回 fallback。
+     *
+     * 为什么需要这一层：语言包是用户/第三方可编辑的，把 tr() 的结果直接交给 vsnprintf，
+     * 只要译文多一个 `%s`、少一个 `%d` 或者写了 `%n`，就是 UB（`%n` 会往栈上写地址）。
+     * 所以先按 samePrintfFormat 做纯字符校验，不一致就退回可信的中文 fallback 并记 WARN。
+     *
+     * @param[in] key            文案 key（settings_ui.*）。
+     * @param[in] fallbackFormat 内置中文格式串，**必须与后面的实参一一对应**。
+     * @param[in] ...            格式实参。
+     * @return 拼好的文本；格式化失败时返回空串（调用方按空提示处理）。
+     * @note 校验只能保证"译文与 fallback 一致"，纠正不了 fallback 本身的错误；新增调用点
+     *       时请确认 fallbackFormat 的转换说明符与实参类型匹配。
+     */
+    std::string trFormat(const char* key, const char* fallbackFormat, ...) const;
 
     // ---- 渲染（settings_panel.cpp 的顶层框架 + settings_form.cpp / settings_plugin_table.cpp） ----
     void render();

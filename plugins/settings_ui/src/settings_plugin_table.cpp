@@ -76,8 +76,8 @@ void SettingsPanel::Impl::renderPluginRow(PluginRow& row) {
     const std::string label =
         (row.status.name.empty() || row.status.name == row.status.id)
             ? row.status.id
-            : formatText(tr("settings_ui.name_with_id", "%s（%s）"), row.status.name.c_str(),
-                         row.status.id.c_str());
+            : trFormat("settings_ui.name_with_id", "%s（%s）", row.status.name.c_str(),
+                       row.status.id.c_str());
     ImGui::TextUnformatted(label.c_str());
     if (isEntry) {
         ImGui::SameLine();

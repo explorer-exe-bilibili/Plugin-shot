@@ -234,13 +234,13 @@ void SettingsPanel::Impl::reportApplyResult() {
     const int unconfirmed = applyConfigTotal - applyConfigApplied - applyConfigRejected;
     if (applyConfigRejected > 0 || applyPluginRejected > 0) {
         setStatus(Tone::Error,
-                  formatText(tr("settings_ui.apply_rejected",
-                                "应用完成，但有 %d 项配置和 %d 个插件启停被拒绝"),
-                             applyConfigRejected, applyPluginRejected));
+                  trFormat("settings_ui.apply_rejected",
+                           "应用完成，但有 %d 项配置和 %d 个插件启停被拒绝",
+                           applyConfigRejected, applyPluginRejected));
     } else if (unconfirmed > 0) {
         setStatus(Tone::Error,
-                  formatText(tr("settings_ui.apply_unconfirmed", "有 %d 项配置没有被宿主确认"),
-                             unconfirmed));
+                  trFormat("settings_ui.apply_unconfirmed", "有 %d 项配置没有被宿主确认",
+                           unconfirmed));
     } else if (applySaveFailed) {
         setStatus(Tone::Error,
                   tr("settings_ui.save_failed", "配置保存失败（值可能已生效，但没有落盘）"));
@@ -283,8 +283,8 @@ void SettingsPanel::Impl::onListsUpdated(std::string_view payload) {
         }
         applySaveFailed = true;
         setStatus(Tone::Error,
-                  formatText(tr("settings_ui.save_failed_with_error", "保存配置失败：%s"),
-                             error.c_str()));
+                  trFormat("settings_ui.save_failed_with_error", "保存配置失败：%s",
+                           error.c_str()));
         finishApplyConfig();
         return;
     }
@@ -292,8 +292,8 @@ void SettingsPanel::Impl::onListsUpdated(std::string_view payload) {
     if (!error.empty()) {
         // 整批写值失败（宿主在 results 之外给的兜底错误）：不再进入提交阶段。
         setStatus(Tone::Error,
-                  formatText(tr("settings_ui.write_config_failed", "写入配置失败：%s"),
-                             error.c_str()));
+                  trFormat("settings_ui.write_config_failed", "写入配置失败：%s",
+                           error.c_str()));
         resetApplyState();
         return;
     }
@@ -399,8 +399,8 @@ void SettingsPanel::Impl::onPluginsChanged(std::string_view payload) {
                 }
                 if (!shown) {
                     setStatus(Tone::Error,
-                              formatText(tr("settings_ui.plugin_error", "插件 %s：%s"),
-                                         pluginId.c_str(), reason.c_str()));
+                              trFormat("settings_ui.plugin_error", "插件 %s：%s",
+                                       pluginId.c_str(), reason.c_str()));
                 }
             }
         }
