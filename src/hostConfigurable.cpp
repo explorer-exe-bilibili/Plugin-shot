@@ -1,8 +1,11 @@
 #include "hostConfigurable.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <mutex>
+#include <string>
 
 #include "hostI18n.h"
 #include "hostLogging.h"
@@ -20,21 +23,33 @@ const char kKeyLoggingFile[] = "logging.file";
 const char kLevelOptions[] = "debug|info|warn|error";
 
 /**
- * @brief 语言 ENUM 的候选值：auto + 语言注册表里的全部标签。
+ * @brief 语言 ENUM 的候选值：auto + 语言目录（内置先、外部语言包声明按 tag 排序）。
  *
- * 候选从 Host::I18n::languages() 生成，不在配置表里硬编码语言清单——加语种
- * 只改注册表。返回静态字符串，生命周期同进程。
+ * 目录会被语言包动态扩展（`@language/` 条目），所以不能像以前那样只算一次：
+ * 按 Host::I18n::catalogVersion() 缓存，版本变了才重算。返回静态存储的引用——
+ * ShotConfigDesc 的字符串字段约定"由提供者持有"，宿主在 get_config_desc 返回后
+ * 立刻把 options 抄进 config_list 的 JSON，期间不会再有目录变化。
+ *
+ * 只在宿主 main 线程（config_list 重建 / lists.update）调用；版本号在锁外取，
+ * 重算在缓存锁内做，避免两个线程同时扩容同一个 std::string。
  */
 const std::string& languageOptions() {
-    static const std::string kOptions = [] {
-        std::string options = Host::I18n::autoPreference();
-        for (const Host::I18n::Language& language : Host::I18n::languages()) {
-            options += "|";
-            options += language.tag;
+    static std::mutex mutex;
+    static std::uint64_t cachedVersion = 0;
+    static std::string options;
+    const Host::I18n& i18n = Host::I18n::instance();
+    const std::uint64_t version = i18n.catalogVersion();
+    std::lock_guard<std::mutex> lock(mutex);
+    if (options.empty() || version != cachedVersion) {
+        std::string rebuilt = Host::I18n::autoPreference();
+        for (const Host::I18n::CatalogLanguage& language : i18n.catalog()) {
+            rebuilt += "|";
+            rebuilt += language.tag;
         }
-        return options;
-    }();
-    return kOptions;
+        options = std::move(rebuilt);
+        cachedVersion = version;
+    }
+    return options;
 }
 
 /**

@@ -57,6 +57,12 @@ bool HostRuntime::init(const std::string& pluginDir) {
     spdlog::info("i18n: 界面语言 = {}（偏好 {}，回退 {}）", m_lastLanguage,
                  Host::I18n::instance().preference(), Host::I18n::instance().fallbackLanguage());
 
+    // 首帧就可能有人读 i18n_list（设置页/托盘在插件 create 之后马上显示）：先在
+    // 这里只用 core 表重建一次，让 @meta 与 core 文案从一开始就是当前语言，而不是
+    // 构造时注册的空快照。此时还没有插件贡献，重建不碰插件能力、不需要生命周期锁；
+    // 插件的条目会在主循环第一轮 dispatch 之后的那次 tick 里补进来。
+    m_listCatalog.rebuildI18nListIfDirty();
+
     if (!m_manager.loadPlugins(pluginDir)) {
         return false;
     }
@@ -174,6 +180,14 @@ void HostRuntime::tick() {
     // i18n_list 的重建不调用插件能力，不需要生命周期锁；脏标记只在 main 线程改，
     // 这里统一重建一次再 flush。
     m_listCatalog.rebuildI18nListIfDirty();
+    // 语言目录（@language/ 声明）变化会让 core/language 的 ENUM 候选增减，而选项
+    // 串是 config_list 的投影字段：必须整表重序列化一次。重建要读插件配置，所以
+    // 单独持生命周期锁（上面那段落锁已退出，这里不会嵌套）；重建完下面的
+    // flushChanged 会把 config_list 的 lists.changed 一起发出去。
+    if (m_listCatalog.configListStale()) {
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        m_listCatalog.rebuildConfigListLocked();
+    }
     if (languageChanged) {
         // 注册表快照里的 reason 文本要按新语言重新生成（快照由 main 线程重建）。
         m_pluginRegistry.refresh();

@@ -12,6 +12,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -114,7 +115,17 @@ nlohmann::json parseJsonObject(const std::string& payload) {
     if (payload.empty()) {
         return nlohmann::json();
     }
-    nlohmann::json data = nlohmann::json::parse(payload, nullptr, false);
+    // 语言包是从 .json 文件直接拼出来的，文件头常带 UTF-8 BOM；BOM 不是合法的
+    // JSON 前缀，不剥掉整条负载都会被判成坏 JSON（表现为"插件文案全都不生效"）。
+    const char* begin = payload.data();
+    std::size_t length = payload.size();
+    if (length >= 3 && static_cast<unsigned char>(begin[0]) == 0xEF &&
+        static_cast<unsigned char>(begin[1]) == 0xBB &&
+        static_cast<unsigned char>(begin[2]) == 0xBF) {
+        begin += 3;
+        length -= 3;
+    }
+    nlohmann::json data = nlohmann::json::parse(begin, begin + length, nullptr, false);
     if (data.is_discarded() || !data.is_object()) {
         return nlohmann::json();
     }
@@ -151,6 +162,215 @@ std::int32_t jsonOrder(const nlohmann::json& item) {
         return static_cast<std::int32_t>(value);
     }
     return kDefaultOrder;
+}
+
+// ---- i18n 源条目的解析与合并 ----------------------------------------------
+// i18n_source_list 的条目协议（document/I18N.md §2.1）：
+//   {"id":"<key>","texts":{"<tag>":"…"},"target":"<owner>","priority":300}
+// target 缺省 = 贡献者自己；priority 缺省 100（内置表 100、官方包 200、
+// 用户包 300）。旧插件只写 id+texts，所以下面这两个缺省值就是"旧数据行为
+// 完全不变"的落点：等价于 target=自己、priority=100。
+constexpr std::int32_t kCorePriority = 100;
+
+// 语言声明条目的 id 前缀：`@language/<tag>` 只扩展语言目录，不作文本条目。
+constexpr std::string_view kLanguageDeclarationPrefix = "@language/";
+
+// config_list 的 owner_name_key：插件显示名固定用这个 key，core 沿用 core.owner_name
+// （core 的 owner_name 本身就是 key，消费方按 display(owner,name) 解析）。
+const char kPluginNameKey[] = "plugin.name";
+const char kCoreOwnerNameKey[] = "core.owner_name";
+
+/** @brief 一条解析后的 i18n_source_list 条目。 */
+struct I18nSourceItem {
+    std::string owner;                        /**< 供文本的 target owner（core 或插件 id） */
+    std::string id;                           /**< 文本 key；语言声明条目里是声明的语言标签 */
+    std::int32_t priority = kCorePriority;    /**< 合并优先级；大的覆盖小的 */
+    std::map<std::string, std::string> texts; /**< 规范语言 -> 文本（空串已剔除） */
+    bool declaration = false;                 /**< true = @language/ 语言声明 */
+    std::string declaredName;                 /**< 声明里的显示名（texts[tag] 优先） */
+    std::string declaredFallback;             /**< 声明里的 fallback */
+};
+
+/** @brief 合并后的一个 (target,id)：语言 -> 文本 + 每个语言胜出的优先级。 */
+struct I18nMergedText {
+    std::map<std::string, std::string> texts;       /**< 规范语言 -> 文本 */
+    std::map<std::string, std::int32_t> priorities; /**< 规范语言 -> 胜出优先级 */
+};
+
+/** @brief (target, id)：i18n_list 里一条文本条目的身份。 */
+using I18nKey = std::pair<std::string, std::string>;
+/** @brief (target,id) -> 各语言候选。 */
+using I18nTable = std::map<I18nKey, I18nMergedText>;
+
+/**
+ * @brief 去掉字符串开头的 UTF-8 BOM。
+ *
+ * 语言包文件常年带 BOM；插件把它原样拼进 JSON 字符串时，BOM 会变成第一个 key
+ * （或 id）的开头，查询方永远匹配不上，而日志里又看不出区别。
+ * @param[in,out] text 待处理的字符串。
+ */
+void stripBomInPlace(std::string& text) {
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB &&
+        static_cast<unsigned char>(text[2]) == 0xBF) {
+        text.erase(0, 3);
+    }
+}
+
+/**
+ * @brief 解析一条 i18n_source_list 条目（坏条目安静丢弃，调用方只跳过它）。
+ *
+ * 兼容两种历史写法：`texts` 是对象（正常）；语言声明条目的 `texts` 直接是字符串
+ * （只给一个语言名）。`@meta` 既可能是字符串也可能是对象（语言表借用了这个键），
+ * 声明里只取它的 name/fallback 作补充，不当作文本 key。
+ *
+ * @param[in]  contributor 贡献者 owner（target 缺省值）。
+ * @param[in]  valueJson   条目 JSON 文本。
+ * @param[out] out         解析结果；成功时填好。
+ * @return true = 是一条可用的文本条目或语言声明；false = 丢弃。
+ */
+bool parseI18nSourceItem(const std::string& contributor, const std::string& valueJson,
+                         I18nSourceItem& out) {
+    const nlohmann::json item = parseJsonObject(valueJson);
+    if (!item.is_object()) {
+        return false;
+    }
+    std::string id = jsonFieldString(item, "id");
+    stripBomInPlace(id);
+    if (id.empty() || id == "@meta") {
+        return false;  // @meta 是 i18n_list 自己的保留 id（handleAdd 也拒绝过）
+    }
+    out.declaration = id.starts_with(kLanguageDeclarationPrefix);
+    if (out.declaration) {
+        out.id = Host::I18n::normalizeTag(id.substr(kLanguageDeclarationPrefix.size()));
+        if (out.id.empty()) {
+            return false;
+        }
+    } else {
+        out.id = std::move(id);
+    }
+
+    std::string target = jsonFieldString(item, "target");
+    stripBomInPlace(target);
+    out.owner = target.empty() ? contributor : target;
+
+    if (const auto priorityIt = item.find("priority");
+        priorityIt != item.end() && priorityIt->is_number_integer()) {
+        const std::int64_t value = priorityIt->get<std::int64_t>();
+        out.priority = static_cast<std::int32_t>(
+            std::clamp<std::int64_t>(value, std::numeric_limits<std::int32_t>::min(),
+                                     std::numeric_limits<std::int32_t>::max()));
+    }
+
+    const auto textsIt = item.find("texts");
+    if (textsIt != item.end()) {
+        if (textsIt->is_object()) {
+            for (auto it = textsIt->begin(); it != textsIt->end(); ++it) {
+                if (!it->is_string()) {
+                    continue;  // 表元数据 / 坏值：只认字符串
+                }
+                std::string tag = Host::I18n::normalizeTag(it.key());
+                stripBomInPlace(tag);
+                std::string text = it->get<std::string>();
+                stripBomInPlace(text);
+                if (tag.empty() || tag == "@meta" || text.empty()) {
+                    continue;  // 空串视为缺失：作者拿它占位，不能当译文
+                }
+                out.texts[tag] = std::move(text);
+            }
+        } else if (textsIt->is_string() && out.declaration) {
+            std::string text = textsIt->get<std::string>();
+            stripBomInPlace(text);
+            if (!text.empty()) {
+                out.texts[out.id] = std::move(text);
+            }
+        }
+    }
+
+    if (!out.declaration) {
+        return !out.texts.empty();
+    }
+    // 显示名：声明自己的语言文本 > "@meta"（字符串/对象）的 name > 标签本身。
+    if (const auto nameIt = out.texts.find(out.id); nameIt != out.texts.end()) {
+        out.declaredName = nameIt->second;
+    }
+    out.declaredFallback = Host::I18n::normalizeTag(jsonFieldString(item, "fallback"));
+    if (const auto metaIt = item.find("@meta"); metaIt != item.end()) {
+        if (metaIt->is_string()) {
+            std::string meta = metaIt->get<std::string>();
+            stripBomInPlace(meta);
+            if (out.declaredName.empty() && !meta.empty()) {
+                out.declaredName = std::move(meta);
+            }
+        } else if (metaIt->is_object()) {
+            std::string metaName = jsonFieldString(*metaIt, "name");
+            stripBomInPlace(metaName);
+            if (out.declaredName.empty() && !metaName.empty()) {
+                out.declaredName = std::move(metaName);
+            }
+            if (out.declaredFallback.empty()) {
+                out.declaredFallback =
+                    Host::I18n::normalizeTag(jsonFieldString(*metaIt, "fallback"));
+            }
+        }
+    }
+    return true;
+}
+
+/**
+ * @brief 按"priority 大者胜、同 priority 后到者胜"把一条文本并进表。
+ * @param[in,out] table    合并表。
+ * @param[in]     key      (target,id)。
+ * @param[in]     language 规范语言标签。
+ * @param[in]     priority 这条候选的优先级。
+ * @param[in]     text     文本；空串在调用方已剔除。
+ */
+void mergeText(I18nTable& table, const I18nKey& key, const std::string& language,
+               std::int32_t priority, std::string text) {
+    I18nMergedText& entry = table[key];
+    const auto existing = entry.priorities.find(language);
+    if (existing != entry.priorities.end() && priority < existing->second) {
+        return;  // 低优先级不覆盖已有译文
+    }
+    entry.priorities[language] = priority;
+    entry.texts[language] = std::move(text);
+}
+
+/**
+ * @brief 取 (target,id) 在指定语言下的文本（统一回退链，空串 = 没有可用文本）。
+ * @param[in] table    合并表。
+ * @param[in] key      (target,id)。
+ * @param[in] language 目标语言。
+ * @param[in] fallback 该语言的 fallback。
+ * @return 选中的文本；没有时返回空串。
+ */
+std::string selectMergedText(const I18nTable& table, const I18nKey& key,
+                             const std::string& language, const std::string& fallback) {
+    const auto it = table.find(key);
+    if (it == table.end()) {
+        return {};
+    }
+    return Host::I18n::selectText(it->second.texts, language, fallback);
+}
+
+/**
+ * @brief 这个语言在合并表里有没有任何一条非空文本（决定是否标"未翻译"）。
+ *
+ * 只看精确匹配：zh-TW 能回退到 zh-CN 的简体，但它自己没有译文，仍然要标
+ * "未翻译"——那正是提醒用户"选了会看到回退语言"的地方。
+ *
+ * @param[in] table    合并表。
+ * @param[in] language 规范语言标签。
+ * @return true = 至少一条该语言的文本。
+ */
+bool hasTranslation(const I18nTable& table, const std::string& language) {
+    for (const auto& item : table) {
+        const auto it = item.second.texts.find(language);
+        if (it != item.second.texts.end() && !it->second.empty()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -387,6 +607,33 @@ void HostListCatalog::handleAdd(const std::string& payload) {
         if (id.empty()) {
             spdlog::warn("lists.add 的条目缺少 id，跳过（list={}, owner={}）", list, owner);
             continue;
+        }
+        // i18n_source_list 的额外校验（协议见 document/I18N.md §2.1）：@meta 是
+        // i18n_list 的保留 id；target 只能是 core 或当前已加载的插件 id，否则这段
+        // 文本永远没人查得到，不如在入口拒掉并留 WARN。
+        if (list == kI18nSourceListId) {
+            if (id == "@meta") {
+                spdlog::warn("lists.add: i18n_source_list 不允许 id=\"@meta\"（保留），跳过"
+                             "（owner={}）", owner);
+                continue;
+            }
+            const auto targetIt = item.find("target");
+            const std::string target = jsonFieldString(item, "target");
+            if (targetIt != item.end() && !targetIt->is_string()) {
+                spdlog::warn("lists.add: i18n_source_list 条目 {} 的 target 不是字符串，跳过"
+                             "（owner={}）", id, owner);
+                continue;
+            }
+            if (!target.empty() && target != kCoreOwner && !ownerLoaded(target)) {
+                spdlog::warn("lists.add: i18n_source_list 条目 {} 的 target={} 不是已加载插件，"
+                             "跳过（owner={}）", id, target, owner);
+                continue;
+            }
+            const auto priorityIt = item.find("priority");
+            if (priorityIt != item.end() && !priorityIt->is_number_integer()) {
+                spdlog::warn("lists.add: i18n_source_list 条目 {} 的 priority 不是整数，"
+                             "按缺省 100 处理（owner={}）", id, owner);
+            }
         }
         // 宿主为每条注入贡献者 id：tray_command_list 这类消费方要按
         // display(owner,label) 用 i18n_list 解析文本 key。条目自带 owner 时以列表级
@@ -823,6 +1070,12 @@ void HostListCatalog::rebuildConfigListLocked() {
             nlohmann::json entry = {
                 {"owner", provider.id},
                 {"owner_name", provider.name},
+                // 插件显示名的文本 key 固定为 "plugin.name"：插件可以在自己的语言表里
+                // 给 target=自己、id=plugin.name 提供译文，设置页按
+                // resolve(owner, owner_name_key) ?? owner_name 显示。core 继续用
+                // core.owner_name（core 的 owner_name 本身就是 key，旧消费方不受影响）。
+                {"owner_name_key",
+                 provider.id == HostConfigurable::id() ? kCoreOwnerNameKey : kPluginNameKey},
                 {"id", desc.key},
                 {"label", desc.label != nullptr ? desc.label : desc.key},
                 {"kind", desc.kind},
@@ -842,19 +1095,24 @@ void HostListCatalog::rebuildConfigListLocked() {
         }
     }
     installGeneratedList(kConfigListId, std::move(entries));
+    // 语言目录变化引起的重建到此完成：core/language 的 options 已经与目录一致，
+    // 再置着标记会让下一轮 tick 白重建一次。
+    m_configListStale = false;
 }
 
-void HostListCatalog::requestI18nRebuild() { m_i18nDirty = true; }
+bool HostListCatalog::configListStale() const { return m_configListStale; }
+
+void HostListCatalog::requestI18nRebuild() { m_i18nDirty.store(true); }
 
 void HostListCatalog::rebuildI18nListIfDirty() {
-    if (!m_i18nDirty) {
+    if (!m_i18nDirty.load()) {
         return;
     }
     rebuildI18nList();
 }
 
 void HostListCatalog::rebuildI18nList() {
-    const Host::I18n& i18n = Host::I18n::instance();
+    Host::I18n& i18n = Host::I18n::instance();
 
     // 先把 i18n_source_list 的条目拷出来（不持 m_mutex 时解析 JSON，避免长时间锁）。
     std::vector<Entry> sources;
@@ -866,76 +1124,147 @@ void HostListCatalog::rebuildI18nList() {
         }
     }
 
+    // 第一步：解析源条目并收集语言声明。目录必须在选文本之前就定下来：同一个
+    // 标签的 fallback 会影响本次重建的每一条文本，边投影边扩目录会让同一个快照
+    // 里不同条目按不同的目录规则选文本。
+    std::vector<I18nSourceItem> items;
+    items.reserve(sources.size());
+    std::map<std::string, Host::I18n::ExternalLanguage> declarations;
+    for (const Entry& source : sources) {
+        if (source.owner.empty() || source.owner == kCoreOwner) {
+            continue;  // core 的文本由内置表提供，插件不可能以 core 身份贡献条目
+        }
+        I18nSourceItem item;
+        if (!parseI18nSourceItem(source.owner, source.valueJson, item)) {
+            continue;
+        }
+        if (!item.declaration) {
+            items.push_back(std::move(item));
+            continue;
+        }
+        // 多个包声明同一个语言时按先到者补字段：显示名/fallback 谁给了用谁的，
+        // 都不给就按目录规则回退（注册表 > 标签本身 / 默认语言）。
+        Host::I18n::ExternalLanguage& declared = declarations[item.id];
+        declared.tag = item.id;
+        if (declared.name.empty()) {
+            declared.name = std::move(item.declaredName);
+        }
+        if (declared.fallback.empty()) {
+            declared.fallback = std::move(item.declaredFallback);
+        }
+    }
+    std::vector<Host::I18n::ExternalLanguage> declaredLanguages;
+    declaredLanguages.reserve(declarations.size());
+    for (auto& [tag, language] : declarations) {
+        declaredLanguages.push_back(std::move(language));
+    }
+    const bool catalogChanged = i18n.setExternalLanguages(std::move(declaredLanguages));
+    if (catalogChanged) {
+        // core/language 的 ENUM 候选里多了/少了标签，options 只能整表重序列化。
+        // 这里只置标记：本函数承诺不调用插件能力，真正的重建由 HostRuntime::tick
+        // 在持生命周期锁时调 rebuildConfigListLocked() 完成。
+        m_configListStale = true;
+        spdlog::info("i18n: 语言目录变化，共 {} 个标签，config_list 待重建",
+                     i18n.catalog().size());
+    }
+
+    // 第二步：一次取定当前语言。@meta 与所有条目共用这一份快照——语言切换的瞬间
+    // 若每条各自重取，会读出"@meta 说 en-US、正文还是中文"的撕裂快照。
+    const std::string language = i18n.language();
+    const std::string fallback = i18n.fallbackTag(language);
+
+    // 第三步：合并候选。内置表按 priority=100 垫底；允许 target=core 的条目录入
+    // 是因为语言包可能比宿主更懂某种语言（官方包 200、用户包 300）。覆盖按语言
+    // 逐个进行：包里没提供当前语言时，内置的 zh-CN/en-US 仍然生效——这样"core
+    // 文案被声明覆盖"不会把未命中语言的回退一起改掉。
+    I18nTable table;
+    for (const Host::I18n::CoreText& core : Host::I18n::displayTexts()) {
+        for (const Host::I18n::LanguageText& text : core.texts) {
+            if (text.tag == nullptr || text.text == nullptr || text.text[0] == '\0') {
+                continue;
+            }
+            mergeText(table, {kCoreOwner, core.id}, Host::I18n::normalizeTag(text.tag),
+                      kCorePriority, text.text);
+        }
+    }
+    for (const I18nSourceItem& item : items) {
+        for (const auto& [tag, text] : item.texts) {
+            mergeText(table, {item.owner, item.id}, tag, item.priority, text);
+        }
+    }
+
     std::vector<Entry> entries;
-    entries.reserve(1 + Host::I18n::displayTexts().size() + sources.size());
+    entries.reserve(2 + Host::I18n::displayTexts().size() + i18n.catalog().size() +
+                   table.size());
 
     // 首条 @meta：消费方（插件 helper 与设置页/托盘）用它判断当前语言与回退语言。
     nlohmann::json meta = {
         {"id", "@meta"},
-        {"language", i18n.language()},
-        {"fallback", i18n.fallbackLanguage()},
+        {"language", language},
+        {"fallback", fallback},
     };
     entries.push_back(Entry{"", "@meta", 0, dumpJson(meta)});
 
-    // core 文案直接按当前语言生成（托盘命令 label、配置项 label/tooltip、ENUM 原生名）。
-    for (const Host::I18n::CoreText& text : Host::I18n::displayTexts()) {
+    // core 文案：按内置表顺序输出，文本来自合并结果（包只覆盖它提供了译文的语言）。
+    std::set<std::string> emittedCore;
+    for (const Host::I18n::CoreText& core : Host::I18n::displayTexts()) {
+        emittedCore.insert(core.id);
+        const std::string text =
+            selectMergedText(table, {kCoreOwner, core.id}, language, fallback);
+        if (text.empty()) {
+            continue;  // 兜底也选不出文本：不发布，消费方会显示 key 原文
+        }
         nlohmann::json entry = {
             {"owner", kCoreOwner},
-            {"id", text.id},
-            {"text", i18n.text(text.id)},
+            {"id", core.id},
+            {"text", text},
         };
-        entries.push_back(Entry{kCoreOwner, text.id, 0, dumpJson(entry)});
+        entries.push_back(Entry{kCoreOwner, core.id, 0, dumpJson(entry)});
     }
 
-    // 语言下拉的候选显示名从语言注册表投影：原生名与界面语言无关，注册表加一行，
-    // 这里自动多一条 core 条目，设置页按 display(core, tag) 就能显示人话。
-    for (const Host::I18n::Language& language : Host::I18n::languages()) {
+    // 语言下拉的显示名：原生名不随界面语言变化（声明 > 注册表 > 标签本身）。
+    // 没有任何译文的语言追加"（未翻译）"后缀——不隐藏候选，但要让人知道选了会
+    // 看到回退语言。语言包也可以用 target=core、id=<tag> 给本地化显示名（优先级更高）。
+    const std::string untranslatedSuffix = i18n.textIn(language, "language.untranslated");
+    for (const Host::I18n::CatalogLanguage& catalogLanguage : i18n.catalog()) {
+        emittedCore.insert(catalogLanguage.tag);
+        std::string name =
+            selectMergedText(table, {kCoreOwner, catalogLanguage.tag}, language, fallback);
+        if (name.empty()) {
+            name = catalogLanguage.name.empty() ? catalogLanguage.tag : catalogLanguage.name;
+        }
+        if (!hasTranslation(table, catalogLanguage.tag)) {
+            name += untranslatedSuffix;
+        }
         nlohmann::json entry = {
             {"owner", kCoreOwner},
-            {"id", language.tag},
-            {"text", language.nativeName},
+            {"id", catalogLanguage.tag},
+            {"text", name},
         };
-        entries.push_back(Entry{kCoreOwner, language.tag, 0, dumpJson(entry)});
+        entries.push_back(Entry{kCoreOwner, catalogLanguage.tag, 0, dumpJson(entry)});
     }
 
-    // 插件贡献：每个源条目的 texts 按当前语言回退链选一条；一个可用文本都没有
-    // 的条目（坏 JSON / 空 texts）跳过——消费方查不到会自动显示 key 本身。
-    for (const Entry& source : sources) {
-        if (source.owner.empty() || source.owner == kCoreOwner) {
+    // 其余 (target,id)：消费方按 display(owner,id) 查。core 已经输出过的 id 不再
+    // 重复——同一个 (owner,id) 在 i18n_list 里只能有一条，否则解析结果取决于
+    // 消费方扫到哪一条。
+    for (const auto& [key, merged] : table) {
+        if (key.first == kCoreOwner && emittedCore.count(key.second) != 0) {
             continue;
         }
-        const nlohmann::json item = parseJsonObject(source.valueJson);
-        if (!item.is_object()) {
-            continue;
-        }
-        const std::string id = jsonFieldString(item, "id");
-        if (id.empty()) {
-            continue;
-        }
-        const auto textsIt = item.find("texts");
-        if (textsIt == item.end() || !textsIt->is_object()) {
-            continue;
-        }
-        std::map<std::string, std::string> texts;
-        for (auto it = textsIt->begin(); it != textsIt->end(); ++it) {
-            if (it->is_string()) {
-                texts[it.key()] = it->get<std::string>();
-            }
-        }
-        const std::string text = i18n.pickText(texts);
+        const std::string text = Host::I18n::selectText(merged.texts, language, fallback);
         if (text.empty()) {
             continue;
         }
         nlohmann::json entry = {
-            {"owner", source.owner},
-            {"id", id},
+            {"owner", key.first},
+            {"id", key.second},
             {"text", text},
         };
-        entries.push_back(Entry{source.owner, id, 0, dumpJson(entry)});
+        entries.push_back(Entry{key.first, key.second, 0, dumpJson(entry)});
     }
 
     installGeneratedList(kI18nListId, std::move(entries));
-    m_i18nDirty = false;
+    m_i18nDirty.store(false);
 }
 
 void HostListCatalog::upsertEntry(const std::string& list, const std::string& owner,

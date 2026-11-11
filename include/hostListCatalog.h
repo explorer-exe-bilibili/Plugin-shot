@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -177,8 +178,22 @@ public:
      *
      * 用于"语言被非 lists.update 路径改变"的场景（applyStored 回灌、host.config
      * 写入）：HostRuntime::tick 在重建之前对比当前语言，发现变化就调用这里。
+     * 标记用原子量只是为了防御"将来有人在插件线程误调"时不留数据竞争；真正的
+     * 重建仍然只在 main 线程做。
      */
     void requestI18nRebuild();
+
+    /**
+     * @brief 语言目录（`@language/` 声明）变化后，config_list 是否需要重建。
+     *
+     * 目录里出现/消失一个语言标签，core/language 的 ENUM 候选就要跟着变，而
+     * options 是 config_list 的投影字段，只能整表重序列化。重建要读插件配置，
+     * 调用方必须在 main 线程持有生命周期锁后调 rebuildConfigListLocked()；
+     * 该函数结尾会清掉这个标记。
+     *
+     * @return true = 有待处理的目录变化；只允许 main 线程读。
+     */
+    bool configListStale() const;
 
     /**
      * @brief 需要时重建 i18n_list（当前语言快照，宿主生成、只读）。
@@ -308,9 +323,11 @@ private:
     /**
      * @brief 重建 i18n_list 的实现（标记脏之后由 rebuildI18nListIfDirty 调用）。
      *
-     * 条目顺序固定：首条 `@meta`（language/fallback），然后 core 文案，最后按
-     * i18n_source_list 的条目顺序逐个投影成 {owner,id,text}。源条目里的
-     * `texts` 按当前语言回退链选一条；一个可用文本都没有的条目跳过。
+     * 条目顺序固定：首条 `@meta`（language/fallback），然后 core 文案，然后语言
+     * 目录的显示名，最后按 (target,id) 合并后的文本条目。投影规则见
+     * document/I18N.md §2、§5.3：core 内置表是 priority=100 的候选，插件/语言包
+     * 的 target/priority 条目按"priority 大者胜、同 priority 后到者胜"覆盖；
+     * `@language/` 声明只扩展语言目录、不作文本条目。
      */
     void rebuildI18nList();
 
@@ -337,7 +354,8 @@ private:
     std::shared_ptr<const std::vector<Provider>> m_current;     /**< 最新提供者快照 */
     std::shared_ptr<const std::vector<Provider>> m_previous;    /**< 上一份快照，保活字符串指针 */
     bool m_writeThreadLogged = false;                           /**< 是否已记录过写线程（一次性日志） */
-    bool m_i18nDirty = true;                                    /**< i18n_list 需要重建（main 线程） */
+    std::atomic<bool> m_i18nDirty{true};                        /**< i18n_list 需要重建（只在 main 线程重建） */
+    bool m_configListStale = false;                             /**< 语言目录变了、config_list 需重建（main 线程） */
 };
 
 }  // namespace Host
