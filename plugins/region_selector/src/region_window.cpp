@@ -53,6 +53,8 @@
 namespace region_selector {
 namespace {
 
+// 窗口标题的中文兜底：正常情况下用语言表里的 overlay.window_title（窗口无边框，
+// 标题只在任务栏 / Alt-Tab 里可见，但仍然跟随界面语言）。
 constexpr char kWindowTitle[] = "Plugin-shot 区域选择";
 
 // 初始窗口尺寸：只在 start() 里建隐藏窗口时用；真正显示覆盖层前会被搬到目标
@@ -203,7 +205,10 @@ bool RegionWindow::Impl::createWindow() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    window = glfwCreateWindow(kInitialWindowWidth, kInitialWindowHeight, kWindowTitle, nullptr,
+    // 标题走语言表；i18n 缺失（老宿主 / 初始化失败）时显示中文兜底。
+    const char* windowTitle =
+        (i18n != nullptr) ? i18n->tr("overlay.window_title", kWindowTitle) : kWindowTitle;
+    window = glfwCreateWindow(kInitialWindowWidth, kInitialWindowHeight, windowTitle, nullptr,
                               nullptr);
     if (window == nullptr) {
         shot::Logger(host).error("[region_selector] 创建 GLFW 窗口/OpenGL 上下文失败");
@@ -571,7 +576,7 @@ RegionWindow::~RegionWindow() {
     stop();  // Impl 在这里才是完整类型，所以构造/析构必须写在本文件里
 }
 
-bool RegionWindow::start(const ShotHostServices* host) {
+bool RegionWindow::start(const ShotHostServices* host, const shot::I18n* i18n) {
     if (!m_impl) {
         return false;
     }
@@ -591,6 +596,7 @@ bool RegionWindow::start(const ShotHostServices* host) {
         m_impl->failed = false;
     }
     m_impl->host = host;
+    m_impl->i18n = i18n;  // 起线程之前设好：UI 线程第一帧渲染就已经能取到文案
 
     // 先订阅再起线程：订阅之后到达的触发事件不会漏；窗口还没就绪时事件先入队，
     // 事件循环启动后统一 drain。
@@ -668,6 +674,8 @@ void RegionWindow::stop() {
     // UI 线程已经结束，这两个只属于 UI 线程的状态可以安全复位。
     m_impl->overlayVisible = false;
     m_impl->drag = DragState{};
+    // 线程已 join：不再有渲染帧读文案，放开对插件状态里语言表的借用关系。
+    m_impl->i18n = nullptr;
 }
 
 std::int32_t RegionWindow::post(const char* name, const char* data, std::uint32_t len) {

@@ -22,54 +22,58 @@ const char kKeyShowOnSuccess[] = "show_on_success";
 const char kKeyShowOnError[] = "show_on_error";
 const char kKeySound[] = "sound";
 
+// label / tooltip 是 i18n key，不是最终显示文本：宿主把 key 原样放进 config_list，
+// 设置页用 i18n_list 解析成当前语言（display(owner, key) ?? key）。对应文案在
+// plugin_entry.cpp 的 kLangTables 里（config.<配置键>.label / .tooltip），两边必须
+// 一起改；查不到时设置页显示 key 本身，便于发现漏写。
 const ShotConfigDesc kConfig[] = {
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_BOOL,
         .key           = kKeyEnabled,
-        .label         = "消息提示",
+        .label         = "config.enabled.label",
         .default_value = "1",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 1.0,
         .step          = 1.0,
-        .tooltip       = "截屏成功后弹出系统通知显示保存路径；关掉后本插件的所有提示都不弹",
+        .tooltip       = "config.enabled.tooltip",
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_BOOL,
         .key           = kKeyShowOnSuccess,
-        .label         = "截屏成功时提示",
+        .label         = "config.show_on_success.label",
         .default_value = "1",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 1.0,
         .step          = 1.0,
-        .tooltip       = "成功时显示\"已保存到 <文件路径>\"（路径过长会截断中间部分）",
+        .tooltip       = "config.show_on_success.tooltip",
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_BOOL,
         .key           = kKeyShowOnError,
-        .label         = "截屏失败时提示",
+        .label         = "config.show_on_error.label",
         .default_value = "1",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 1.0,
         .step          = 1.0,
-        .tooltip       = "失败时显示\"截图失败：<原因>\"；截屏结果提示统一由本插件负责（托盘不弹截屏气泡）",
+        .tooltip       = "config.show_on_error.tooltip",
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_BOOL,
         .key           = kKeySound,
-        .label         = "提示音",
+        .label         = "config.sound.label",
         .default_value = "1",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 1.0,
         .step          = 1.0,
-        .tooltip       = "通知气泡是否播放系统提示音；关掉后使用 NIIF_NOSOUND 静音",
+        .tooltip       = "config.sound.tooltip",
     },
 };
 

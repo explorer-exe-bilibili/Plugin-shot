@@ -14,19 +14,19 @@
 
 ```
 plugins/screen_capture/
-├── CMakeLists.txt                  # shot_add_plugin + gdi32 / user32
+├── CMakeLists.txt                  # shot_add_plugin + gdi32 / user32 / nlohmann-json
 ├── metadata.json                   # 插件清单（id screen_capture.main，接口 shot.screen_capture + shot.configurable）
 ├── README.md
 ├── include/
 │   ├── plugin_entry.h              # PluginEntry / PluginInstance / state_of（插件样板）
 │   ├── capture_settings.h          # CaptureSettings：include_cursor 状态 + shot.configurable 回调声明
 │   ├── screen_capture.h            # ScreenCapture 公共接口（契约层，不含 Win32 类型）
-│   ├── screen_capture_state.h      # 内部头：插件实例状态（配置 + 采集对象，两个 .cpp 共享）
+│   ├── screen_capture_state.h      # 内部头：插件实例状态（语言表 + 配置 + 采集对象，两个 .cpp 共享）
 │   └── screen_capture_impl.h       # 内部头：GdiDesktopCapture（GDI 平台层 + DPI 上下文 + 光标合成）
 └── src/
-    ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + kEntries + ABI 胶水（两个能力函数表）
+    ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + kEntries + 语言表 + ABI 胶水
     ├── screen_capture.cpp          # 契约层：入参校验、返回码映射、日志
-    ├── capture_settings.cpp        # 配置层：include_cursor 声明 + get/set 回调
+    ├── capture_settings.cpp        # 配置层：include_cursor 声明（label/tooltip 是文案 key）+ get/set 回调
     └── gdi_desktop_capture.cpp     # 平台层：DPI 上下文 / GetDC / BitBlt / DrawIconEx / GetDIBits
 ```
 
@@ -53,12 +53,13 @@ cmake -S plugins/screen_capture -B build -DCMAKE_MODULE_PATH=<SDK>/cmake
 cmake --build build
 ```
 
-依赖只有两个系统库，没有第三方包，插件不链接 spdlog（日志走宿主服务）：
+依赖两个系统库 + header-only 的 `nlohmann-json`；插件不链接 spdlog（日志走宿主服务）：
 
 | 依赖 | 用途 |
 | --- | --- |
 | `user32` | `GetDC` / `ReleaseDC` / `GetSystemMetrics` / `GetCursorInfo` / `GetIconInfo` / `DrawIconEx` / `SetThreadDpiAwarenessContext`（运行期解析） |
 | `gdi32` | `CreateCompatibleDC` / `CreateCompatibleBitmap` / `BitBlt` / `GetDIBits` / `DeleteObject` / GDI 对象 |
+| `nlohmann-json` | 解析 `kLangTables` 里的两张语言表（header-only，根 vcpkg 清单已有；只用于 i18n） |
 
 `SetThreadDpiAwarenessContext` 用 `GetProcAddress` 运行期解析，**不静态导入**：静态导入
 会让插件在 Win10 1607 之前的系统上连 DLL 都加载不起来（`STYLE.md` §6.5 的降级思路）。
@@ -124,6 +125,15 @@ cmake --build build
 | --- | --- | --- | --- |
 | `include_cursor` | BOOL | `"1"` | 抓屏时是否把当前鼠标光标一起合成进截图；关闭后截图是干净桌面 |
 
+`ShotConfigDesc::label/tooltip` 存的是**文案 key**，不是最终显示文本；设置页按
+`display(owner, key)` 到 `i18n_list` 里取当前语言（owner 是 `screen_capture.main`）：
+
+| 配置 key | label key | tooltip key |
+| --- | --- | --- |
+| `include_cursor` | `config.include_cursor.label` | `config.include_cursor.tooltip` |
+
+key 规范、语言表格式与回退行为见 §3.3。
+
 - 值一律用字符串表达；布尔只接受 `"1"`/`"0"`/`"true"`/`"false"`，其它写法按非法值
   拒绝并保留原值（不把 `"yes"`/`"2"` 静默当成真）。
 - **线程模型**：`capture` 在流水线 worker 线程、`set_config` 在宿主 main 线程，
@@ -132,6 +142,40 @@ cmake --build build
 - 抓屏期间改配置只影响**下一张**图。
 - 存盘键是 `screen_capture.main/include_cursor`（宿主按"插件 id/key"拼），可以手改
   `config.json`，验证脚本也用它把开关固定成 `"1"`。
+
+### 3.3 多语言（i18n）
+
+用户可见文案走 `shot::I18n`（`include/shot_plugin_helpers/shot_i18n.h`）。这条链路
+零 ABI 改动：插件用 `lists.add` 把自己的语言表发布到 `i18n_source_list`，宿主汇总后
+生成只读的 `i18n_list`，所有消费方按同一条规则解析：
+
+```text
+display(owner, key) = i18n_list[(owner, key)] ?? key
+```
+
+- **语言表位置**：`src/plugin_entry.cpp` 文件作用域的 `kLangTables[]`，每种语言一个
+  JSON 对象，`@meta` 是 BCP-47 语言标签（当前 `zh-CN` / `en-US`）。两张表的 key 集
+  必须完全一致，每个 key 两种语言都要有文本；JSON 内不能有裸换行（单表超过 120 列，
+  所以拆成相邻字符串字面量，编译期拼成一条 JSON）。
+- **加载时机**：本插件没有 `ui_provider` 的 init/deinit 生命周期，`create(index, host)`
+  是唯一拿得到宿主服务表的时机，所以在 `src/plugin_entry.cpp` 的 `create_instance()`
+  里构造 `std::unique_ptr<shot::I18n>` 并调用
+  `loadTables(kLangTables, std::size(kLangTables))`；`destroy_state()` 里 `reset()`，
+  `I18n` 析构会退订 `lists.changed`。宿主在 `destroy` 之后卸载 DLL 时不会再有回调
+  进来。
+- **owner**：`screen_capture.main`（插件身份证 `kScreenCapture.id`，与
+  `metadata.json` 一致）；`label/tooltip` 的 owner 由宿主按贡献方 id 填。
+- **key 规范**：配置项用 `config.<配置 key>.label` / `config.<配置 key>.tooltip`；
+  插件自己的 UI 文案用 `ui.*`——本插件没有自绘 UI，因此没有 `ui.*` key。
+- **回退**：`tr(key, fallback)` 的 `fallback` 必须写**改造前的原中文**；老宿主没有
+  列表服务 / 事件总线时 `I18n` 安静降级，设置页按上面的规则显示 key 本身。本插件
+  没有需要 `tr()` 的自绘文案（抓屏结果、错误原因都只进中文日志），所以当前没有
+  `i18n.tr(...)` 调用点。
+- **不翻译的东西**：日志（`shot::Logger`）保持中文——e2e 按中文日志断言；事件主题、
+  配置 key、`BGRA8` / `GDI` / `DPI` 这类技术名词也不翻译。
+- **新增一条文案**：在两张语言表里同时加同一个 key，再在
+  `src/capture_settings.cpp` 的 `kConfig`（或自绘文案处）引用；只加一种语言时
+  `loadTables` 会记 WARN（各语言 key 数不一致），缺文本的语言按回退链取。
 
 ## 4. 抓取流程（GDI）
 
@@ -187,6 +231,8 @@ cmake --build build
 | 情况 | 行为 |
 | --- | --- |
 | 宿主没有 `log` 服务（老宿主） | `shot::Logger` 静默丢弃日志，采集照常 |
+| 宿主没有列表服务 / 事件总线（老宿主） | `shot::I18n` 安静降级：语言表发布不了，配置项显示 key 本身，采集照常 |
+| 语言表 JSON 非法 / 两张表 key 数不一致 | `loadTables` 只记 WARN，能解析的部分照常加载，插件不因此失败 |
 | 宿主给的 `ShotCaptureInfo` 太短 | `describe` 返回 2，不越界写 |
 | 宿主给的 `ShotImage` 没有 `pixel_format` 字段 | 按当年的约定当 BGRA8 处理（`STYLE.md` §6.5） |
 | `pixel_format` 不是 BGRA8、`channels != 4` | `capture` 返回 2 |
@@ -248,4 +294,5 @@ surface + 负 viewport origin"的桩测试跑过（临时验证脚本，不提�
 - [ ] `include_cursor` 状态用 atomic（worker 线程读、main 线程写），一次抓屏只读一次快照？
 - [ ] Win32 类型只出现在内部头 `screen_capture_impl.h` 与平台 `.cpp` 里，公共头不含 `<windows.h>`？
 - [ ] `metadata.json` 的 `interfaces` 与 `kIfaces[]` 一致（`shot.screen_capture` + `shot.configurable`）？
+- [ ] 新增用户可见文案已进 `kLangTables`（`config.*` / `ui.*`），key 与 `capture_settings.cpp` 一致、`tr()` fallback 是原中文？
 - [ ] 非 Windows 平台是"CMake 跳过"，没有未验证的实现分支？

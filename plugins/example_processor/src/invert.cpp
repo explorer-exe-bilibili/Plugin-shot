@@ -2,9 +2,14 @@
 //
 // 这个文件同时演示一件事：配置项声明、读写、以及"不认识的 key 安全忽略"
 // 全部由插件自己提供，宿主不需要知道任何配置项名字。
+//
+// 配置项的 label/tooltip 写的是语言表 key（文案本体在本包共用的
+// plugin_entry.cpp kLangTables 里）：设置页按 display(owner, key) 解析，所以这里
+// 不硬编码任何用户可见文案。
 
 #include <cstring>
 #include <iterator>
+#include <memory>
 #include <new>
 
 #include "processors.hpp"
@@ -14,8 +19,16 @@ namespace {
 
 const char kKeyKeepAlpha[] = "keep_alpha";
 
+// 文案 key：必须与 plugin_entry.cpp 的 kLangTables 完全一致；拼错时设置页会
+// 原样显示 key，表现为"配置项标题变成 config.xxx.label"。
+const char kLabelKeepAlpha[] = "config.keep_alpha.label";
+const char kTooltipKeepAlpha[] = "config.keep_alpha.tooltip";
+
 struct InvertState {
     bool keep_alpha = true;
+    // create() 拿不到宿主服务表：I18n 由 create_instance 在拿到 host 后调
+    // invert_start() 构造；destroy 里先 reset（析构会退订 lists.changed）再释放状态。
+    std::unique_ptr<shot::I18n> i18n;
 };
 
 const ShotConfigDesc kConfig[] = {
@@ -23,15 +36,32 @@ const ShotConfigDesc kConfig[] = {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_BOOL,
         .key           = kKeyKeepAlpha,
-        .label         = "keep alpha",
+        .label         = kLabelKeepAlpha,
         .default_value = "1",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 1.0,
         .step          = 1.0,
-        .tooltip       = "取反时跳过 A 通道",
+        .tooltip       = kTooltipKeepAlpha,
     },
 };
+
+/**
+ * @brief 拿到宿主服务表后初始化多语言（create_instance 调，create() 拿不到 host）。
+ *
+ * @param[in] self 插件状态（InvertState*）。
+ * @param[in] host 宿主服务表；老宿主上可能为 nullptr。
+ * @return true = 语言表已发布；false = 状态为空或语言表全部非法（宿主记 WARN 后继续）。
+ */
+bool invert_start(void* self, const ShotHostServices* host) {
+    auto* state = static_cast<InvertState*>(self);
+    if (state == nullptr) {
+        return false;
+    }
+    // owner 用插件身份证（kInvert.id），宿主按它校验 lists.add、并在卸载时按它清理贡献。
+    state->i18n = std::make_unique<shot::I18n>(host, kInvert.id);
+    return load_language_tables(*state->i18n);
+}
 
 std::int32_t invert_process(void* self, ShotImage* image) {
     if (image == nullptr || image->data == nullptr) {
@@ -101,7 +131,16 @@ std::int32_t invert_set_config(void* self, const char* key, const char* value) {
 
 void* invert_create() { return new (std::nothrow) InvertState(); }
 
-void invert_destroy(void* self) { delete static_cast<InvertState*>(self); }
+void invert_destroy(void* self) {
+    auto* state = static_cast<InvertState*>(self);
+    if (state == nullptr) {
+        return;
+    }
+    // 先退订 lists.changed 再释放状态：宿主之后可能卸载本 DLL，
+    // 留着订阅会回调已释放代码。
+    state->i18n.reset();
+    delete state;
+}
 
 const ShotImageProcessorV1 kImageOps = SHOT_OPS(ShotImageProcessorV1, .process = &invert_process);
 
@@ -126,6 +165,7 @@ const PluginEntry kInvert = {
     &invert_create,
     &invert_destroy,
     kIfaces,
+    &invert_start,
 };
 
 }  // namespace example_processor

@@ -5,6 +5,12 @@
 
 #include "plugin_api.h"
 
+namespace shot {
+
+class I18n;
+
+}  // namespace shot
+
 namespace notify {
 
 class NotifyConfig;
@@ -45,10 +51,12 @@ public:
      *
      * @param[in] host   宿主服务表；可为 nullptr（老宿主），此时安静降级。
      * @param[in] config 配置项；生命周期必须覆盖本对象（插件状态里两者同生共死）。
+     * @param[in] i18n   语言表；生命周期必须覆盖本对象。可为 nullptr（初始化失败），
+     *                   此时气泡文案用 tr 的中文 fallback。
      * @return true = 通知线程与隐藏图标已就绪；false = 无事件总线或初始化失败。
      * @note 建线程可能抛异常（线程资源耗尽），这里就地兜住，异常绝不越过 DLL 边界。
      */
-    bool start(const ShotHostServices* host, NotifyConfig* config);
+    bool start(const ShotHostServices* host, NotifyConfig* config, const shot::I18n* i18n);
 
     /**
      * @brief 退订、让通知线程退出并 join，最后删掉隐藏托盘图标。

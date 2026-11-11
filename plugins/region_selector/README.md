@@ -39,9 +39,9 @@ plugins/region_selector/
 │   ├── region_window.h             # RegionWindow 公共接口（契约层，不含任何图形库类型）
 │   └── region_window_impl.h        # 内部头：Impl 声明 / 事件队列 / 拖拽状态
 └── src/
-    ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + kEntries + ABI 胶水
+    ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + kEntries + ABI 胶水 + 语言表
     ├── region_window.cpp           # 生命周期 / 窗口线程 / 事件循环 / 触发解析 / 隐藏后发布
-    ├── region_overlay.cpp          # 框选交互状态机 + ImGui 遮罩/十字线/选区绘制
+    ├── region_overlay.cpp          # 框选交互状态机 + ImGui 遮罩/十字线/选区绘制（用户文案走 i18n）
     ├── region_graphics.cpp         # ImGui 后端 / 中文字体 / DPI 字号缩放 / 每帧渲染
     └── region_geometry.cpp         # 显示器矩形 / 光标 / 物理虚拟桌面坐标换算（Win32 层）
 ```
@@ -73,7 +73,7 @@ cmake --build build
 | --- | --- |
 | `imgui`（glfw-binding + opengl3-binding） | 覆盖层绘制；后端源码已编进 `imgui.lib`，不抄进本工程 |
 | `glfw3` | 窗口、事件循环、显示器几何、光标 |
-| `nlohmann-json` | 触发负载解析 + 区域结果组包（header-only） |
+| `nlohmann-json` | 触发负载解析 + 区域结果组包 + 多语言表解析（header-only） |
 | `opengl32` / `user32` | ImGui OpenGL3 后端 / `GetCursorPos`、`GetSystemMetrics` |
 
 产物：`<构建树>/bin/plugins/region_selector.dll`；`metadata.json` 由 `shot_add_plugin()`
@@ -85,7 +85,7 @@ cmake --build build
 
 | 回调 | 行为 |
 | --- | --- |
-| `init(self, host)` | 起 UI 线程、订阅 `capture.request`；GLFW/窗口/ImGui 延迟到第一次框选才创建（见 §3.1）。返回 0 时线程已就绪 |
+| `init(self, host)` | 起 UI 线程、订阅 `capture.request`、构造并加载语言表（见 §3.2）；GLFW/窗口/ImGui 延迟到第一次框选才创建（见 §3.1）。返回 0 时线程已就绪 |
 | `deinit(self)` | 退订事件总线 → 通知事件循环退出 → join → 销毁窗口/ImGui/光标。进行中的框选按取消处理，不发布事件。可重复调用 |
 | `post_to_plugin(self, ev)` | 只做"拷进队列 + 唤醒 UI 线程"；`host.shutdown` 让线程退出，`capture.request` 与总线事件同样处理 |
 
@@ -140,6 +140,30 @@ settings_ui 的 deinit**（实测：本插件 deinit 14ms 返回，宿主 30s+ �
 
 **限一屏**：覆盖层铺满"鼠标所在显示器"，选区被夹在这块屏内；跨显示器拖拽不生效
 （见 §7）。
+
+### 3.2 多语言（i18n）
+
+覆盖层的用户可见文案跟随宿主当前界面语言；**日志固定中文，不进语言表**（`tools/verify/`
+的 e2e 按中文日志断言，翻译日志会让验证失败）。语言表写在 `src/plugin_entry.cpp` 的
+文件作用域 `kLangTables[]` 里，每种语言一张 `R"json(...)json"` 表，`@meta` 是 BCP-47
+语言标签：
+
+| key | zh-CN | en-US |
+| --- | --- | --- |
+| `overlay.hint` | 拖拽选择区域（物理像素） · Esc / 右键取消 | Drag to select (physical pixels) · Esc / right-click to cancel |
+| `overlay.size.unit` | 像素 | px |
+| `overlay.window_title` | Plugin-shot 区域选择 | Plugin-shot Region Select |
+
+- `ui_init(host)` 里 `std::make_unique<shot::I18n>(host, "region_selector.main")` 并
+  `loadTables()`。语言表对象由插件状态持有；`start(host, i18n)` 只把只读指针交给
+  覆盖层线程，`deinit` / `destroy` 先 `stop()`（join 线程）再 `reset()`，避免渲染帧
+  读到已释放的对象。
+- 渲染帧里直接 `i18n->tr(key, fallback)`：`tr()` 查的是插件本地表（O(1)、不查询宿主），
+  所以不需要缓存指针。`fallback` 必须是中文原文，老宿主 / 表加载失败时行为与改造前一致。
+- 新增文案时两张表同时加 key、两种语言都写全；只写一种语言会落到回退链（可能显示
+  另一种语言）。改语言由宿主的 `i18n_list` 驱动，插件不需要自己重载。
+- 老宿主没有列表服务时 `shot::I18n` 安静降级，仍用第一张表（zh-CN）显示，`init` 不会
+  因此失败；日志与窗口行为完全不变。
 
 ## 4. 坐标语义与 DPI 实测
 
@@ -204,10 +228,11 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
 | 松开左键 | 确认；任一边 < 8 物理像素按取消处理 |
 | 右键 | 取消 |
 | Esc | 取消 |
-| 鼠标移动 | 全屏十字线 + 选区尺寸标签（`宽 x 高 px`，物理像素） |
+| 鼠标移动 | 全屏十字线 + 选区尺寸标签（`宽 x 高` + 单位，物理像素） |
 
-视觉：整屏 51% 黑色遮罩 + 十字线 + 选区高亮/边框 + 顶部提示
-「拖拽选择区域（物理像素） · Esc / 右键取消」。背景是触发瞬间的桌面快照，选区内部保持
+视觉：整屏 51% 黑色遮罩 + 十字线 + 选区高亮/边框 + 顶部提示（`overlay.hint`，中文为
+「拖拽选择区域（物理像素） · Esc / 右键取消」，英文为 "Drag to select (physical pixels) ·
+Esc / right-click to cancel"）。背景是触发瞬间的桌面快照，选区内部保持
 快照原样（等价于"挖空"），框选结果与快照内容一致。
 
 覆盖层显示时鼠标换成十字光标；DPI 变化只影响字号（100% 屏 18px、150% 屏 27px 物理像素），
@@ -258,4 +283,6 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
 - [ ] 事件 `deinit` 后不会再有回调落到本插件（先退订再停线程）？
 - [ ] 所有 GLFW / Win32 / ImGui 类型都关在 Impl 与 `.cpp` 里，公共头不含平台头？
 - [ ] `metadata.json` 的 `interfaces` 与 `kIfaces[]` 一致（只有 `shot.ui_provider`）？
+- [ ] 用户可见文案都走 `i18n.tr()`、两种语言齐全，且 fallback 是中文原文？
+- [ ] 日志仍是中文（e2e 断言依赖它），没有被误加进语言表？
 - [ ] 非 Windows 平台是"CMake 跳过"，没有未验证的实现分支？

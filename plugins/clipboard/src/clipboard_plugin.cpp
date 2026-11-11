@@ -8,13 +8,21 @@
 // stb 解码 + 剪贴板写入也在这个回调里同步完成：一次截屏的图片通常只有几 MB，
 // 解码是几十毫秒级，为此开线程不值得，而且会让"退订后还有线程在写剪贴板"的
 // 生命周期更难保证（插件无自己的线程，destroy 返回后不留任何后台任务）。
+//
+// 多语言：配置项的 label/tooltip 在 clipboard_config.cpp 里写的是语言表 key，
+// 文案本体由本文件的 kLangTables 发布到 i18n_source_list；宿主生成 i18n_list 后，
+// 设置页按 display(owner, key) 解析。日志保持中文（e2e 按中文日志断言），不翻译。
+// ============================================================================
 
 #include "clipboard_plugin.h"
 
+#include <iterator>
+#include <memory>
 #include <string>
 
 #include <nlohmann/json.hpp>
 
+#include "plugin_entry.h"
 #include "shot_plugin_helpers.h"
 
 namespace clipboard {
@@ -22,6 +30,25 @@ namespace {
 
 // capture.done 的主题名：与 document/CAPTURE.md §3、tray 插件订阅的是同一个。
 const char kCaptureDoneTopic[] = "capture.done";
+
+// 语言表：key 必须与 clipboard_config.cpp 里 kConfig 的 label/tooltip 完全一致
+// （设置页按 display(owner, key) 解析，拼错就显示 key 本身）。两张表的 key 集
+// 必须一致、@meta 必填、每条文案都要有；JSON 文本里不能有裸换行，而整行又超过
+// 120 列上限，所以用相邻 raw 字面量拼接——拼出来的仍是一行合法 JSON。
+const char* const kLangTables[] = {
+    R"json({"@meta":"zh-CN",)json"
+    R"json("config.enabled.label":"写进剪贴板",)json"
+    R"json("config.enabled.tooltip":"截屏落盘后把图片复制进系统剪贴板，可以直接粘贴到聊天/文档",)json"
+    R"json("config.also_file_drop.label":"同时提供文件",)json"
+    R"json("config.also_file_drop.tooltip":"额外提供 CF_HDROP：资源管理器里可粘贴成文件；不勾选则只发图片"})json",
+    R"json({"@meta":"en-US",)json"
+    R"json("config.enabled.label":"Copy to clipboard",)json"
+    R"json("config.enabled.tooltip":)json"
+    R"json("Copies the saved screenshot to the system clipboard so you can paste it into a chat or document",)json"
+    R"json("config.also_file_drop.label":"Also provide file",)json"
+    R"json("config.also_file_drop.tooltip":)json"
+    R"json("Also adds a CF_HDROP file list so Explorer can paste it as a file; unchecked copies the image only"})json",
+};
 
 }  // namespace
 
@@ -31,6 +58,15 @@ ClipboardPlugin::~ClipboardPlugin() {
 
 bool ClipboardPlugin::start(const ShotHostServices* host) {
     m_host = host;
+
+    // 语言表要在设置页第一次读 config_list 之前发布：宿主据此生成 i18n_list。
+    // owner 直接用插件身份证（kClipboard.id），宿主会校验它等于已加载的插件 id，
+    // 所以这里不另写字符串，避免与 metadata.json / plugin_entry.cpp 漂移。
+    m_i18n = std::make_unique<shot::I18n>(host, kClipboard.id);
+    if (!m_i18n->loadTables(kLangTables, std::size(kLangTables))) {
+        shot::Logger(host).warn("[clipboard] 语言表解析失败，配置项文案回退为 key");
+    }
+
     shot::EventBus bus(host);
     if (!bus.subscribe(kCaptureDoneTopic, &ClipboardPlugin::onCaptureDone, this)) {
         // 老宿主没有事件总线：剪贴板功能不可用，但插件本身照常加载（安静降级，
@@ -45,13 +81,15 @@ bool ClipboardPlugin::start(const ShotHostServices* host) {
 }
 
 void ClipboardPlugin::stop() {
-    if (!m_subscribed) {
-        return;
+    if (m_subscribed) {
+        // 退订句柄就是 this（subscribe 时的 user 指针）：一次摘掉本插件注册的全部主题。
+        shot::EventBus bus(m_host);
+        bus.unsubscribe(this);
+        m_subscribed = false;
     }
-    // 退订句柄就是 this（subscribe 时的 user 指针）：一次摘掉本插件注册的全部主题。
-    shot::EventBus bus(m_host);
-    bus.unsubscribe(this);
-    m_subscribed = false;
+    // I18n 析构会退订 lists.changed。放在退订 capture.done 之后：宿主事件分发期间
+    // 不会回调一个正在销毁的状态。
+    m_i18n.reset();
 }
 
 std::uint32_t ClipboardPlugin::configCount() const noexcept {

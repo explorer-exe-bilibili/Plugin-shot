@@ -15,6 +15,7 @@
 #include <new>
 
 #include "plugin_api.h"
+#include "image_saver.h"
 #include "plugin_entry.h"
 #include "shot_plugin_helpers.h"
 
@@ -50,6 +51,13 @@ void* create_instance(std::uint32_t index, const ShotHostServices* host) {
     // 用 shot::Logger 报一句自己的 id。老宿主可能没有 log 字段，shot::Logger 内部
     // 已经做了降级，这里不用再手写判空。
     shot::Logger(host).info(entry->id);
+
+    // 本插件没有 ui_provider 的 init/deinit：create(index, host) 是唯一能拿到宿主服务
+    // 表的时机，所以语言表在实例创建路径里加载（destroy_state 的 stop() 里释放）。
+    // 此时 publish 的 lists.add 只是入队，宿主会在 create 返回后按"已加载插件"处理。
+    if (entry == &image_saver::kImageSaver && instance->state != nullptr) {
+        static_cast<image_saver::ImageSaver*>(instance->state)->start(host);
+    }
     return instance;
 }
 

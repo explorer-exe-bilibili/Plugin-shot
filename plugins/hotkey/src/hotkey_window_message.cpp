@@ -29,7 +29,7 @@ namespace {
 // 下面两个辅助函数只服务本文件的热键注册路径、与任何类无关，所以放匿名命名空间
 // （STYLE.md §6.7：只在本 TU 用的具名函数）。
 constexpr wchar_t kWindowClass[] = L"PluginShotHotkeyWnd"; /**< 进程内唯一；类不随 DLL 卸载消失，必须显式注销。 */
-constexpr wchar_t kWindowTitle[] = L"Plugin-shot 热键";     /**< 隐藏窗口的标题，只用于排障。 */
+constexpr wchar_t kWindowTitle[] = L"Plugin-shot 热键";     /**< 隐藏窗口标题，只排障用、不显示给用户，故不进 i18n。 */
 /** @brief Win32 VK_SNAPSHOT（PrintScreen）；裸按在 Win11 上会被系统截图工具先接管，见 registerOne。 */
 constexpr std::uint32_t kVkSnapshot = 0x2Cu;
 

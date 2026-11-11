@@ -11,20 +11,20 @@
 
 ```
 plugins/image_saver/
-├── CMakeLists.txt              # shot_add_plugin + find_package(Stb)
+├── CMakeLists.txt              # shot_add_plugin + find_package(Stb)/nlohmann_json
 ├── metadata.json               # 构建期贴到 DLL 尾部：id / abi 2.0 / interfaces
 ├── include/                    # 头文件与 .cpp 一一对应，一个类一个头（STYLE §6.8）
 │   ├── plugin_entry.h          #   内部头：PluginEntry / PluginInstance / state_of
-│   ├── image_saver.h           #   ImageSaver：保存能力 + 配置能力的主体
+│   ├── image_saver.h           #   ImageSaver：保存能力 + 配置能力 + 语言表生命周期的主体
 │   ├── image_encoder.h         #   ImageEncoder：BGRA→RGBA/RGB + stb 编码
 │   ├── output_path.h           #   OutputPath：模板展开、非法字符清洗、唯一文件名
 │   └── saver_config.h          #   SaverConfig：四个配置项 + 线程安全读写
 └── src/
     ├── plugin_entry.cpp        # 唯一导出符号 shot_module_entry + kEntries 索引目录
-    ├── image_saver.cpp         # ImageSaver 实现 + ABI 回调/函数表 + 插件身份证
+    ├── image_saver.cpp         # ImageSaver 实现 + 语言表 + ABI 回调/函数表 + 插件身份证
     ├── image_encoder.cpp       # stb_image_write 实现展开（全仓只在这里展开一次）
     ├── output_path.cpp         # 路径解析与文件名规则
-    └── saver_config.cpp        # 配置描述符 + get/set
+    └── saver_config.cpp        # 配置描述符（label/tooltip 写语言表 key）+ get/set
 ```
 
 ## 构建
@@ -44,7 +44,8 @@ cmake --build build
 ```
 
 产物：`build/Windows/bin/plugins/image_saver.dll`（导入库在 `build/lib`，pdb 在
-`build/pdb/plugins`）。`stb` 是 header-only，只是编进本 DLL，不产生运行时依赖。
+`build/pdb/plugins`）。`stb` 与 `nlohmann_json` 都是 header-only，只是编进本 DLL，
+不产生运行时依赖（后者用于解析语言表）。
 
 ## 能力
 
@@ -73,6 +74,16 @@ cmake --build build
 
 ## 配置项
 
+描述符里的 `label` / `tooltip` 不写中文，写的是语言表 key（文案本体见「多语言」一节），
+设置页按 `display(owner, key)` 解析：
+
+| 配置 key | label key | tooltip key |
+| --- | --- | --- |
+| `directory` | `config.directory.label` | `config.directory.tooltip` |
+| `format` | `config.format.label` | `config.format.tooltip` |
+| `quality` | `config.quality.label` | `config.quality.tooltip` |
+| `filename` | `config.filename.label` | `config.filename.tooltip` |
+
 | key | kind | 默认值 | 取值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `directory` | PATH（`options="directory"`） | 空 | 任意目录 | 空 = 系统图片目录；相对路径相对宿主工作目录；设置页「浏览…」弹的是**选目录**对话框 |
@@ -81,6 +92,41 @@ cmake --build build
 | `filename` | STRING | `shot_%Y%m%d_%H%M%S` | 任意模板 | 不含扩展名；支持 `%Y %m %d %H %M %S` 与 `%%` |
 
 配置值一律是字符串（契约要求），非法值安静回退默认，不会让宿主或插件崩掉。
+
+## 多语言（i18n）
+
+用户可见文案走 `shot::I18n`（`include/shot_plugin_helpers/shot_i18n.h`）。这条链路
+零 ABI 改动：插件用 `lists.add` 把语言表发布到 `i18n_source_list`，宿主汇总后生成
+只读的 `i18n_list`，所有消费方按同一条规则解析：
+
+```text
+display(owner, key) = i18n_list[(owner, key)] ?? key
+```
+
+- **语言表位置**：`src/image_saver.cpp` 文件作用域的 `kLangTables[]`，每种语言一个
+  JSON 对象，`@meta` 是 BCP-47 语言标签（当前 `zh-CN` / `en-US`）。两张表的 key 集
+  必须完全一致，每个 key 两种语言都要有文本。
+- **加载时机**：`image_saver.main` 没有 `ui_provider` 的 init/deinit，
+  `create(index, host)` 是唯一能拿到宿主服务表的时机；`create_instance` 在状态建好后
+  调 `ImageSaver::start(host)` 构造 `std::unique_ptr<shot::I18n>` 并
+  `loadTables(kLangTables, std::size(kLangTables))`，`destroy_state` 里 `stop()` 释放
+  （`I18n` 析构会退订 `lists.changed`）。owner 用插件身份证 `kImageSaver.id`
+  （`image_saver.main`），与 `metadata.json` 一致。
+- **key 规范**：
+  - 配置项：`config.<配置 key>.label` / `config.<配置 key>.tooltip`，见上面的配置表；
+  - 插件自己的 UI 文案：`ui.*`（本插件没有窗口/对话框，因此暂无 `ui.*` key）；
+  - ENUM 候选值 `png` / `jpeg` 本身是可读的技术值，本期不额外提供选项文案，
+    设置页直接显示技术值（技术值不翻译）。
+- **回退**：宿主拿不到语言表时（老宿主没有列表服务、语言表解析失败），设置页按
+  上面的规则回退显示 key 本身；若将来新增 `i18n.tr(key, fallback)` 调用，
+  `fallback` 必须写中文原文。本插件当前没有 `i18n.tr(...)` 调用点：用户可见文案只有
+  四个配置项的 label/tooltip，由设置页按 `i18n_list` 解析；保存失败原因只进中文日志。
+- **不翻译的东西**：日志（`shot::Logger`）保持中文——e2e 按中文日志断言；配置 key
+  `directory` / `format` / `quality` / `filename`、ENUM 技术值 `png` / `jpeg`、
+  事件主题也不翻译。
+- **新增一条文案**：在两张语言表里同时加同一个 key，再在 `saver_config.cpp` 里用
+  key 引用；只加一种语言时 `loadTables` 会记 WARN（各语言 key 数不一致），缺文本的
+  语言按回退链取。
 
 ## 文件命名规则
 
@@ -135,6 +181,8 @@ cmake --build build
 ## 检查清单
 
 - [ ] 改配置项只改 `saver_config.cpp` 的 `kConfig[]` 与 `SaverConfig`，没有改宿主代码？
+- [ ] 新增配置项时，在 `kLangTables` 的 `zh-CN` / `en-US` 两张表里同时补
+      `config.<key>.label` / `config.<key>.tooltip`，并让 `kConfig` 引用这些 key？
 - [ ] 新增能力/字段前先读 `document/ABI_POLICY.md`，`struct_size` 与 `SHOT_HAS_FIELD` 用对了吗？
 - [ ] `metadata.json` 的 `plugins[]` 顺序仍与 `kEntries` 一致、`interfaces` 与代码一致？
 - [ ] 图像只按 `stride` 逐行访问，负 stride 与行尾填充都考虑了吗？

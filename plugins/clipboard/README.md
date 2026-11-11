@@ -20,8 +20,8 @@ plugins/clipboard/
 │   └── clipboard_writer.h      #   ClipboardWriter：读图 → CF_DIB（+ CF_HDROP）
 └── src/
     ├── plugin_entry.cpp        # 唯一导出符号 shot_module_entry + ABI 胶水（含订阅的建立/退订）
-    ├── clipboard_plugin.cpp    # 事件订阅、capture.done 负载解析、调用写入器
-    ├── clipboard_config.cpp    # 配置描述符 + get/set
+    ├── clipboard_plugin.cpp    # 事件订阅、语言表、capture.done 负载解析、调用写入器
+    ├── clipboard_config.cpp    # 配置描述符（label/tooltip 写语言表 key）+ get/set
     └── clipboard_writer.cpp    # stb_image 解实现 + Win32 剪贴板写入（Win32 类型只在这个 TU 里）
 ```
 
@@ -80,23 +80,61 @@ capture.request ─► 采集 ─► 处理 ─► 保存（image_saver 落盘�
 返回负值、插件保持可用。存盘键是 `clipboard.main/<key>`，落盘与启动回灌归宿主
 （`document/SETTINGS.md`），插件只负责 get/set。
 
-## 5. 剪贴板格式
+`label` / `tooltip` 不写中文，写的是语言表 key（文案本体见 §5）：
 
-### 5.1 CF_DIB（总是写）
+| 配置 key | label key | tooltip key |
+| --- | --- | --- |
+| `enabled` | `config.enabled.label` | `config.enabled.tooltip` |
+| `also_file_drop` | `config.also_file_drop.label` | `config.also_file_drop.tooltip` |
+
+## 5. 多语言（i18n）
+
+用户可见文案走 `shot::I18n`（`include/shot_plugin_helpers/shot_i18n.h`）。这条链路
+零 ABI 改动：插件用 `lists.add` 把自己的语言表发布到 `i18n_source_list`，宿主汇总后
+生成只读的 `i18n_list`，所有消费方按同一条规则解析：
+
+```text
+display(owner, key) = i18n_list[(owner, key)] ?? key
+```
+
+- **语言表位置**：`src/clipboard_plugin.cpp` 文件作用域的 `kLangTables[]`，每种语言
+  一个 JSON 对象，`@meta` 是 BCP-47 语言标签（当前 `zh-CN` / `en-US`）。两张表的
+  key 集必须完全一致，每个 key 两种语言都要有文本。
+- **加载时机**：`ClipboardPlugin::start(host)` 里构造 `std::unique_ptr<shot::I18n>`
+  并调用 `loadTables(kLangTables, std::size(kLangTables))`；`stop()`（`destroy`
+  路径）里 `reset()`，`I18n` 析构会退订 `lists.changed`。owner 用插件身份证
+  `kClipboard.id`（`clipboard.main`），与 `metadata.json` 一致。
+- **key 规范**：
+  - 配置项：`config.<配置 key>.label` / `config.<配置 key>.tooltip`；
+  - 插件自己的 UI 文案：`ui.*`（本插件没有窗口，因此暂无 `ui.*` key）。
+- **回退**：宿主拿不到语言表时（老宿主没有列表服务、语言表解析失败），设置页按
+  上面的规则回退显示 key 本身；`tr(key, fallback)` 的 `fallback` 必须写中文原文，
+  保证缺表时界面仍是可读的中文而不是空串。
+- **不翻译的东西**：日志（`shot::Logger`）保持中文——e2e 按中文日志断言；事件主题
+  `capture.done`、配置 key `enabled`、`CF_DIB` / `CF_HDROP` 这类技术名词也不翻译。
+- **新增一条文案**：在两张语言表里同时加同一个 key，再用 key 引用；只加一种语言时
+  `loadTables` 会记 WARN（各语言 key 数不一致），缺文本的语言按回退链取。
+
+本插件没有自己的 UI（没有 `ui_provider`），用户可见文案只有两个配置项的
+label/tooltip，所以没有 `i18n.tr(...)` 调用点；剪贴板写入失败的原因只进中文日志。
+
+## 6. 剪贴板格式
+
+### 6.1 CF_DIB（总是写）
 
 - `BITMAPINFOHEADER` + 像素，`biBitCount = 32`、`biCompression = BI_RGB`；
 - 像素顺序 **BGRA**、行序 **bottom-up**（`biHeight` 为正数）：这是 CF_DIB 的通用
   惯例，Office / 聊天软件 / 画图都按它解释；
 - 输入格式由 stb_image 决定（保存插件实际落盘的 PNG / JPEG 都支持）。
 
-### 5.2 CF_HDROP（`also_file_drop = 1` 时写）
+### 6.2 CF_HDROP（`also_file_drop = 1` 时写）
 
 - `DROPFILES` 头 + UTF-16 宽字符路径 + 双 NUL 结尾（`fWide = TRUE`）；
 - 路径是保存插件报告的**已经存在的文件**；粘贴到资源管理器时系统会复制该文件，
   所以要求截图文件还没有被用户删掉；
 - 部分程序粘贴时优先用文件列表而不是图片；不需要文件时把 `also_file_drop` 关掉。
 
-## 6. 失败降级
+## 7. 失败降级
 
 剪贴板是进程间共享资源，失败是常态，不能影响截屏本身：
 
@@ -113,7 +151,7 @@ capture.request ─► 采集 ─► 处理 ─► 保存（image_saver 落盘�
 任何失败都只影响这一次的剪贴板复制：截图文件已经在盘上，下一次 `capture.done`
 会重新尝试；宿主不会因为本插件失败而报错或退出。
 
-## 7. 线程与生命周期
+## 8. 线程与生命周期
 
 - 本插件**没有自己的线程、窗口和后台任务**：`capture.done` 的订阅回调由宿主事件
   分发线程（main）执行（`document/EVENT_BUS.md` §3），stb 解码与剪贴板写入也在
@@ -124,8 +162,11 @@ capture.request ─► 采集 ─► 处理 ─► 保存（image_saver 落盘�
   回调本实例，也不会留下任何后台任务。
 - `set_config` 可能来自设置页线程，而读取发生在事件分发线程：两个开关用
   `std::atomic<bool>` 保存，读取侧不加锁、不会读到撕裂的值。
+- 语言表同样按这个生命周期走：`start()` 里构造 `shot::I18n` 并发布，`stop()` 里
+  销毁（析构自动退订 `lists.changed`），`stop()` 重复调用是空操作——`destroy` 与
+  析构各兜一次，退订之后宿主不会再回调本实例。
 
-## 8. 平台限制
+## 9. 平台限制
 
 - **仅 Windows**：剪贴板写入用 `OpenClipboard` / `SetClipboardData` / `CF_DIB` /
   `CF_HDROP` 这套 Win32 API。非 Windows 平台在 `CMakeLists.txt` 里直接跳过整个
@@ -134,7 +175,7 @@ capture.request ─► 采集 ─► 处理 ─► 保存（image_saver 落盘�
 - 32 位/64 位进程都能写剪贴板，但 32 位进程写的 CF_DIB 与 64 位进程之间由系统
   做格式转换；本插件只按标准 CF_DIB 写，不依赖位深。
 
-## 9. 刻意不做的事
+## 10. 刻意不做的事
 
 | 不做 | 原因 |
 | --- | --- |
@@ -146,12 +187,13 @@ capture.request ─► 采集 ─► 处理 ─► 保存（image_saver 落盘�
 | 把配置项写进 `metadata.json` | 真实 schema 在 `shot.configurable` 里，写两遍必然漂移（`document/METADATA.md` §3） |
 | 自己写配置文件 | 存盘键是 `<plugin_id>/<key>`，落盘与启动回灌归宿主（`document/SETTINGS.md`） |
 
-## 10. 检查清单
+## 11. 检查清单
 
 - [ ] 改配置项只改 `clipboard_config.cpp` 的 `kConfig[]` 与 `ClipboardConfig`，没有改宿主代码？
 - [ ] `metadata.json` 的 `plugins[]` 顺序仍与 `kEntries` 一致、`interfaces` 与代码一致？
 - [ ] 剪贴板操作前 `OpenClipboard` 有重试、每条失败路径都 `CloseClipboard` / `GlobalFree` 了吗？
 - [ ] CF_DIB 是 32bpp BGRA + bottom-up 吗？`biSizeImage` / `biSize` 填对了吗？
 - [ ] 失败路径都收敛成返回码 / WARN 了吗？异常有没有跨出 `extern "C"`？
-- [ ] `destroy` 前退订了 `capture.done` 吗？插件有没有留下线程或窗口？
+- [ ] `destroy` 前退订了 `capture.done`、销毁了语言表吗？插件有没有留下线程或窗口？
+- [ ] 改配置项文案时两张语言表的 key 集仍一致、每 key 两种语言都有文本、fallback 是中文原文吗？
 - [ ] 公共头里的类/函数有 Doxygen 注释吗？未完成项写成代码里的 `// TODO:` 了吗？

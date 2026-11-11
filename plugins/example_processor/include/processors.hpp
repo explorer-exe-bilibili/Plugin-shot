@@ -54,12 +54,37 @@ struct PluginEntry {
     void* (*create)();             /**< 创建插件状态；失败返回 nullptr，写 nullptr 表示无状态。 */
     void (*destroy)(void* self);   /**< 释放 create 返回的状态；与 create 成对，可为 nullptr。 */
     const ShotIfaceEntry* ifaces;  /**< 能力目录，必须以 { nullptr, 0, nullptr } 结尾。 */
+    /**
+     * @brief 拿到宿主服务表后初始化一次实例；nullptr = 该插件不需要。
+     *
+     * create() 只有 index、拿不到宿主服务表，而语言表要在设置页/托盘第一次读列表
+     * 之前发布到 i18n_source_list，所以 create_instance 拿到 host 后调用这里。
+     * 返回 false 只表示"多语言降级"（界面显示 key），实例仍然可用；宿主不会因此
+     * 丢弃插件。
+     *
+     * @param[in] state create() 返回的插件状态；不为 nullptr。
+     * @param[in] host  宿主服务表；老宿主上可能为 nullptr。
+     * @return true = 初始化完成；false = 初始化失败（调用方记 WARN 后继续）。
+     */
+    bool (*start)(void* state, const ShotHostServices* host);
 };
 
 /** @brief 插件 example.invert 的静态描述：逐字节取反 B/G/R，可选保留 alpha。 */
 extern const PluginEntry kInvert;
 /** @brief 插件 example.grayscale 的静态描述：按亮度或算术平均转灰度，可调混合强度。 */
 extern const PluginEntry kGrayscale;
+
+/**
+ * @brief 把本包两个插件共用的语言表发布到宿主（i18n_source_list）。
+ *
+ * 一个 DLL 里两个插件共用同一份表：每个实例按自己的插件 id 作为 owner 各发布一次，
+ * 宿主生成 i18n_list 后，设置页/托盘按 (owner, key) 解析到当前语言文本。表本体在
+ * plugin_entry.cpp；放在包入口是因为它同时覆盖两个插件的配置项和托盘命令文案。
+ *
+ * @param[in,out] i18n 已构造好、owner 为本实例 id 的 I18n。
+ * @return true = 至少一张表解析成功；false = 表全部非法（调用方记 WARN，不失败）。
+ */
+bool load_language_tables(shot::I18n& i18n);
 
 /**
  * @brief 宿主拿到的不透明实例：哪个插件 + 插件自己的状态。

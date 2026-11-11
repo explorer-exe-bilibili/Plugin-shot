@@ -24,6 +24,7 @@
 #include <cstdio>
 
 #include "region_window_impl.h"
+#include "shot_plugin_helpers.h"
 
 #include <GLFW/glfw3.h>
 
@@ -52,6 +53,17 @@ void normalizeRect(int ax, int ay, int bx, int by, int& x, int& y, int& width, i
     y = std::min(ay, by);
     width = std::abs(bx - ax);
     height = std::abs(by - ay);
+}
+
+/**
+ * @brief 取覆盖层文案：i18n 不可用（老宿主 / 初始化失败）时退回中文原文。
+ *
+ * 只是把空指针判断收在一处；tr() 查的是插件本地表（O(1)、不碰宿主），所以每帧
+ * 直接调用没有问题。返回值指向语言表节点，窗口存活期间一直有效，但不要跨帧缓存。
+ * 与任何类无关、只在本 TU 用，所以放匿名命名空间（STYLE.md §6.7）。
+ */
+const char* overlayText(const shot::I18n* i18n, const char* key, const char* fallback) {
+    return (i18n != nullptr) ? i18n->tr(key, fallback) : fallback;
 }
 
 }  // namespace
@@ -206,8 +218,10 @@ void RegionWindow::Impl::drawOverlay() const {
                       kBorderThickness);
 
         // 尺寸标签：优先放选区上方，上方没空间就放下方；再夹进屏幕内。
+        // 数字本身与语言无关，只有单位跟着界面语言走（zh-CN"像素" / en-US"px"）。
         char label[64] = {};
-        std::snprintf(label, sizeof(label), "%d x %d px", localWidth, localHeight);
+        const char* unit = overlayText(i18n, "overlay.size.unit", "像素");
+        std::snprintf(label, sizeof(label), "%d x %d %s", localWidth, localHeight, unit);
         const ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label);
         ImVec2 textPos(selectionMin.x, selectionMin.y - textSize.y - kLabelGap);
         if (textPos.y < origin.y + 4.0f) {
@@ -225,7 +239,9 @@ void RegionWindow::Impl::drawOverlay() const {
     }
 
     // 4. 顶部提示：说明怎么用、怎么取消。始终画在最上层。
-    const char* hint = "拖拽选择区域（物理像素） · Esc / 右键取消";
+    //    文案来自语言表（overlay.hint）；日志才是固定中文，别把这里改回写死的中文。
+    const char* hint =
+        overlayText(i18n, "overlay.hint", "拖拽选择区域（物理像素） · Esc / 右键取消");
     const ImVec2 hintSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, hint);
     const ImVec2 hintPos(origin.x + (size.x - hintSize.x) * 0.5f, origin.y + 24.0f);
     draw->AddRectFilled(ImVec2(hintPos.x - 8.0f, hintPos.y - 5.0f),

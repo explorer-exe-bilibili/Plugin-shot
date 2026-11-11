@@ -4,26 +4,32 @@
 //  include/clipboard_plugin.h —— 剪贴板插件的主体
 //
 //  职责只有一件事：订阅 capture.done，把保存插件刚写好的文件复制进剪贴板。
-//   · start(host)  在实例创建路径里绑定宿主并订阅（本插件没有 ui_provider 的
-//                  init/deinit 生命周期，create(index, host) 是唯一能拿到宿主服务
-//                  表的时机）；
-//   · stop()       在实例销毁前退订；之后宿主不会再回调本实例（EVENT_BUS.md §5）。
+//   · start(host)  在实例创建路径里绑定宿主、发布语言表并订阅（本插件没有
+//                  ui_provider 的 init/deinit 生命周期，create(index, host) 是唯一
+//                  能拿到宿主服务表的时机）；
+//   · stop()       在实例销毁前退订并销毁语言表；之后宿主不会再回调本实例
+//                  （EVENT_BUS.md §5）。
 //
-//  没有窗口、没有线程、没有全局状态：订阅回调在宿主事件分发线程（main）执行，
-//  剪贴板写入也在这个线程完成，所以不存在跨线程的剪贴板竞争。
+//  没有窗口、没有线程：订阅回调在宿主事件分发线程（main）执行，剪贴板写入也在
+//  这个线程完成，所以不存在跨线程的剪贴板竞争。
 // ============================================================================
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include "clipboard_config.h"
 #include "clipboard_writer.h"
 #include "plugin_api.h"
 
+namespace shot {
+class I18n;  // 多语言封装：定义在 shot_plugin_helpers/shot_i18n.h，只在本类 .cpp 里用完整类型
+}  // namespace shot
+
 namespace clipboard {
 
 /**
- * @brief 剪贴板插件实例：两个配置项 + 一次 capture.done 订阅。
+ * @brief 剪贴板插件实例：两个配置项 + 一次 capture.done 订阅 + 一份语言表。
  *
  * 生命周期由 ABI 层的 create/destroy 驱动：create 分配本对象并调 start()，
  * destroy 调 stop() 后释放。所有方法都只在宿主 main 线程调用（插件创建、事件
@@ -44,14 +50,14 @@ public:
     ClipboardPlugin& operator=(const ClipboardPlugin&) = delete;
 
     /**
-     * @brief 绑定宿主并订阅 capture.done。
+     * @brief 绑定宿主、发布语言表并订阅 capture.done。
      * @param[in] host 宿主服务表；可以为 nullptr（老宿主），此时安静降级为"不订阅"。
      * @return true = 已订阅；false = 宿主没有事件总线，剪贴板功能不可用（实例照常存活）。
      */
     bool start(const ShotHostServices* host);
 
     /**
-     * @brief 退订 capture.done 并释放订阅句柄；重复调用是空操作。
+     * @brief 退订 capture.done、销毁语言表并释放订阅句柄；重复调用是空操作。
      * @note 必须在实例销毁前、且宿主不再分发本回调之后调用（destroy 路径满足）。
      */
     void stop();
@@ -103,6 +109,7 @@ private:
     void handleCaptureDone(const std::string& payload);
 
     const ShotHostServices* m_host = nullptr;   /**< 宿主服务表；生命周期 = 插件包。 */
+    std::unique_ptr<shot::I18n> m_i18n;         /**< 语言表：start() 里创建，stop() 里销毁。 */
     ClipboardConfig m_config;                   /**< 两个配置项。 */
     ClipboardWriter m_writer;                   /**< 剪贴板写入器（无状态）。 */
     bool m_subscribed = false;                  /**< 是否已成功订阅 capture.done。 */

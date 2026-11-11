@@ -23,10 +23,10 @@ plugins/notify/
 │   ├── notify_toast.h              # NotifyToast 公共接口（PIMPL，不含 Win32 类型）
 │   └── notify_toast_impl.h         # 内部头：NotifyToast::Impl、隐藏窗口/图标/事件队列
 └── src/
-    ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + ABI 胶水 + 配置回调
-    ├── notify_config.cpp           # 配置项声明表 / 字符串值解析 / 当前值读写
+    ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + ABI 胶水 + 配置回调 + 语言表
+    ├── notify_config.cpp           # 配置项声明表（label/tooltip 是 i18n key）/ 值读写
     ├── notify_toast.cpp            # 生命周期：订阅 capture.* / app.quit，起停通知线程
-    └── notify_toast_window.cpp     # 隐藏消息窗口 + 隐藏占位托盘图标 + 气泡文本与 Shell 通知
+    └── notify_toast_window.cpp     # 隐藏窗口 + 占位图标 + 按当前语言拼气泡文本并发送
 ```
 
 公共头 `notify_toast.h` 不包含 `<windows.h>`：`HWND` / `HICON` 等 Win32 类型只出现在
@@ -37,7 +37,7 @@ plugins/notify/
 宿主仓库内构建（`shot_add_plugin()` 由根工程提供）：
 
 ```bash
-bash build/verify/locked_build.sh --target notify
+bash tools/verify/build.sh --target notify
 ```
 
 或直接走 CMake：
@@ -77,6 +77,10 @@ spdlog）：
 | `capture.failed` | `{"stage","reason"}` | 显示「截屏失败 / 截图失败：`<reason>`」 |
 | `app.quit` | 空 | 通知线程退出（等宿主卸载流程的 `destroy` 兜底） |
 
+气泡标题/正文按当前界面语言显示（见 §4.1）。`capture.done` 的 `path` 与
+`capture.failed` 的 `reason` 是宿主/保存插件的原文（`reason` 已由宿主本地化），
+本插件原样展示，不做二次翻译。
+
 - **发布**：无。本插件只读事件，不发布任何事件，也不调用其它插件。
 
 ### 3.1 为什么需要隐藏的占位托盘图标（实测依据）
@@ -107,21 +111,67 @@ spdlog）：
 get/set，落盘与回灌归宿主（`document/SETTINGS.md` §2）。只把 `"0"` / `"false"` 当关，
 其它写法按开处理（与 tray / clipboard 的约定一致）。
 
+配置项的 `label` / `tooltip` 不是最终显示文本，而是 i18n key（`config.<配置键>.label` /
+`config.<配置键>.tooltip`）：宿主把 key 原样放进 `config_list`，设置页用宿主生成的
+`i18n_list` 解析成当前语言，查不到时显示 key 本身。文案表见 §4.1。
+
 **与托盘的分工**：截屏结果提示（`capture.done` / `capture.failed`）**全部由本插件
 负责**——成功、失败都在这里弹系统通知；托盘插件只管托盘图标与右键菜单，不再订阅
 截屏结果、也不弹"截屏成功/失败"气泡。托盘如果保留自己的错误提示，只用于托盘自身
 的错误（例如图标加载失败），不与本插件的截屏结果提示重复。
 
+### 4.1 多语言（i18n）
+
+用户可见文案全部走 `shot::I18n`（`include/shot_plugin_helpers/shot_i18n.h`），
+代码里只保留中文 fallback，不再把中文当作唯一显示文本：
+
+- **语言表**：`src/plugin_entry.cpp` 的 `kLangTables`，目前 `zh-CN` / `en-US` 两张
+  JSON，每张表用 `@meta` 标语言；两表 key 集必须一致（每个 key 两种语言齐全）。
+- **生命周期**：`create(index, host)` 是唯一能拿到宿主服务表的时机，在这里
+  `std::make_unique<shot::I18n>(host, "notify.main")` 并 `loadTables(...)`；通知线程
+  启动前加载完，`destroy` 里先 `stop()` 再 `i18n.reset()`（析构会退订 `lists.changed`）。
+- **取值**：气泡在显示时调 `i18n.tr(key, 中文原文)`。没有语言表（旧宿主 / 初始化
+  失败）时返回 fallback，界面保持中文；语言切换后，下一条气泡按新语言显示。
+- **不翻译**：`shot::Logger` 日志固定中文（e2e 按中文日志断言）；事件主题、配置键、
+  `NIIF_*` 等技术值保持原样；`capture.done` 的 `path` 与 `capture.failed` 的 `reason`
+  原样展示（`reason` 已由宿主本地化），只有 `reason` 整个缺失时才用
+  `toast.reason_unknown` 补一句。
+
+语言表 key 一览（共 17 个，`zh-CN` / `en-US` 一一对应）：
+
+| key | zh-CN | en-US |
+| --- | --- | --- |
+| `config.enabled.label` | 消息提示 | Notifications |
+| `config.enabled.tooltip` | 截屏成功后弹出系统通知显示保存路径；关掉后本插件的所有提示都不弹 | Show the saved path in a system notification; off disables all notifications |
+| `config.show_on_success.label` | 截屏成功时提示 | Notify on success |
+| `config.show_on_success.tooltip` | 成功时显示"已保存到 <文件路径>"（路径过长会截断中间部分） | Show "Saved to <path>" on success (long paths are truncated) |
+| `config.show_on_error.label` | 截屏失败时提示 | Notify on failure |
+| `config.show_on_error.tooltip` | 失败时显示"截图失败：<原因>"；截屏结果提示统一由本插件负责（托盘不弹截屏气泡） | Show "Capture failed: <reason>" (the tray does not show balloons) |
+| `config.sound.label` | 提示音 | Sound |
+| `config.sound.tooltip` | 通知气泡是否播放系统提示音；关掉后使用 NIIF_NOSOUND 静音 | Play the system sound for the notification; off uses NIIF_NOSOUND |
+| `toast.success_title` | 截屏成功 | Capture saved |
+| `toast.failed_title` | 截屏失败 | Capture failed |
+| `toast.saved_prefix` | `"已保存到 "`（末尾空格） | `"Saved to "` |
+| `toast.failed_prefix` | `"截图失败："` | `"Capture failed: "` |
+| `toast.no_path` | 已保存（保存插件未回报路径） | Saved (the saver did not report a path) |
+| `toast.path_unavailable` | （路径无法显示） | (path unavailable) |
+| `toast.reason_unknown` | 原因未知 | Unknown reason |
+| `toast.window_title` | Plugin-shot 消息提示 | Plugin-shot notifications |
+| `toast.icon_tooltip` | Plugin-shot 消息提示（隐藏占位） | Plugin-shot notifications (hidden placeholder) |
+
+`toast.window_title` / `toast.icon_tooltip` 只用于隐藏消息窗口和隐藏占位图标的排障，
+用户正常情况下看不到；仍放进语言表，避免 DLL 里再留一份硬编码中文。
+
 ## 5. 生命周期与线程
 
 | 时机 | 插件做什么 |
 | --- | --- |
-| `create(index, host)` | 分配状态、订阅 `capture.done` / `capture.failed` / `app.quit`、起通知线程；线程就绪前到达的事件先入队 |
+| `create(index, host)` | 分配状态、构造并加载语言表、订阅 `capture.done` / `capture.failed` / `app.quit`、起通知线程；线程就绪前到达的事件先入队 |
 | 通知线程启动 | 注册并创建**隐藏消息窗口**（`PluginShotNotifyWnd`）→ 添加隐藏占位托盘图标 → 握手 → 消息循环 |
 | `capture.done` / `capture.failed` | 总线回调只「拷负载 + `PostMessage` 唤醒」；通知线程出队后按配置弹气泡 |
 | explorer 重启（`TaskbarCreated`） | 重新添加隐藏占位图标 |
 | `app.quit` | 通知线程退出消息循环、删隐藏图标、销毁窗口、注销窗口类 |
-| `destroy` | 先退订事件总线，再让通知线程退出并 `join`，最后释放状态；重复调用是空操作 |
+| `destroy` | 先退订事件总线，再让通知线程退出并 `join`，然后 `reset` 语言表、释放状态；重复调用是空操作 |
 
 线程边界：事件总线回调运行在宿主分发线程，只做拷贝与唤醒；`Shell_NotifyIconW`、
 窗口创建与消息循环全部在插件自己的通知线程上执行（Shell 通知不是线程安全的）。
@@ -140,6 +190,9 @@ get/set，落盘与回灌归宿主（`document/SETTINGS.md` §2）。只把 `"0"
 | 用户开了系统"专注助手" | `NIIF_RESPECT_QUIET_TIME` 让系统决定不打扰；Shell 仍返回成功 |
 | 系统通知被用户关闭 / 任务栏浮层在前台 | Shell 仍返回成功但用户可能看不到（实测：任务栏溢出浮层在前台时 toast 不显示）；插件只记日志，不改系统设置 |
 | 宿主没提供 `shot.configurable` 的渲染/回灌 | 配置用默认值（全开），插件功能不受影响 |
+| 旧宿主 / 没有 `i18n_list` | `shot::I18n` 安静降级：`tr` 用第一张表（zh-CN），界面保持中文，气泡不受影响 |
+| 语言表加载失败 / 非法 JSON | 只记 WARN，`tr` 返回中文 fallback，气泡照常显示 |
+| 当前语言缺某个 key | 按回退链取另一种语言，最终返回 fallback（中文原文）；两表 key 数不一致只 WARN |
 
 ## 7. 平台支持
 
@@ -168,4 +221,6 @@ get/set，落盘与回灌归宿主（`document/SETTINGS.md` §2）。只把 `"0"
 - [ ] 负载缺字段 / 不是合法 JSON 时安静降级，不崩？
 - [ ] 平台类型仍然只出现在内部头与窗口相关 `.cpp` 里（公共头不含 `<windows.h>`）？
 - [ ] 气泡文案超长时中间截断，不溢出 `NOTIFYICONDATAW` 的定长缓冲？
+- [ ] 新增/修改的界面文案在 `zh-CN` / `en-US` 两张语言表里都补齐，且 `tr` 的 fallback 是中文原文？
+- [ ] 日志、事件主题、配置键没有跟着翻译？
 - [ ] 改了事件主题/负载？→ 同步 `document/CAPTURE.md` §3 与 `document/EVENT_BUS.md` §4

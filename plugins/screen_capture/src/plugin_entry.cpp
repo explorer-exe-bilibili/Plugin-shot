@@ -7,13 +7,16 @@
 //   · 宿主拿到的 instance 是一个不透明指针：插件自己分配、自己释放；
 //   · 能力函数表（采集 + 配置）与插件身份证都放在这个文件——它才是"入口"，
 //     采集实现文件不混 ABI 代码（STYLE.md §6.8）；实例状态类型因为两个能力
-//     回调都要用，放内部头 screen_capture_state.h。
+//     回调都要用，放内部头 screen_capture_state.h；
+//   · 用户可见文案的语言表（kLangTables）也放这里：create(index, host) 拿到宿主
+//     服务表后立即发布，设置页才能把配置项的 label/tooltip 解析成当前语言。
 //
 // 匿名命名空间里的函数都是 ABI 回调 / 模块表回调：签名由契约固定，只能是自由函数
 // （STYLE.md §6.7 的合法例外）。
 
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <new>
 
 #include "capture_settings.h"
@@ -41,6 +44,22 @@ using screen_capture::PluginInstance;
 // shot::Logger 会静默降级。
 const ShotHostServices* g_hostServices = nullptr;
 
+// 用户可见文案的语言表（每个语言一张 JSON 对象，@meta 是 BCP-47 语言标签）：
+// 本插件没有自绘 UI，用户可见文案只有 include_cursor 的 label/tooltip，所以表里
+// 只有这两个 key。capture_settings.cpp 的 kConfig 存的就是这里的 key，两处拼写
+// 必须严格一致（设置页按 display(owner, key) = i18n_list[(owner, key)] ?? key 解析，
+// 拼错就显示 key 本身）。单张表超过 120 列，所以拆成相邻字符串字面量：编译期拼成
+// 一条 JSON，JSON 字符串内部没有裸换行。日志不进这张表（保持中文，e2e 按中文日志断言）。
+const char* const kLangTables[] = {
+    R"json({"@meta":"zh-CN",)json"
+    R"json("config.include_cursor.label":"合成鼠标光标",)json"
+    R"json("config.include_cursor.tooltip":"抓屏后把当前鼠标光标画进截图；关闭后截图不含光标"})json",
+    R"json({"@meta":"en-US",)json"
+    R"json("config.include_cursor.label":"Include mouse cursor",)json"
+    R"json("config.include_cursor.tooltip":)json"
+    R"json("Draws the current mouse cursor into the screenshot; off gives a clean desktop without it"})json",
+};
+
 void* create_instance(std::uint32_t index, const ShotHostServices* host) {
     if (index >= kEntryCount) {
         return nullptr;
@@ -56,6 +75,25 @@ void* create_instance(std::uint32_t index, const ShotHostServices* host) {
             entry->destroy(state);
         }
         return nullptr;
+    }
+
+    // 本插件没有 ui_provider 的 init 生命周期，create(index, host) 是实例创建路径里
+    // 唯一拿得到宿主服务表的时机：语言表在这里发布到 i18n_source_list，设置页第一次
+    // 读 config_list 时才能解析 label/tooltip。owner 直接用插件身份证的 id（与
+    // metadata.json 一致），宿主会校验它等于已加载的插件 id。
+    if (entry == &screen_capture::kScreenCapture) {
+        auto* captureState = static_cast<screen_capture::ScreenCaptureState*>(instance->state);
+        try {
+            captureState->i18n = std::make_unique<shot::I18n>(host, entry->id);
+            if (!captureState->i18n->loadTables(kLangTables, std::size(kLangTables))) {
+                shot::Logger(host).warn("screen_capture: 语言表解析失败，配置项文案回退为 key");
+            }
+        } catch (...) {
+            // 多语言只是显示层：异常时缩回"没有语言表"，采集与配置照常工作，插件不
+            // 因此加载失败（设置页显示 key 本身，便于定位是哪张表没加载）。
+            captureState->i18n.reset();
+            shot::Logger(host).warn("screen_capture: 初始化多语言异常，配置项文案回退为 key");
+        }
     }
 
     // 用 shot::Logger 报一句自己的 id。老宿主可能没有 log 字段，shot::Logger 内部
@@ -142,11 +180,29 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 // 插件对象由插件 create / destroy，宿主只拿到一个不透明指针。
 // ---------------------------------------------------------------------------
 namespace screen_capture {
+
+// unique_ptr<shot::I18n> 的构造/析构都要求完整类型（MSVC 会在 ScreenCaptureState
+// 构造函数的异常清理路径里生成 unique_ptr 的析构，只有前置声明就报 C2027），而
+// shot::I18n 的头文件（带 nlohmann-json）只该进本 TU：状态头还被 capture_settings.cpp
+// 包含，不能为了一个成员把整个 json 库拖进所有包含它的文件。
+ScreenCaptureState::ScreenCaptureState(const ShotHostServices* host) noexcept : capture(host) {}
+
+ScreenCaptureState::~ScreenCaptureState() = default;
+
 namespace {
 
 void* create_state() { return new (std::nothrow) ScreenCaptureState(g_hostServices); }
 
-void destroy_state(void* self) { delete static_cast<ScreenCaptureState*>(self); }
+void destroy_state(void* self) {
+    auto* state = static_cast<ScreenCaptureState*>(self);
+    if (state == nullptr) {
+        return;
+    }
+    // 先释放语言表：I18n 析构会退订 lists.changed，不能把订阅句柄留到宿主
+    // FreeLibrary 本 DLL 之后（回调进来时 this 已经失效）。
+    state->i18n.reset();
+    delete state;
+}
 
 std::int32_t describe_screen(void* self, ShotCaptureInfo* out) {
     auto* state = static_cast<ScreenCaptureState*>(state_of(self));

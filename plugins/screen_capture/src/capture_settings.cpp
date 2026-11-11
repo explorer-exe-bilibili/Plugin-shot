@@ -4,6 +4,10 @@
 // CaptureSettings（capture_settings.h）；抓屏本身在 gdi_desktop_capture.cpp，
 // ABI 函数表在 plugin_entry.cpp 里组装。
 //
+// label / tooltip 写的是语言表 key，不是中文：设置页按
+// display(owner, key) = i18n_list[(owner, key)] ?? key 解析，文案本体在
+// plugin_entry.cpp 的 kLangTables 里（两边的 key 拼写必须严格一致）。
+//
 // 返回码按 ShotConfigurableV1 的契约：get 返回 >= 0 是值的字节数（不含 NUL），
 // 负数只表示 key 不认识或参数非法；set 返回 0 = 已生效。不认识的 key 必须安全
 // 忽略——宿主升级后多灌一项配置时，老插件不能因此坏掉。
@@ -21,18 +25,23 @@ namespace {
 
 const char kKeyIncludeCursor[] = "include_cursor";
 
+// 文案 key：命名规范 config.<配置 key>.label / config.<配置 key>.tooltip。
+// 写成常量是为了让 kConfig 一眼能看出这里放的是 key 而不是最终显示文本。
+const char kLabelIncludeCursor[] = "config.include_cursor.label";
+const char kTooltipIncludeCursor[] = "config.include_cursor.tooltip";
+
 const ShotConfigDesc kConfig[] = {
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_BOOL,
         .key           = kKeyIncludeCursor,
-        .label         = "合成鼠标光标",
+        .label         = kLabelIncludeCursor,
         .default_value = "1",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 1.0,
         .step          = 1.0,
-        .tooltip       = "抓屏后把当前鼠标光标画进截图；关闭后截图不含光标",
+        .tooltip       = kTooltipIncludeCursor,
     },
 };
 

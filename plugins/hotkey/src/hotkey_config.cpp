@@ -30,54 +30,57 @@ const char kKeyCaptureHotkey[] = "capture_hotkey";
 const char kKeyRegionHotkey[] = "region_hotkey";
 const char kKeySettingsHotkey[] = "settings_hotkey";
 
+// label / tooltip 存的是文案 key，不是最终显示文本：设置页按 display(owner, key)
+// 到 i18n_list 里取当前语言（owner = "hotkey.main"，语言表在 plugin_entry.cpp 的
+// kLangTables；key 规范见 plugins/hotkey/README.md §3.1）。
 const ShotConfigDesc kConfig[] = {
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_BOOL,
         .key           = kKeyEnabled,
-        .label         = "启用全局热键",
+        .label         = "config.enabled.label",
         .default_value = "1",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 1.0,
         .step          = 1.0,
-        .tooltip       = "关闭后撤销全部热键注册；热键线程与窗口保留，重新启用立即生效",
+        .tooltip       = "config.enabled.tooltip",
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_STRING,
         .key           = kKeyCaptureHotkey,
-        .label         = "截屏热键",
+        .label         = "config.capture_hotkey.label",
         .default_value = "Ctrl+Alt+S",
         .options       = "hotkey",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "发布 capture.request（空负载）；语法 Ctrl/Alt/Shift/Win + A-Z / 0-9 / F1-F12 / PrintScreen，大小写不敏感",
+        .tooltip       = "config.capture_hotkey.tooltip",
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_STRING,
         .key           = kKeyRegionHotkey,
-        .label         = "区域截屏热键",
+        .label         = "config.region_hotkey.label",
         .default_value = "Ctrl+Alt+A",
         .options       = "hotkey",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "发布 capture.request，负载 {\"mode\":\"region\"}；语法同上",
+        .tooltip       = "config.region_hotkey.tooltip",
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_STRING,
         .key           = kKeySettingsHotkey,
-        .label         = "打开设置热键",
+        .label         = "config.settings_hotkey.label",
         .default_value = "Ctrl+Alt+O",
         .options       = "hotkey",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "发布 settings.open（空负载）；语法同上",
+        .tooltip       = "config.settings_hotkey.tooltip",
     },
 };
 

@@ -89,6 +89,7 @@ struct NotifyToast::Impl {
 
     const ShotHostServices* host = nullptr; /**< 宿主服务表；生命周期覆盖插件实例。 */
     NotifyConfig* config = nullptr;         /**< 开关配置；只在通知线程上读。 */
+    const shot::I18n* i18n = nullptr;       /**< 语言表；只在通知线程上查。 */
     bool busSubscribed = false;             /**< 是否成功订阅过事件总线。 */
 
     // ---- 隐藏窗口与占位图标（只在通知线程上访问） ----
@@ -105,6 +106,7 @@ struct NotifyToast::Impl {
     void drainEvents();
     void onCaptureDone(const std::string& payload);
     void onCaptureFailed(const std::string& payload);
+    const char* localized(const char* key, const char* fallback) const;
     void showBalloon(const wchar_t* title, const wchar_t* text, DWORD infoFlags);
     bool ensureWindowClass(HINSTANCE instance);
     static bool registerWindowClass(HINSTANCE instance);

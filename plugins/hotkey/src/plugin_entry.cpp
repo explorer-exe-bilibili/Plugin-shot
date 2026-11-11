@@ -14,7 +14,9 @@
 
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <new>
+#include <utility>
 
 #include "hotkey_config.h"
 #include "hotkey_window.h"
@@ -137,10 +139,48 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 namespace hotkey {
 namespace {
 
+/**
+ * @brief 用户可见文案的语言表（每个语言一张 JSON 对象，键集必须完全一致）。
+ *
+ * 只放设置页会显示的内容：四个配置项的 label / tooltip 在 ShotConfigDesc 里存的是
+ * key，设置页按 display(owner, key) 到 i18n_list 里取这里的文本。日志文案固定中文、
+ * 不进表（e2e 按中文日志断言，见 STYLE.md §6.4）；事件主题与配置 key 也不是用户文案。
+ *
+ * 单张表远超 120 列，所以拆成相邻字符串字面量：编译期拼成一条 JSON，JSON 字符串
+ * 内部没有裸换行（有裸换行就不是合法 JSON 了）。
+ */
+const char* const kLangTables[] = {
+    // zh-CN：简体中文表，与下面 en-US 表的 key 集完全一致。
+    R"json({"@meta":"zh-CN",)json"
+    R"json("config.enabled.label":"启用全局热键",)json"
+    R"json("config.enabled.tooltip":"关闭后撤销全部热键注册；热键线程与窗口保留，重新启用立即生效",)json"
+    R"json("config.capture_hotkey.label":"截屏热键",)json"
+    R"json("config.capture_hotkey.tooltip":"发布 capture.request（空负载）；语法 )json"
+    R"json(Ctrl/Alt/Shift/Win + A-Z / 0-9 / F1-F12 / PrintScreen，大小写不敏感",)json"
+    R"json("config.region_hotkey.label":"区域截屏热键",)json"
+    R"json("config.region_hotkey.tooltip":"发布 capture.request，负载 {\"mode\":\"region\"}；语法同上",)json"
+    R"json("config.settings_hotkey.label":"打开设置热键",)json"
+    R"json("config.settings_hotkey.tooltip":"发布 settings.open（空负载）；语法同上"})json",
+    // en-US：与 zh-CN 表一一对应。
+    R"json({"@meta":"en-US",)json"
+    R"json("config.enabled.label":"Enable global hotkeys",)json"
+    R"json("config.enabled.tooltip":"Unregisters all hotkeys when off; )json"
+    R"json(the hotkey thread and window stay alive, and re-enabling takes effect immediately",)json"
+    R"json("config.capture_hotkey.label":"Capture hotkey",)json"
+    R"json("config.capture_hotkey.tooltip":"Publishes capture.request (empty payload); syntax )json"
+    R"json(Ctrl/Alt/Shift/Win + A-Z / 0-9 / F1-F12 / PrintScreen, case-insensitive",)json"
+    R"json("config.region_hotkey.label":"Region capture hotkey",)json"
+    R"json("config.region_hotkey.tooltip":"Publishes capture.request with payload )json"
+    R"json({\"mode\":\"region\"}; same syntax as above",)json"
+    R"json("config.settings_hotkey.label":"Open settings hotkey",)json"
+    R"json("config.settings_hotkey.tooltip":"Publishes settings.open (empty payload); same syntax as above"})json",
+};
+
 /** @brief 插件状态：一个热键窗口 + 四个配置项（生命周期覆盖整个插件实例）。 */
 struct HotkeyState {
     HotkeyConfig config; /**< shot.configurable：enabled + 三个热键字符串。 */
     HotkeyWindow window; /**< shot.ui_provider：隐藏消息窗口 + 热键线程。 */
+    std::unique_ptr<shot::I18n> i18n; /**< 多语言：ui_init 构造并发布语言表，deinit/destroy 释放。 */
 };
 
 void* create_state() {
@@ -152,6 +192,7 @@ void destroy_state(void* self) {
     if (state != nullptr) {
         try {
             state->window.stop();  // 先收热键线程/窗口，再释放状态
+            state->i18n.reset();   // 析构自动退订 lists.changed，不能留给 delete 之后的回调
         } catch (...) {
             // 析构路径也不能让异常越过 ABI 边界；继续释放内存。
         }
@@ -160,9 +201,18 @@ void destroy_state(void* self) {
 }
 
 std::int32_t ui_init(void* self, const ShotHostServices* host) {
-    // 异常绝不能越过 extern "C" 边界：start() 内部已兜住建线程，这里再兜一层。
+    // 异常绝不能越过 extern "C" 边界：语言表解析与 start() 内的建线程都可能分配内存，
+    // 这里统一兜一层。
     if (auto* state = static_cast<HotkeyState*>(state_of(self))) {
         try {
+            // ui_init 是第一个拿得到宿主服务表的生命周期回调：在这里构造 I18n 并把语言表
+            // 发布到 i18n_source_list（设置页靠它把配置项 label/tooltip 解析成当前语言）。
+            // 先构造到局部变量，loadTables 抛异常时 state 里不会留下半初始化的对象。
+            if (state->i18n == nullptr) {
+                auto i18n = std::make_unique<shot::I18n>(host, "hotkey.main");
+                i18n->loadTables(kLangTables, std::size(kLangTables));
+                state->i18n = std::move(i18n);
+            }
             return state->window.start(host, &state->config) ? 0 : 1;
         } catch (...) {
             return 1;
@@ -176,6 +226,8 @@ std::int32_t ui_deinit(void* self) {
     if (auto* state = static_cast<HotkeyState*>(state_of(self))) {
         try {
             state->window.stop();
+            // 语言表随实例一起释放；宿主按 owner 清掉本插件贡献的 i18n_source_list 条目。
+            state->i18n.reset();
         } catch (...) {
             return 1;
         }

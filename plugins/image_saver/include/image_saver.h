@@ -1,9 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 
 #include "plugin_api.h"
 #include "saver_config.h"
+
+namespace shot {
+class I18n;  // 多语言封装：定义在 shot_plugin_helpers/shot_i18n.h，只在本类 .cpp 里用完整类型
+}  // namespace shot
 
 namespace image_saver {
 
@@ -19,13 +24,31 @@ namespace image_saver {
  */
 class ImageSaver {
 public:
-    /** @brief 构造：配置取默认值。 */
+    /** @brief 构造：配置取默认值；语言表在拿到宿主服务表后由 start() 加载。 */
     ImageSaver();
+
+    /** @brief 析构：兜底调用 stop()，保证语言表先于插件状态释放。 */
+    ~ImageSaver();
 
     /** @brief 不可拷贝：配置内部有互斥锁。 */
     ImageSaver(const ImageSaver&) = delete;
     /** @brief 不可赋值。 */
     ImageSaver& operator=(const ImageSaver&) = delete;
+
+    /**
+     * @brief 挂上宿主服务并把本插件的语言表发布到 i18n_source_list。
+     *
+     * 本插件没有 ui_provider 的 init/deinit，create(index, host) 是唯一能拿到宿主
+     * 服务表的时机，所以由 create_instance 在状态建好后调用一次。失败不致命：
+     * 配置项 label/tooltip 会原样显示成 key，保存能力照常工作。
+     *
+     * @param[in] host 宿主服务表；老宿主可能为 nullptr（安静降级）。
+     * @return true = 语言表已解析并发布；false = 宿主没有列表服务或表解析失败。
+     */
+    bool start(const ShotHostServices* host);
+
+    /** @brief 释放语言表；I18n 析构会退订 lists.changed。重复调用是空操作。 */
+    void stop();
 
     /**
      * @brief 实现 ShotImageSaverV1::save：把图像落盘并写回最终绝对路径。
@@ -68,7 +91,8 @@ public:
     std::int32_t setConfig(const char* key, const char* value);
 
 private:
-    SaverConfig m_config;  /**< 四个配置项 + 线程安全读写。 */
+    SaverConfig m_config;               /**< 四个配置项 + 线程安全读写。 */
+    std::unique_ptr<shot::I18n> m_i18n; /**< 多语言：start() 构造，stop()/析构释放。 */
 };
 
 }  // namespace image_saver

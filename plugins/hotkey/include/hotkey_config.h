@@ -12,6 +12,9 @@
 //  热键字符串的语法与解析在 hotkey_binding.h；本类只负责"声明 + 存字符串值"，
 //  不解释语法（解析失败发生在注册时，按"warn + 跳过这一项"处理）。
 //
+//  ShotConfigDesc 的 label/tooltip 是文案 key（config.<配置 key>.label / .tooltip），
+//  由设置页用 i18n_list 解析成当前语言；语言表在 plugin_entry.cpp 的 kLangTables。
+//
 //  线程安全：值可能在宿主任意线程被读写（apply_stored、设置页应用、热键线程读），
 //  所以三个字符串用 mutex 保护、enabled 用 std::atomic；读侧永远拿到完整值。
 // ============================================================================

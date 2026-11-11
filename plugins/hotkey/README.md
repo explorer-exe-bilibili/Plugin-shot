@@ -25,9 +25,9 @@ plugins/hotkey/
 │   ├── hotkey_window.h             # HotkeyWindow 公共接口（PIMPL，不含 Win32 类型）
 │   └── hotkey_window_impl.h        # 内部头：HotkeyWindow::Impl、窗口消息与注册表类型
 └── src/
-    ├── plugin_entry.cpp            # 唯一导出符号 + ABI 胶水（状态/回调/能力目录）
+    ├── plugin_entry.cpp            # 唯一导出符号 + ABI 胶水 + 语言表（kLangTables）
     ├── hotkey_binding.cpp          # 热键语法解析（纯函数，可单独测试）
-    ├── hotkey_config.cpp           # 配置声明、字符串值读写（跨线程安全）
+    ├── hotkey_config.cpp           # 配置声明（label/tooltip 是文案 key）、字符串值读写
     ├── hotkey_window.cpp           # 生命周期 / 线程握手 / 事件订阅（start / stop / post）
     └── hotkey_window_message.cpp   # 窗口类 / 消息循环 / RegisterHotKey / WM_HOTKEY 发布事件
 ```
@@ -62,9 +62,10 @@ cmake --build build
 | 依赖 | 用途 | 说明 |
 | --- | --- | --- |
 | `user32` | `RegisterHotKey` / `UnregisterHotKey`、隐藏消息窗口与消息循环 | Windows 系统库 |
+| `nlohmann-json` | 解析 `kLangTables` 里的两张语言表（header-only） | 根 vcpkg 清单已有；只用于 i18n |
 
-插件不链接 `nlohmann-json`（事件负载是两个固定 JSON 字面量）也不链接 `spdlog`
-（日志走宿主的 `log` 服务，见 `STYLE.md` §6.4）。
+`nlohmann-json` 只用于解析多语言表（header-only）；事件负载仍是两个固定 JSON 字面量，
+日志走宿主的 `log` 服务（`STYLE.md` §6.4），不链接 `spdlog`。
 
 **仅 Windows**：非 Windows 平台本工程直接跳过（`SHOT_PLUGIN_SKIPPED`，根工程打印
 "当前平台不支持"）。移植点写在 CMakeLists 与窗口实现里（`// TODO:`）。
@@ -78,6 +79,18 @@ cmake --build build
 | `region_hotkey` | STRING | `"Ctrl+Alt+A"` | `capture.request`，负载 `{"mode":"region"}` | 区域截屏 |
 | `settings_hotkey` | STRING | `"Ctrl+Alt+O"` | `settings.open`（空负载） | 打开设置 |
 
+`ShotConfigDesc::label/tooltip` 存的是**文案 key**，不是最终显示文本；设置页按
+`display(owner, key)` 到 `i18n_list` 里取当前语言（owner 是 `hotkey.main`）：
+
+| 配置 key | label key | tooltip key |
+| --- | --- | --- |
+| `enabled` | `config.enabled.label` | `config.enabled.tooltip` |
+| `capture_hotkey` | `config.capture_hotkey.label` | `config.capture_hotkey.tooltip` |
+| `region_hotkey` | `config.region_hotkey.label` | `config.region_hotkey.tooltip` |
+| `settings_hotkey` | `config.settings_hotkey.label` | `config.settings_hotkey.tooltip` |
+
+key 规范、语言表格式与回退行为见 §3.1。
+
 值一律用字符串表达；存盘键是 `hotkey.main/<key>`（宿主负责落盘与启动回灌，见
 `document/SETTINGS.md`）。不认识的 key 返回负值且不改变状态。
 
@@ -89,6 +102,35 @@ cmake --build build
 → `lists.commit` 落盘后宿主发 `config.applied`，再幂等重注册一次。启动时宿主
 `apply_stored` 直接 `set_config`（不发 `config.applied`），插件同样会重注册，所以已存
 热键在启动阶段就生效。
+
+### 3.1 多语言（i18n）
+
+用户可见文案走"语言表 + key"：`src/plugin_entry.cpp` 里的 `kLangTables` 用两张
+`R"json(...)json"` 静态表（zh-CN / en-US）声明文案，`ui_init(host)` 里构造
+`shot::I18n` 并调用 `loadTables()` 发布到宿主的 `i18n_source_list`。宿主生成
+`i18n_list` 后，设置页等消费方按 `display(owner, key)` 解析当前语言文本（本插件的
+owner 是 `hotkey.main`）。
+
+每张表是一个 JSON 对象，`@meta` 必填（BCP-47 语言标签），其余键值是文案：
+
+```json
+{"@meta":"zh-CN","config.enabled.label":"启用全局热键","config.enabled.tooltip":"……"}
+{"@meta":"en-US","config.enabled.label":"Enable global hotkeys","config.enabled.tooltip":"……"}
+```
+
+规则：
+
+- 两张表的 key 集必须**完全一致**，每个 key 在两种语言下都要有文本；JSON 内不能有
+  裸换行（单表远超 120 列，所以拆成相邻字符串字面量，编译期拼成一条 JSON）。
+- key 规范：配置项用 `config.<配置 key>.label` / `config.<配置 key>.tooltip`；
+  插件自己的 UI 文案（提示、弹窗、窗口标题等）用 `ui.*`。
+- 配置项的 `label/tooltip` 存 key，由消费方解析；消费方没有 i18n 能力时会原样显示
+  key（形如 `config.enabled.label`，便于定位）。
+- 日志**不翻译**（`shot::Logger` 一律中文，e2e 按中文日志断言）；事件主题、配置 key、
+  ENUM 技术值也不是用户文案。
+- 插件自己要显示的文本用 `i18n.tr(key, "中文原文")` 取；fallback 必须写**改造前的
+  原中文**，这样老宿主 / `i18n_list` 未就绪时界面与改造前一致。当前插件没有需要
+  `tr()` 的自绘文案（隐藏消息窗口的标题不显示给用户，只用于排障）。
 
 ## 4. 热键语法
 
@@ -213,3 +255,4 @@ DLL 卸载消失，不注销的话禁用→启用会踩悬空 `WndProc`（`plugi
 - [ ] 没有把配置值自己写进文件、没有新增 ABI 依赖？
 - [ ] `hotkey.suspend` / `hotkey.resume` 的订阅在 `start` 建立、`deinit` 退订，撤销/注册都在热键线程上？
 - [ ] 暂停期间 `set_config` / `config.applied` 只撤销、不注册，`resume` 后按**当前配置**恢复？
+- [ ] 新增用户可见文案已进 `kLangTables`（配置 `config.*`、自绘 UI `ui.*`），且 `tr()` 的 fallback 是原中文？

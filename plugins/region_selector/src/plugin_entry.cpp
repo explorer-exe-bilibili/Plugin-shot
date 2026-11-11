@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <new>
 
 #include "plugin_api.h"
@@ -136,9 +137,33 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 namespace region_selector {
 namespace {
 
-/** @brief 插件状态：单窗口单实例，一个 RegionWindow 就够。 */
+// ---------------------------------------------------------------------------
+// 用户可见文案（覆盖层提示 / 尺寸单位 / 窗口标题）
+//
+// 日志一律保持中文、不进语言表：e2e 脚本按中文日志断言（"已截取覆盖层背景"等），
+// 翻译了反而会让验证失败。语言表只放画给用户看的字。
+//
+// 两张表的 key 集必须完全一致、每个 key 两种语言都齐全：宿主按 key 查当前语言，
+// 缺 key 时会走 tr() 的回退链。单张表一行会超过 120 列，所以拆成相邻字符串字面量，
+// 编译期拼成一条 JSON：JSON 文本里没有裸换行（值里换行会把提示拆成多行）。
+// ---------------------------------------------------------------------------
+const char* const kLangTables[] = {
+    R"json({"@meta":"zh-CN",)json"
+    R"json("overlay.hint":"拖拽选择区域（物理像素） · Esc / 右键取消",)json"
+    R"json("overlay.size.unit":"像素",)json"
+    R"json("overlay.window_title":"Plugin-shot 区域选择"})json",
+    R"json({"@meta":"en-US",)json"
+    R"json("overlay.hint":"Drag to select (physical pixels) · Esc / right-click to cancel",)json"
+    R"json("overlay.size.unit":"px",)json"
+    R"json("overlay.window_title":"Plugin-shot Region Select"})json",
+};
+
+/** @brief 插件状态：一个覆盖层窗口 + 它用的多语言表。 */
 struct RegionSelectorState {
     RegionWindow window;
+    // 语言表放插件状态里：只有 init 拿得到宿主服务表，而覆盖层渲染线程要读文案。
+    // deinit/destroy 先停窗口线程再 reset，保证渲染帧里不会用到已释放的对象。
+    std::unique_ptr<shot::I18n> i18n;
 };
 
 void* create_state() {
@@ -150,6 +175,7 @@ void destroy_state(void* self) {
     if (state != nullptr) {
         try {
             state->window.stop();  // 先收窗口线程，再释放状态
+            state->i18n.reset();   // 与 deinit 对称：确保没有渲染线程还在读文案
         } catch (...) {
             // 析构路径也不能让异常越过 ABI 边界；继续释放内存。
         }
@@ -161,7 +187,14 @@ std::int32_t ui_init(void* self, const ShotHostServices* host) {
     // 异常绝不能越过 extern "C" 边界：start() 内部已兜住建线程，这里再兜一层
     if (auto* state = static_cast<RegionSelectorState*>(state_of(self))) {
         try {
-            return state->window.start(host) ? 0 : 1;
+            // 多语言表只在 init 里构造一次：此时才拿得到宿主服务表。tr() 之后只查
+            // 本地表，不碰宿主，所以覆盖层可以每帧直接调用。指针交给窗口线程时
+            // 必须先于 start()，否则第一帧就可能读到空指针（触发事件不保证延后）。
+            if (!state->i18n) {
+                state->i18n = std::make_unique<shot::I18n>(host, kRegionSelector.id);
+                state->i18n->loadTables(kLangTables, std::size(kLangTables));
+            }
+            return state->window.start(host, state->i18n.get()) ? 0 : 1;
         } catch (...) {
             return 1;
         }
@@ -174,6 +207,8 @@ std::int32_t ui_deinit(void* self) {
     if (auto* state = static_cast<RegionSelectorState*>(state_of(self))) {
         try {
             state->window.stop();
+            // 窗口线程已 join，此时再释放语言表：顺序反了会让渲染中的 tr() 悬空。
+            state->i18n.reset();
         } catch (...) {
             return 1;
         }

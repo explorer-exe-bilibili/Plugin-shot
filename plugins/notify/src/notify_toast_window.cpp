@@ -38,7 +38,6 @@ namespace notify {
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"PluginShotNotifyWnd";  /**< 进程内唯一；类不随 DLL 卸载消失，必须显式注销。 */
-constexpr wchar_t kWindowTitle[] = L"Plugin-shot 消息提示"; /**< 隐藏窗口的标题，只用于排障。 */
 
 // 气泡显示时长（毫秒）：Vista 之后系统用"轻松使用"里的统一时长，这个值只给老系统兜底。
 constexpr UINT kBalloonTimeoutMs = 5000;
@@ -46,14 +45,6 @@ constexpr UINT kBalloonTimeoutMs = 5000;
 // szInfo 是 256 个 wchar 的定长缓冲（含结尾 NUL）：正文最多 255 个字符。
 // 留一点余量，超过就按"保留头尾、中间用 … 省略"截断（路径末尾通常最关键）。
 constexpr std::size_t kMaxInfoChars = 200;
-
-constexpr wchar_t kSuccessTitle[] = L"截屏成功";
-constexpr wchar_t kFailedTitle[] = L"截屏失败";
-
-/** @brief 成功气泡的正文前缀（后面拼保存路径）。 */
-constexpr wchar_t kSavedPrefix[] = L"已保存到 ";
-/** @brief 失败气泡的正文前缀（后面拼失败原因，格式见任务约定）。 */
-constexpr wchar_t kFailedPrefix[] = L"截图失败：";
 
 /**
  * @brief UTF-8 → UTF-16；失败返回空串（调用方回退成通用提示）。
@@ -98,6 +89,16 @@ std::string jsonString(const nlohmann::json& object, const char* field) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// 文案：气泡标题/正文与隐藏图标的提示都按当前语言取
+// ---------------------------------------------------------------------------
+
+const char* NotifyToast::Impl::localized(const char* key, const char* fallback) const {
+    // i18n 是可选对象：初始化失败或老宿主没有语言表时用中文原文兜底，
+    // 气泡永远有内容可显示（fallback 必须保持中文，见 I18N 约定）。
+    return (i18n != nullptr) ? i18n->tr(key, fallback) : fallback;
+}
 
 // ---------------------------------------------------------------------------
 // 窗口类注册与注销
@@ -168,7 +169,9 @@ void NotifyToast::Impl::run() {
 
     if (ok) {
         // 不带 WS_VISIBLE：这是"只收消息"的隐藏窗口，用户看不到它，也不进 Alt+Tab。
-        wnd = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_POPUP, 0, 0, 0, 0, nullptr,
+        // 标题只用于排障，但同样走语言表，避免 DLL 里再留一份硬编码中文。
+        const std::wstring title = toWide(localized("toast.window_title", "Plugin-shot 消息提示"));
+        wnd = CreateWindowExW(0, kWindowClass, title.c_str(), WS_POPUP, 0, 0, 0, 0, nullptr,
                               nullptr, instance, this);
         if (wnd == nullptr) {
             shot::Logger(host).error("[notify] 创建通知消息窗口失败");
@@ -386,14 +389,20 @@ void NotifyToast::Impl::onCaptureDone(const std::string& payload) {
     if (!path.empty() && widePath.empty()) {
         shot::Logger(host).warn("[notify] capture.done 的 path 不是合法 UTF-8，气泡显示通用提示");
     }
-    const std::wstring text =
-        path.empty()
-            ? std::wstring(L"已保存（保存插件未回报路径）")
-            : truncateMiddle(std::wstring(kSavedPrefix) +
-                                 (widePath.empty() ? std::wstring(L"（路径无法显示）") : widePath),
-                             kMaxInfoChars);
+    std::wstring text;
+    if (path.empty()) {
+        text = toWide(localized("toast.no_path", "已保存（保存插件未回报路径）"));
+    } else {
+        // 路径是宿主/保存插件给的原文（capture.done 的 path），原样拼接、不做二次翻译。
+        text = toWide(localized("toast.saved_prefix", "已保存到 "));
+        text.append(widePath.empty()
+                        ? toWide(localized("toast.path_unavailable", "（路径无法显示）"))
+                        : widePath);
+        text = truncateMiddle(text, kMaxInfoChars);
+    }
+    const std::wstring title = toWide(localized("toast.success_title", "截屏成功"));
     shot::Logger(host).info("[notify] capture.done：" + (path.empty() ? std::string("<无路径>") : path));
-    showBalloon(kSuccessTitle, text.c_str(), NIIF_INFO);
+    showBalloon(title.c_str(), text.c_str(), NIIF_INFO);
 }
 
 void NotifyToast::Impl::onCaptureFailed(const std::string& payload) {
@@ -410,11 +419,16 @@ void NotifyToast::Impl::onCaptureFailed(const std::string& payload) {
         reason = jsonString(doc, "reason");
     }
     if (reason.empty()) {
-        reason = "原因未知";
+        // capture.failed 的 reason 是宿主已经本地化好的文本，本插件只原样展示；
+        // 只有整个字段缺失时才自己补一句（走本插件语言表）。
+        reason = localized("toast.reason_unknown", "原因未知");
     }
-    const std::wstring text = truncateMiddle(std::wstring(kFailedPrefix) + toWide(reason), kMaxInfoChars);
+    const std::wstring title = toWide(localized("toast.failed_title", "截屏失败"));
+    const std::wstring text =
+        truncateMiddle(toWide(localized("toast.failed_prefix", "截图失败：")) + toWide(reason),
+                       kMaxInfoChars);
     shot::Logger(host).info("[notify] capture.failed：" + reason);
-    showBalloon(kFailedTitle, text.c_str(), NIIF_WARNING);
+    showBalloon(title.c_str(), text.c_str(), NIIF_WARNING);
 }
 
 void NotifyToast::Impl::showBalloon(const wchar_t* title, const wchar_t* text, DWORD infoFlags) {
@@ -471,7 +485,9 @@ bool NotifyToast::Impl::addIcon(HWND wnd) {
     // NIF_STATE + NIS_HIDDEN：图标在 Shell 里存在（可以挂气泡），但通知区域不显示。
     data.uFlags = NIF_ICON | NIF_TIP | NIF_STATE;
     data.hIcon = icon;
-    wcsncpy_s(data.szTip, L"Plugin-shot 消息提示（隐藏占位）", _TRUNCATE);
+    const std::wstring tooltip =
+        toWide(localized("toast.icon_tooltip", "Plugin-shot 消息提示（隐藏占位）"));
+    wcsncpy_s(data.szTip, tooltip.c_str(), _TRUNCATE);
     data.dwState = NIS_HIDDEN;
     data.dwStateMask = NIS_HIDDEN;
     if (!Shell_NotifyIconW(NIM_ADD, &data)) {

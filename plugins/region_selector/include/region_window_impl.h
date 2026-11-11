@@ -30,6 +30,10 @@ struct GLFWwindow;   // 前置声明：内部头不拖 GLFW/GL 头文件
 struct GLFWmonitor;
 struct GLFWcursor;
 
+namespace shot {
+class I18n;
+}  // namespace shot
+
 namespace region_selector {
 
 /** @brief 触发主题：负载 `{"mode":"region"}` 启动框选（见 document/CAPTURE.md）。 */
@@ -105,6 +109,9 @@ struct RegionWindow::Impl {
     bool failed = false;
 
     const ShotHostServices* host = nullptr;
+    // 多语言表：由插件状态持有，这里只借指针（不拥有）。start() 时设置、stop()
+    // join 之后清空；UI 线程渲染帧里直接调用 tr()，所以生命周期必须覆盖整个运行期。
+    const shot::I18n* i18n = nullptr;
     bool busSubscribed = false;
 
     // ---- 以下只在 UI 线程（GLFW 的主线程）上访问 ----

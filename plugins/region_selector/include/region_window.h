@@ -5,6 +5,10 @@
 
 #include "plugin_api.h"
 
+namespace shot {
+class I18n;
+}  // namespace shot
+
 namespace region_selector {
 
 /**
@@ -54,10 +58,12 @@ public:
      * @param[in] host 宿主服务表；可为 nullptr（老宿主没有服务表，覆盖层仍可
      *                  由 post_to_plugin 驱动，只是收不到总线事件）。指针必须活到
      *                  stop() 返回。
+     * @param[in] i18n 覆盖层文案表；可为 nullptr（此时显示中文兜底文案）。指针必须
+     *                  活到 stop() 返回：窗口线程在渲染帧里直接调用它的 tr()。
      * @return true = 线程、窗口与 ImGui 后端已就绪；false = 建线程/建窗口/初始化 GL 失败。
      * @note 建线程可能抛异常（线程资源耗尽），这里就地兜住，异常绝不越过 DLL 边界。
      */
-    bool start(const ShotHostServices* host);
+    bool start(const ShotHostServices* host, const shot::I18n* i18n = nullptr);
 
     /**
      * @brief 退订事件总线、让 UI 线程退出消息循环并 join，最后销毁窗口。

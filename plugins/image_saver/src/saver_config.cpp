@@ -4,6 +4,10 @@
 // 类型的校验转换：非法值安静回退默认、不认识的 key 返回负值，宿主升级后多传一项
 // 老插件也不会坏（document/ABI_POLICY.md §5）。
 //
+// label / tooltip 写的是语言表 key，不是中文：设置页按
+// display(owner, key) = i18n_list[(owner, key)] ?? key 解析，文案本体在
+// image_saver.cpp 的 kLangTables 里（两边的 key 拼写必须严格一致）。
+//
 // 返回码约定（include/plugin_api.h 的 ShotConfigurableV1）：get 返回 >= 0 是值长度
 // （不含 NUL），负数只表示 key 不认识或参数非法；set 返回 0 = 已生效。
 
@@ -34,12 +38,24 @@ const char kDefaultFilename[] = "shot_%Y%m%d_%H%M%S";
 constexpr int kMinQuality = 1;
 constexpr int kMaxQuality = 100;
 
+// 文案 key：命名规范 config.<配置 key>.label / .tooltip，写成常量是为了让 kConfig
+// 一眼能扫出"这里放的是 key 而不是中文"。ENUM 候选值 png/jpeg 本身是可读的技术值，
+// 本期不额外提供选项文案（设置页直接显示技术值）。
+const char kLabelDirectory[] = "config.directory.label";
+const char kTooltipDirectory[] = "config.directory.tooltip";
+const char kLabelFormat[] = "config.format.label";
+const char kTooltipFormat[] = "config.format.tooltip";
+const char kLabelQuality[] = "config.quality.label";
+const char kTooltipQuality[] = "config.quality.tooltip";
+const char kLabelFilename[] = "config.filename.label";
+const char kTooltipFilename[] = "config.filename.tooltip";
+
 const ShotConfigDesc kConfig[] = {
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_PATH,
         .key           = kKeyDirectory,
-        .label         = "保存目录",
+        .label         = kLabelDirectory,
         .default_value = kDefaultDirectory,
         // PATH 借 options 声明对话框类型（document/SETTINGS.md 的 kind 表）：
         // 保存目录必须选目录，否则默认值为空时设置页会弹成"选文件"。
@@ -47,43 +63,43 @@ const ShotConfigDesc kConfig[] = {
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "留空使用系统图片目录（Windows: %USERPROFILE%\\Pictures）",
+        .tooltip       = kTooltipDirectory,
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_ENUM,
         .key           = kKeyFormat,
-        .label         = "保存格式",
+        .label         = kLabelFormat,
         .default_value = kDefaultFormat,
         .options       = "png|jpeg",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "PNG 无损；JPEG 有损、文件更小（质量见下一项）",
+        .tooltip       = kTooltipFormat,
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_INT,
         .key           = kKeyQuality,
-        .label         = "JPEG 质量",
+        .label         = kLabelQuality,
         .default_value = kDefaultQuality,
         .options       = nullptr,
         .min           = static_cast<double>(kMinQuality),
         .max           = static_cast<double>(kMaxQuality),
         .step          = 1.0,
-        .tooltip       = "1 = 最小文件，100 = 最好画质；PNG 忽略此项",
+        .tooltip       = kTooltipQuality,
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_STRING,
         .key           = kKeyFilename,
-        .label         = "文件名模板",
+        .label         = kLabelFilename,
         .default_value = kDefaultFilename,
         .options       = nullptr,
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "不含扩展名；支持 %Y %m %d %H %M %S，如 shot_%Y%m%d_%H%M%S",
+        .tooltip       = kTooltipFilename,
     },
 };
 

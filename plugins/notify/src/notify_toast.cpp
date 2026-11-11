@@ -30,7 +30,8 @@ NotifyToast::~NotifyToast() {
     stop();  // Impl 在这里才是完整类型，所以构造/析构必须写在本文件里
 }
 
-bool NotifyToast::start(const ShotHostServices* host, NotifyConfig* config) {
+bool NotifyToast::start(const ShotHostServices* host, NotifyConfig* config,
+                        const shot::I18n* i18n) {
     if (!m_impl) {
         return false;
     }
@@ -50,6 +51,7 @@ bool NotifyToast::start(const ShotHostServices* host, NotifyConfig* config) {
     }
     m_impl->host = host;
     m_impl->config = config;
+    m_impl->i18n = i18n;
 
     shot::EventBus bus(host);
     if (!bus.available()) {
@@ -132,6 +134,7 @@ void NotifyToast::stop() {
     {
         std::lock_guard<std::mutex> lock(m_impl->mutex);
         m_impl->hwnd = nullptr;
+        m_impl->i18n = nullptr;
         std::queue<QueuedEvent>().swap(m_impl->queue);
     }
 }

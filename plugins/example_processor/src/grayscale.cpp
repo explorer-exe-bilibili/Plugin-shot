@@ -5,11 +5,16 @@
 //   strength 0..100: 0 = 原图，100 = 完全灰度
 //
 // 只在 channels == 4（BGRA8）时生效，A 通道原样保留。
+//
+// 配置项的 label/tooltip 写的是语言表 key（文案本体在本包共用的
+// plugin_entry.cpp kLangTables 里）：设置页按 display(owner, key) 解析，ENUM 的
+// 存储值 luma / average 属于技术值，保持不翻译。
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <memory>
 #include <new>
 
 #include "processors.hpp"
@@ -20,6 +25,13 @@ namespace {
 const char kKeyMode[] = "mode";
 const char kKeyStrength[] = "strength";
 
+// 文案 key：必须与 plugin_entry.cpp 的 kLangTables 完全一致；拼错时设置页会
+// 原样显示 key，表现为"配置项标题变成 config.xxx.label"。
+const char kLabelMode[] = "config.mode.label";
+const char kTooltipMode[] = "config.mode.tooltip";
+const char kLabelStrength[] = "config.strength.label";
+const char kTooltipStrength[] = "config.strength.tooltip";
+
 constexpr int kBlueWeight = 29;    // 0.114 * 256
 constexpr int kGreenWeight = 150;  // 0.587 * 256
 constexpr int kRedWeight = 77;     // 0.299 * 256
@@ -27,6 +39,9 @@ constexpr int kRedWeight = 77;     // 0.299 * 256
 struct GrayscaleState {
     bool use_luma = true;
     int strength = 100;  // 0..100
+    // create() 拿不到宿主服务表：I18n 由 create_instance 在拿到 host 后调
+    // grayscale_start() 构造；destroy 里先 reset（析构会退订 lists.changed）再释放状态。
+    std::unique_ptr<shot::I18n> i18n;
 };
 
 const ShotConfigDesc kConfig[] = {
@@ -34,27 +49,44 @@ const ShotConfigDesc kConfig[] = {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_ENUM,
         .key           = kKeyMode,
-        .label         = "mode",
+        .label         = kLabelMode,
         .default_value = "luma",
         .options       = "luma|average",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "灰度算法",
+        .tooltip       = kTooltipMode,
     },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_INT,
         .key           = kKeyStrength,
-        .label         = "strength",
+        .label         = kLabelStrength,
         .default_value = "100",
         .options       = nullptr,
         .min           = 0.0,
         .max           = 100.0,
         .step          = 1.0,
-        .tooltip       = "0 = 原图，100 = 完全灰度",
+        .tooltip       = kTooltipStrength,
     },
 };
+
+/**
+ * @brief 拿到宿主服务表后初始化多语言（create_instance 调，create() 拿不到 host）。
+ *
+ * @param[in] self 插件状态（GrayscaleState*）。
+ * @param[in] host 宿主服务表；老宿主上可能为 nullptr。
+ * @return true = 语言表已发布；false = 状态为空或语言表全部非法（宿主记 WARN 后继续）。
+ */
+bool grayscale_start(void* self, const ShotHostServices* host) {
+    auto* state = static_cast<GrayscaleState*>(self);
+    if (state == nullptr) {
+        return false;
+    }
+    // owner 用插件身份证（kGrayscale.id），宿主按它校验 lists.add、并在卸载时按它清理贡献。
+    state->i18n = std::make_unique<shot::I18n>(host, kGrayscale.id);
+    return load_language_tables(*state->i18n);
+}
 
 std::int32_t grayscale_process(void* self, ShotImage* image) {
     if (image == nullptr || image->data == nullptr || image->channels != 4) {
@@ -151,7 +183,16 @@ std::int32_t grayscale_set_config(void* self, const char* key, const char* value
 
 void* grayscale_create() { return new (std::nothrow) GrayscaleState(); }
 
-void grayscale_destroy(void* self) { delete static_cast<GrayscaleState*>(self); }
+void grayscale_destroy(void* self) {
+    auto* state = static_cast<GrayscaleState*>(self);
+    if (state == nullptr) {
+        return;
+    }
+    // 先退订 lists.changed 再释放状态：宿主之后可能卸载本 DLL，
+    // 留着订阅会回调已释放代码。
+    state->i18n.reset();
+    delete state;
+}
 
 const ShotImageProcessorV1 kImageOps = SHOT_OPS(ShotImageProcessorV1, .process = &grayscale_process);
 
@@ -176,6 +217,7 @@ const PluginEntry kGrayscale = {
     &grayscale_create,
     &grayscale_destroy,
     kIfaces,
+    &grayscale_start,
 };
 
 }  // namespace example_processor
