@@ -50,7 +50,7 @@ current main line.
 | Region capture (`capture.request` with a valid `region`: the host grabs the full screen and crops it in physical virtual-desktop pixels, clamped; `plugins/region_selector` selection overlay; the no-region selection-trigger request is ignored by the pipeline and never captured; Windows only) | ✅ working (`document/CAPTURE.md` §3.1) |
 | Generic plugin type `PluginType::Generic` (only `shot.configurable` + subscriptions in `create`; loaded only when metadata declares it) | ✅ working (`document/SETTINGS.md` §3.3) |
 | Host event bus `shot.host.event_bus` (topic publish / subscribe) | ✅ working (`document/EVENT_BUS.md`) |
-| Generic list service `shot.host.plugin_lists` (JSON snapshot per list id: `config_list` / `tray_command_list`) | ✅ working (`document/LISTS.md`) |
+| Generic list service `shot.host.plugin_lists` (JSON snapshot per list id: `config_list` / `tray_command_list` / `i18n_source_list` / `i18n_list`) | ✅ working (`document/LISTS.md`) |
 | List event protocol `lists.*` (`add` / `remove` / `update` / `commit` / `updated` / `changed`, event-driven writes) | ✅ working (`document/LISTS.md`) |
 | Host plugin registry `shot.host.plugin_registry` (enable/disable, hot unload) | ✅ working (`document/SETTINGS.md`) |
 | Runtime provider `shot.lib_provider` (`PluginType::Lib`) | ✅ working (`plugins/opencv_provider` brings OpenCV into the process) |
@@ -65,12 +65,13 @@ current main line.
 | Settings-window DPI (dual-screen 150%+100%: live rescale while dragging across monitors, geometry clamped to the target screen's DPI, non-accumulating; other DPI mixes / 3+ screens unverified) | ✅ working (`document/SETTINGS.md` §6.1) |
 | Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--help` | ✅ working |
 | GitHub Actions cross-platform CI (Linux/macOS/Windows matrix + vcpkg cache + presets + `--help` smoke) | workflow ready; Actions blocked by the account's GitHub billing lock (Linux verified locally under WSL, see Platform) |
-| Host settings (`core` pseudo-plugin: log level / console / file log) | ✅ working |
+| Host settings (`core` pseudo-plugin: UI language / log level / console / file log) | ✅ working |
 | Plugin metadata appended to the DLL tail (`metadata.json`, CMake only) | ✅ working (the host reads it before loading: prefilter + dependency topological sort) |
 | Build-time metadata validation (unique ids / registered interfaces / abi matches the header / dependency syntax) | ✅ working (`cmake/ValidatePluginMeta.cmake`) |
 | Plugin-level dependencies (`requires` / `provides` with version ranges, `core` = the host) | ✅ working (`document/METADATA.md`) |
 | Dependency-driven load order (topological sort; an unsatisfied plugin is skipped on its own) | ✅ working |
 | Shared plugin build rules (`shot_add_plugin()`) | ✅ working (host and offline SDK share one module) |
+| i18n / multilingual UI (`core/language` = `auto|zh-CN|zh-TW|en-US`; plugins contribute `i18n_source_list`, the host projects a read-only `i18n_list`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; zh-CN and en-US translated, RTL and CJK fallback fonts not done) |
 | Offline plugin SDK export (`export_sdk` target) | ✅ working |
 
 > The binary name comes from `PROJECT_NAME` in `CMakeLists.txt` (currently `Plugin-shot`):
@@ -120,6 +121,7 @@ current main line.
 │   ├── LISTS.md              # generic lists + event-driven design: list id registry, lists.* protocol, refresh timing (Chinese)
 │   ├── CAPTURE.md            # capture pipeline: worker thread, region capture, capture.* events and --capture (Chinese)
 │   ├── EVENT_BUS.md          # host event bus: topics, threading, lifetime (Chinese)
+│   ├── I18N.md               # i18n protocol: language registry, the two i18n lists, fallback chain, limits (Chinese)
 │   └── METADATA.md           # metadata.json fields, authority rules, what stays out (Chinese)
 ├── cmake/
 │   ├── ShotPlugin.cmake        # shot_add_plugin(): shared plugin build rules
@@ -127,7 +129,7 @@ current main line.
 │   ├── prune_output_dir.cmake  # prunes output dirs (no pdb/ilk/exp/lib)
 │   └── ...                     # runtime dependency layout, SDK export, pre-link kill
 ├── tools/
-│   └── verify/                 # on-device verification: build wrapper with a build lock + capture/settings/hotkey/clipboard e2e
+│   └── verify/                 # on-device verification: build wrapper with a build lock + capture/settings/hotkey/clipboard/i18n e2e
 └── sdk/                    # offline SDK produced by export_sdk (not committed, see .gitignore)
 ```
 

@@ -63,7 +63,7 @@
 | `lists.update` | 消费方（设置页）→ 宿主 | JSON：`{"list":"config_list","tag":"...","changes":[{"owner","id","value"}]}`；仅 `config_list`，见 `document/LISTS.md` §3.3 |
 | `lists.commit` | 消费方（设置页）→ 宿主 | JSON：`{"list":"config_list","tag":"..."}`；仅 `config_list`，落盘，见 `document/LISTS.md` §3.4 |
 | `lists.updated` | 宿主 → 所有 | JSON：`{"list":"config_list","tag":"...","results":[{"owner","id","ok","reason"}],"error"?}`；写值/提交结果，失败也回，见 `document/LISTS.md` §3.5 |
-| `lists.changed` | 宿主 → 所有 | JSON：`{"list":"<list id>"}`；列表内容变化的唯一通知，同轮合并、每 list 一条，见 `document/LISTS.md` §3.6 |
+| `lists.changed` | 宿主 → 所有 | JSON：`{"list":"<list id>"}`；列表内容变化的唯一通知（`config_list` / `tray_command_list` / `i18n_list`），同轮合并、每 list 一条；i18n 不新增事件主题，见 `document/LISTS.md` §3.6 |
 | `app.quit` | 任意 → 宿主 | 空；宿主收到后退出主循环 |
 
 **匹配规则**：精确匹配；`"capture.*"` 匹配该前缀下所有主题；`"*"` 匹配全部。

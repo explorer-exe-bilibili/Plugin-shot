@@ -150,6 +150,38 @@ function Find-Window([string]$ClassName, [string]$TitleLike, [int]$TimeoutSecond
     return [IntPtr]::Zero
 }
 
+# 设置窗口标题随界面语言变化（"Plugin-shot 设置" / "Plugin-shot Settings"），
+# 语言无关的脚本用这个函数找窗口；只匹配 GLFW 窗口类，避免抓到别的窗口。
+function Find-SettingsWindow([int]$TimeoutSeconds = 20) {
+    return Find-WindowByTitles "GLFW30" @("*设置*", "*Settings*") $TimeoutSeconds
+}
+
+# 按窗口类 + 多个标题通配符查找；任一标题命中即返回。语义与 Find-Window 相同。
+function Find-WindowByTitles([string]$ClassName, [string[]]$TitlePatterns, [int]$TimeoutSeconds = 20) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $script:foundWindow = [IntPtr]::Zero
+        [DshVerifyWindow]::EnumWindows({
+            param($hwnd, $lparam)
+            $cls = New-Object System.Text.StringBuilder 256
+            [DshVerifyWindow]::GetClassNameW($hwnd, $cls, 256) | Out-Null
+            if ($cls.ToString() -ne $ClassName) { return $true }
+            $title = New-Object System.Text.StringBuilder 256
+            [DshVerifyWindow]::GetWindowTextW($hwnd, $title, 256) | Out-Null
+            foreach ($pattern in $TitlePatterns) {
+                if ($title.ToString() -like $pattern) {
+                    $script:foundWindow = $hwnd
+                    break
+                }
+            }
+            return $true
+        }, [IntPtr]::Zero) | Out-Null
+        if ($script:foundWindow -ne [IntPtr]::Zero) { return $script:foundWindow }
+        Start-Sleep -Milliseconds 250
+    }
+    return [IntPtr]::Zero
+}
+
 function Focus-Window([IntPtr]$Window) {
     if ($Window -eq [IntPtr]::Zero) { return }
     [DshVerifyWindow]::ShowWindow($Window, 5) | Out-Null
@@ -289,6 +321,32 @@ function Get-ConfigValue([string]$Key) {
         if ($item.name -eq $Key) { return $item.value }
     }
     return "<missing>"
+}
+
+# 写一个配置项（只改 config.json；调用前必须 Stop-Host，改完再启动宿主读取）。
+# 保持 version/configItems 结构；缺文件时建最小骨架。其它已有项原样保留。
+function Set-ConfigValue([string]$Key, [string]$Value) {
+    $doc = $null
+    if (Test-Path $script:ConfigPath) {
+        $doc = Get-Content $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    if ($null -eq $doc) {
+        $doc = [pscustomobject]@{ version = "0.1.0"; configItems = @() }
+    }
+    if ($null -eq $doc.configItems) {
+        $doc | Add-Member -NotePropertyName configItems -NotePropertyValue @() -Force
+    }
+    $found = $false
+    foreach ($item in $doc.configItems) {
+        if ($item.name -eq $Key) {
+            $item.value = $Value
+            $found = $true
+        }
+    }
+    if (-not $found) {
+        $doc.configItems += [pscustomobject]@{ name = $Key; value = $Value }
+    }
+    ($doc | ConvertTo-Json -Depth 8) | Set-Content $script:ConfigPath -Encoding UTF8
 }
 
 # 保存插件的输出目录（配置为空 = 系统图片目录）。

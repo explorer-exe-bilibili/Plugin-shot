@@ -5,7 +5,7 @@
 > `STYLE.md` 管"代码长什么样"，`AGENTS.md` 管"怎么干活、怎么验收、别踩哪些坑"。
 >
 > 上一任负责人（AI）的上下文快满了，这份是交接。当前基线：`main` 分支、
-> 契约 **ABI 2.0**、10 个插件、7 份设计文档。
+> 契约 **ABI 2.0**、10 个插件、8 份设计文档。
 
 ---
 
@@ -243,9 +243,10 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 | --- | --- |
 | `smoke_capture.ps1` | `--capture`：exit 0、日志有 `Capture saved:`、落盘尺寸 = 物理虚拟桌面 |
 | `smoke_cursor_capture.ps1` | 抓屏合成鼠标光标：光标两个位置各截一张，比对对应区域像素差异且尺寸 = 物理虚拟桌面 |
-| `smoke_settings.ps1` | `--settings`：设置窗口出现、能截到画面、日志有"设置窗口已显示"、无 error |
+| `smoke_settings.ps1` | `--settings`：设置窗口出现、能截到画面、日志有"设置窗口已显示"、无 error（标题匹配语言无关） |
 | `e2e_hotkey_capture.ps1` | 常驻 + 配置里的截屏热键 → 采集落盘（hotkey + 流水线 + 保存） |
 | `e2e_clipboard.ps1` | 截图后系统剪贴板里有一张图（CF_DIB） |
+| `smoke_settings_i18n.ps1` | 多语言：`core/language=en-US` / `zh-CN` 两次启动设置页，标题/截图/日志锚点（`界面语言 = <tag>`），备份恢复 config |
 
 运行方式（**必须带 `-ExecutionPolicy Bypass`**，原因见 §7 第 15 条）：
 

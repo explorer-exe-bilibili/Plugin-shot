@@ -16,7 +16,7 @@ Backup-Config
 $process = Start-Host @("--settings") -WarmupSeconds 6
 Check "宿主进程仍在运行" (-not $process.HasExited)
 
-$window = Find-Window "GLFW30" "*设置*" 20
+$window = Find-SettingsWindow 20
 Check "找到设置窗口（GLFW30）" ($window -ne [IntPtr]::Zero) ([string]$window)
 if ($window -ne [IntPtr]::Zero) {
     Focus-Window $window

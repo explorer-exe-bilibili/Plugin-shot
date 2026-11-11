@@ -44,7 +44,7 @@
 | 区域截图（`capture.request` 带合法 `region`，宿主抓整屏后按物理虚拟桌面像素裁剪、越界夹取；`plugins/region_selector` 框选覆盖层；无 region 的框选触发请求由流水线忽略、不采集；仅 Windows） | ✅ 可用（`document/CAPTURE.md` §3.1） |
 | 通用插件类型 `PluginType::Generic`（只声明 `shot.configurable` + `create` 里订阅事件；有 metadata 才兜底加载） | ✅ 可用（`document/SETTINGS.md` §3.3） |
 | 宿主事件总线 `shot.host.event_bus`（主题发布 / 订阅） | ✅ 可用（`document/EVENT_BUS.md`） |
-| 通用列表服务 `shot.host.plugin_lists`（按 list id 返回 JSON 快照：`config_list` / `tray_command_list`） | ✅ 可用（`document/LISTS.md`） |
+| 通用列表服务 `shot.host.plugin_lists`（按 list id 返回 JSON 快照：`config_list` / `tray_command_list` / `i18n_source_list` / `i18n_list`） | ✅ 可用（`document/LISTS.md`） |
 | 列表事件协议 `lists.*`（`add` / `remove` / `update` / `commit` / `updated` / `changed`，事件驱动写值） | ✅ 可用（`document/LISTS.md`） |
 | 宿主插件注册表 `shot.host.plugin_registry`（启停 / 热卸载） | ✅ 可用（`document/SETTINGS.md`） |
 | 运行库提供者 `shot.lib_provider`（`PluginType::Lib`） | ✅ 可用（`plugins/opencv_provider` 把 OpenCV 带进进程） |
@@ -59,12 +59,13 @@
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
 | 命令行 `--capture`（工作线程 + 退出前派发一轮事件）/ `--settings` / `--help` | ✅ 可用 |
 | GitHub Actions 跨平台 CI（Linux/macOS/Windows 矩阵 + vcpkg 缓存 + preset 构建 + `--help` 冒烟） | workflow 已就绪；Actions 因账号 billing 锁定暂无法启动（Linux 本地 WSL 实测通过，见「平台」） |
-| 宿主自身设置（`core` 伪插件：日志级别 / 控制台 / 文件日志） | ✅ 可用 |
+| 宿主自身设置（`core` 伪插件：界面语言 / 日志级别 / 控制台 / 文件日志） | ✅ 可用 |
 | 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主加载前读取：预筛 + 依赖拓扑排序） |
 | 元数据构建期校验（id 唯一 / interfaces 已注册 / abi 与头一致 / 依赖语法） | ✅ 可用（`cmake/ValidatePluginMeta.cmake`） |
 | 插件级依赖声明（`requires` / `provides`，带版本区间，`core` 为宿主） | ✅ 可用（`document/METADATA.md`） |
 | 依赖驱动加载顺序（拓扑排序，不满足只跳过该插件） | ✅ 可用 |
 | 插件工程公共构建规则（`shot_add_plugin()`） | ✅ 可用（宿主与离线 SDK 共用） |
+| 多语言 i18n（`core/language` = `auto|zh-CN|zh-TW|en-US`；`i18n_source_list` 插件贡献 + 宿主只读快照 `i18n_list`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；zh-CN / en-US 已翻译，RTL 与日韩字体未做） |
 | 离线插件 SDK 导出（`export_sdk` 目标） | ✅ 可用 |
 
 > 产物名取自 `CMakeLists.txt` 的 `PROJECT_NAME`（当前 `Plugin-shot`）：宿主叫 `Plugin-shot.exe`，
@@ -113,6 +114,7 @@
 │   ├── LISTS.md              # 通用列表与事件驱动：list id 登记、lists.* 协议与刷新时机
 │   ├── CAPTURE.md            # 采集流水线：工作线程、区域截图、capture.* 事件与 --capture
 │   ├── EVENT_BUS.md          # 宿主事件总线：主题约定、线程模型、生命周期
+│   ├── I18N.md               # 多语言协议：语言注册表、两个 i18n 列表、回退链、限制
 │   └── METADATA.md           # metadata.json 的字段定义、权威规则与不写什么
 ├── cmake/
 │   ├── ShotPlugin.cmake        # shot_add_plugin()：插件工程公共构建规则
@@ -120,7 +122,7 @@
 │   ├── prune_output_dir.cmake  # 产物目录剪枝（不留 pdb/ilk/exp/lib/基础依赖 DLL）
 │   └── ...                     # 运行时依赖布局、SDK 导出、链接前杀进程
 ├── tools/
-│   └── verify/                 # 真机验证：带构建锁的 build 包装 + capture/settings/热键/剪贴板 e2e
+│   └── verify/                 # 真机验证：带构建锁的 build 包装 + capture/settings/热键/剪贴板/多语言 e2e
 └── sdk/                    # export_sdk 生成的离线 SDK（不入库，见 .gitignore）
 ```
 

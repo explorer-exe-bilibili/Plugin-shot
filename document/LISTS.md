@@ -17,7 +17,8 @@ ABI 1.x 的配置目录是"一种数据配一个宿主服务"的写法。插件�
 - **写** = `lists.add` / `lists.remove` / `lists.update` / `lists.commit` 事件。事件只在宿主
   main 线程分发处理，所以写路径天然单线程，不需要跨线程写接口。
 - **变化通知** = `lists.changed`（宿主 → 所有，负载只有 list id）。同一轮里的多次变化合并成
-  一条，由 `HostRuntime::tick` 统一 flush。
+  一条，由 `HostRuntime::tick` 统一 flush。i18n 也只复用这条通知，不新增事件主题
+  （`document/I18N.md`）。
 
 由此得到三条**长期约定**：
 
@@ -111,8 +112,8 @@ nlohmann::json items = nlohmann::json::parse(text, nullptr, false);
 - `list` / `owner` 必须是非空字符串，否则整条事件丢弃；
 - `owner` **必须等于发布插件自己的 id**（约定，见 §7）；宿主只校验"这个 id 当前有已加载实例"，
   不是已加载插件就丢弃。`owner` 保留给宿主自己（`"core"`），插件不得使用；
-- `config_list` 是宿主生成的列表，**不能 add**（写值走 `lists.update`）；宿主另有一道
-  `generated` 双保险，即使绕过校验也不会产生第二份真相；
+- 宿主生成的列表（`config_list` / `i18n_list`）**不能 add/remove**（`config_list`
+  写值走 `lists.update`）；宿主对任意 `generated` 列表都拒绝写入口，另有一道双保险；
 - `items` 必须是数组；数组里每个元素必须是 JSON 对象且带**非空字符串 `id`**，否则跳过该条，
   其余条目照常接受；
 - 同 `(list, owner, id)` 再 add = **upsert**：只更新内容与 `order`，不新增条目；
@@ -135,7 +136,8 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 - `ids` 省略、`null` 或空数组 = 移除该 owner 在这个列表里的**全部**条目；非空数组 = 只移除
   列出的 id（非字符串项被忽略）；
 - 列表本来就不存在 = **幂等空操作**，不报错；
-- `config_list` 不能 remove；`owner = "core"` 不能 remove（宿主预置项插件删不掉）；
+- 宿主生成的列表（`config_list` / `i18n_list`）不能 remove；`owner = "core"` 不能 remove
+  （宿主预置项插件删不掉）；
 - `owner` 不是已加载插件就丢弃；
 - 只有真的删掉了条目（`removed > 0`）才标记 `lists.changed`。
 
@@ -220,7 +222,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | --- | --- |
 | `init` 之后（或第一次显示窗口） | 读一次需要的列表，建立初始模型 |
 | `settings.open` | 设置页打开：重读 `config_list`（并保留未应用的本地修改） |
-| `lists.changed` 且 `list` 与本消费方相关 | 重读该列表，重建模型 |
+| `lists.changed` 且 `list` 与本消费方相关 | 重读该列表，重建模型（`i18n_list` 变化 = 语言变了：设置页/托盘刷新显示文本） |
 | `config.applied` | 一批配置已落盘：结束等待、可重算派生状态 |
 | `plugins.changed` | 已加载集合变了，`config_list` 可能变：整表重读 |
 | 用户点「应用」 | 按 §3.3 / §3.4 发 `lists.update` / `lists.commit`，等结果事件 |
@@ -242,6 +244,8 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | --- | --- | --- | --- | --- |
 | `config_list` | 宿主生成（只读投影） | 宿主从 `core` + 所有 `shot.configurable` 实例生成；插件写值走 `lists.update`、落盘走 `lists.commit` | 设置页 | §5.1 |
 | `tray_command_list` | 宿主预置 core 四项 + 插件贡献 | 宿主预置 core；插件 `lists.add` / `lists.remove` | 托盘 | §5.2 |
+| `i18n_source_list` | 插件贡献 | 插件在 `create()`/`init()` 里 `lists.add` 语言表（helper 拼好）；宿主只读、生成 `i18n_list` | 宿主 | §5.3 |
+| `i18n_list` | 宿主生成（只读快照） | 宿主按当前语言把 core 文案 + `i18n_source_list` 投影；插件不能 add/remove | 设置页 / 托盘 / 插件 helper | §5.4 |
 
 ### 5.1 `config_list`
 
@@ -253,13 +257,13 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | `owner` | string | 提供者 id：宿主自己是 `"core"`，插件是它的插件 id（如 `example.invert`） |
 | `owner_name` | string | 提供者显示名（`core` 是"宿主"） |
 | `id` | string | 配置键（`ShotConfigDesc::key`），在同一 owner 内唯一；存盘键是 `owner/id` |
-| `label` | string | 界面显示名；插件没给时宿主用 key 兜底 |
+| `label` | string | 界面显示名，可以是**字面量或文本 key**；插件没给时宿主用 key 兜底。消费方按 `display(owner,label) ?? label` 用 `i18n_list` 解析（`document/I18N.md` §2.3） |
 | `kind` | number | `SHOT_CONFIG_KIND_*`（1=Bool / 2=Int / 3=Float / 4=String / 5=Enum / 6=Color / 7=Path） |
 | `value` | string | 当前值（一律字符串；读不出来时给空串并记 WARN） |
 | `default` | string | 默认值；没有时为 `""` |
 | `options` | string | 由设置页解释的交互提示：ENUM 是候选列表 `"low\|mid\|high"`；PATH 用 `"directory"` / `"file"` 声明对话框类型；STRING 用 `"hotkey"` 声明"按组合键录入"控件；其它 kind 为 `""`（语义见本节末尾） |
 | `min` / `max` / `step` | number | INT / FLOAT 的取值范围与步长；其它 kind 忽略 |
-| `tooltip` | string | 悬停提示；没有时为 `""` |
+| `tooltip` | string | 悬停提示，同样允许是字面量或文本 key；没有时为 `""`，解析规则同 `label` |
 
 - 顺序：**`core` 最前，然后按插件加载顺序**；同一提供者内按 `get_config_desc` 的声明顺序。
 - 只包含**当前已加载**的实例：插件被禁用/卸载后条目消失（值仍留在 `config.json` 里），
@@ -268,6 +272,9 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 - `options` 的字符串语义**由设置页解释**（宿主只原样透传）：ENUM 是候选列表，PATH 是
   对话框类型，STRING 的 `"hotkey"` 是"按组合键录入"控件。给 `options` 新增一种语义必须
   同步 `document/SETTINGS.md` §6 的控件映射表，否则它就成了没有文档的私有协议。
+- ENUM 的候选值是**技术值**（如 `auto` / `debug` / `png`），显示名统一按
+  `display(owner, 候选值)` 解析：core 已注册语言与日志级别的原生显示名；插件也可以给
+  候选值贡献文案（key 就是候选值本身）。解析不到时显示技术值，不影响写值。
 
 ### 5.2 `tray_command_list`
 
@@ -276,12 +283,16 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 
 ```json
 [
-  {"id":"capture.request","label":"截屏","event":"capture.request","data":"","order":10,"separator":false},
-  {"id":"region.capture","label":"区域截屏","event":"capture.request","data":{"mode":"region"},"order":15,"separator":false},
-  {"id":"settings.open","label":"打开设置","event":"settings.open","data":"","order":20,"separator":false},
-  {"id":"app.quit","label":"退出","event":"app.quit","data":"","order":100,"separator":false}
+  {"id":"capture.request","label":"capture.request","event":"capture.request","data":"","order":10,"separator":false},
+  {"id":"region.capture","label":"region.capture","event":"capture.request","data":{"mode":"region"},"order":15,"separator":false},
+  {"id":"settings.open","label":"settings.open","event":"settings.open","data":"","order":20,"separator":false},
+  {"id":"app.quit","label":"app.quit","event":"app.quit","data":"","order":100,"separator":false}
 ]
 ```
+
+core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
+`display("core", label)` 用 `i18n_list` 解析成「截屏 / 区域截屏 / 打开设置 / 退出」
+或英文。插件贡献的 `label` 同样允许 key 或字面量；托盘不认识 key 时原样显示。
 
 `region.capture` 的 `data` 是 **JSON 对象** `{"mode":"region"}`（不是字符串）：托盘把
 `data` 原样透传，点击后所有订阅者收到的事件负载就是这段 JSON 文本。`capture.request`
@@ -295,7 +306,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | 字段 | 类型 | 必填 | 含义 |
 | --- | --- | --- | --- |
 | `id` | string | ✅ | 稳定标识；upsert 键的一半，发布后不要改 |
-| `label` | string | 命令必填 | 菜单文字（UTF-8）；为空时退回 `id`，两者都空则跳过该条目 |
+| `label` | string | 命令必填 | 菜单文字：**字面量或文本 key**（UTF-8），托盘按 `display(owner,label)` 解析；为空时退回 `id`，两者都空则跳过该条目 |
 | `event` | string | 命令必填 | 点击时发布的事件主题；`separator:true` 的条目可空 |
 | `data` | 任意 JSON | 可选 | 事件负载：字符串原样发布，对象/数组/数字序列化成 JSON 文本发布，缺省/`null` = 空负载 |
 | `order` | number | 可选 | 升序排序键，缺省 `1000`；同 order 保持宿主顺序 |
@@ -305,7 +316,55 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 托盘不认识、也不直接调用任何插件：点击任何条目都只把条目声明的 `event`（负载 `data`）
 发到事件总线。`event` 对应的主题有没有人听，条目本身不保证。
 
-### 5.3 登记一个新列表的规则
+### 5.3 `i18n_source_list`
+
+插件贡献的多语言文本（`document/I18N.md`）。插件侧通常不手写 JSON，而是用
+`shot::I18n::loadTables()` 把作者写的"每语言一张 JSON 表"归一成条目后 `lists.add`：
+
+```json
+{"list":"i18n_source_list","owner":"hotkey.main","items":[
+  {"id":"config.capture_hotkey.label","texts":{"zh-CN":"截屏热键","en-US":"Capture hotkey"}}
+]}
+```
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `id` | string | ✅ | 文案 key，同一 owner 内唯一；通常等于消费方要解析的字段值 |
+| `texts` | object | ✅ | `语言标签 -> 文本`；标签按 BCP-47（大小写不敏感、`_` 视同 `-`） |
+
+- 写：插件 `lists.add` / `lists.remove`；owner 必须是已加载插件 id；宿主按
+  `(owner,id)` upsert；插件卸载时宿主 `removeOwner` 清掉贡献。
+- 读：宿主只读，用来生成 `i18n_list`；插件**不要**直接读本列表做解析。
+- 刷新：`lists.add`/`lists.remove` 真的改动内容、插件启停/卸载后，宿主在下一次
+  `tick` 重建 `i18n_list` 并 `lists.changed`。
+- 负载上限 64 KiB：helper 已按估算大小分块，手写时也要分块。
+
+### 5.4 `i18n_list`
+
+宿主生成的当前语言快照，**只读**（插件不能 add/remove，写入口直接拒绝并 WARN）：
+
+```json
+[
+  {"id":"@meta","language":"en-US","fallback":"en-US"},
+  {"owner":"core","id":"settings.open","text":"Open settings"},
+  {"owner":"hotkey.main","id":"config.capture_hotkey.label","text":"Capture hotkey"}
+]
+```
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | string | 条目 id；首条固定 `@meta` |
+| `owner` | string | 贡献方：`core` 或插件 id（`@meta` 无 owner） |
+| `text` | string | 当前语言文本 |
+| `language` / `fallback` | string | 仅 `@meta`：当前语言与回退链下一站 |
+
+- 解析规则：`display(owner, textOrKey) = i18n_list[(owner,textOrKey)] ?? textOrKey`，
+  设置页/托盘/插件 helper 都按这一条实现。
+- 生成时机：启动加载完成、`core/language` 变化、`i18n_source_list` 贡献变化、
+  插件启停/卸载清理；全部在 `HostRuntime::tick` 里重建完再统一 flush。
+- 消费方刷新：订阅 `lists.changed`，`list == "i18n_list"` 时刷新；不新增事件主题。
+
+### 5.5 登记一个新列表的规则
 
 1. 选 list id：全小写 + 下划线，建议以 `_list` 结尾；宿主内置列表用 `<名词>_list`
    （如 `config_list`），第三方列表加作者前缀避免与将来的内置列表撞名

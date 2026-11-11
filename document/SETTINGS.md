@@ -51,11 +51,14 @@ UI 线程里发生（见 `document/EVENT_BUS.md` 的线程模型）。
 | 读 | `shot.host.plugin_lists::list_json("config_list")`（两段式）；插件侧用 `shot::PluginLists::json()`。任意线程可读，拿到的是副本 |
 | 写值 | 发布 `lists.update`：`{"list":"config_list","tag":"...","changes":[{"owner","id","value"}]}`；宿主逐项 `set_config` 并回 `lists.updated` |
 | 落盘 | 发布 `lists.commit`：`{"list":"config_list","tag":"..."}`；成功回既有 `config.applied`（空负载），失败回 `lists.updated` + `error` |
-| 刷新 | 订阅 `lists.changed`（`list == "config_list"` 时）、`config.applied`、`plugins.changed`；打开设置页时再读一次 |
+| 刷新 | 订阅 `lists.changed`（`config_list` 重建、或 `i18n_list` 语言快照变化时）、`config.applied`、`plugins.changed`；打开设置页时再读一次 |
 
 规则：
 
-- **存盘键是 `<owner>/<id>`**（如 `example.invert/keep_alpha`、`core/logging.level`），值一律
+- **`label` / `tooltip` / ENUM 候选的显示名是 key 或字面量**：设置页统一按
+  `display(owner, 值) = i18n_list[(owner,值)] ?? 值` 解析（`document/I18N.md` §2.3）。
+  插件把 label 写成中文/英文原文也能工作，只是不随语言切换。
+- **存盘键是 `<owner>/<id>`**（如 `example.invert/keep_alpha`、`core/language`），值一律
   字符串，落在宿主配置 JSON 的 `configItems` 里。插件只负责 `get_config` / `set_config`，
   **落盘归宿主**——插件不需要也不应该自己写配置文件。
 - **启动时序**：`core::Config::init()` → 扫描并加载插件 → 宿主回灌已存值（没有已存值就用
@@ -239,15 +242,19 @@ begin/rollback，失败时以内存里的最新值为准（宿主下一轮 tick 
 
 ## 5. 宿主自己的设置（`core` 伪插件）
 
-宿主内部实现一个 `ShotConfigurableV1`（id `core`，name"宿主"，version 来自 `version.h`），
-`config_list` 里 `owner = "core"` 的条目排在最前。于是"宿主设置"不是特例：和插件配置一样
-被枚举、编辑、写值、提交，设置页只写一套渲染逻辑。
+宿主内部实现一个 `ShotConfigurableV1`（id `core`，显示名是 key `core.owner_name`，
+version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排在最前。于是
+"宿主设置"不是特例：和插件配置一样被枚举、编辑、写值、提交，设置页只写一套渲染逻辑。
 
 | key | kind | 默认 | 副作用 |
 | --- | --- | --- | --- |
+| `language` | ENUM `auto\|zh-CN\|zh-TW\|en-US` | `auto` | 立即切换界面语言；下一次 `HostRuntime::tick` 重建 `i18n_list` 并通知消费方（`document/I18N.md` §3） |
 | `logging.level` | ENUM `debug\|info\|warn\|error` | `info` | 立即 `spdlog::set_level`（host / plugin 两个 logger） |
 | `debug.console` | BOOL | `1` | 立即开/关控制台 sink（文件日志不受影响） |
 | `logging.file` | BOOL | `1` | 立即开/关文件 sink（`<dataPath>/logs/host.log`） |
+
+`language` 的 ENUM 候选与原生显示名都来自语言注册表（`src/hostI18n.cpp`），
+不是硬编码在配置表里；加语种只加注册表行。
 
 **宿主设置里刻意没有 `output.*`**：输出目录/格式/质量/剪贴板这类"保存"相关的配置不在宿主
 设置里，由实现保存/剪贴板能力的插件用 `shot.configurable` 自己声明
