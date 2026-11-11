@@ -404,26 +404,32 @@ void SettingsPanel::Impl::refreshConfig() {
 
     if (host == nullptr) {
         configUnavailable = true;
-        configUnavailableReason = "宿主服务表为空：当前读不到配置目录。";
+        configUnavailableReason =
+            tr("settings_ui.config_no_host", "宿主服务表为空：当前读不到配置目录。");
         return;
     }
     // 列表服务是 ABI 2.0 才有的：老宿主没有它时安静降级，只剩插件管理。
     shot::PluginLists lists(host);
     if (!lists.available()) {
         configUnavailable = true;
-        configUnavailableReason = "宿主不支持列表服务（shot.host.plugin_lists）："
-                                  "当前宿主不能读插件配置，设置页只剩插件管理。";
+        configUnavailableReason =
+            tr("settings_ui.config_no_list_service",
+               "宿主不支持列表服务（shot.host.plugin_lists）："
+               "当前宿主不能读插件配置，设置页只剩插件管理。");
         return;
     }
     const std::string text = lists.json("config_list");
     if (text.empty()) {
         configUnavailable = true;
-        configUnavailableReason = "宿主暂未提供 config_list：当前没有可读的配置项。";
+        configUnavailableReason =
+            tr("settings_ui.config_no_list", "宿主暂未提供 config_list：当前没有可读的配置项。");
         return;
     }
     if (!parseConfigListJson(text, sections)) {
         configUnavailable = true;
-        configUnavailableReason = "config_list 不是合法的 JSON 数组：配置区暂时不可用（详见宿主日志）。";
+        configUnavailableReason =
+            tr("settings_ui.config_bad_json",
+               "config_list 不是合法的 JSON 数组：配置区暂时不可用（详见宿主日志）。");
         shot::Logger(host).warn("settings_ui：config_list 解析失败（不是合法 JSON 数组）");
         return;
     }

@@ -18,6 +18,8 @@ namespace tray {
 namespace {
 
 // 配置键：全小写 + 下划线，发布后不能改名（它是存盘标识，见 ABI_POLICY.md §5）。
+// label / tooltip 是文案 key：设置页按 display(owner,key) 用 i18n_list 解析，
+// 所以这里只写 key、不写中文（document/I18N.md）。
 const char kKeyIcon[] = "icon";
 
 const ShotConfigDesc kConfig[] = {
@@ -25,14 +27,14 @@ const ShotConfigDesc kConfig[] = {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_PATH,
         .key           = kKeyIcon,
-        .label         = "托盘图标",
+        .label         = "config.icon.label",
         .default_value = "",
         // PATH 的对话框类型：设置页据此弹"选择文件"，而不是按当前值猜目录/文件。
         .options       = "file",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
-        .tooltip       = "选择 .ico 文件自定义托盘图标；留空使用宿主应用图标",
+        .tooltip       = "config.icon.tooltip",
     },
 };
 

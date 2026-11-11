@@ -16,6 +16,10 @@
 
 #include "plugin_api.h"
 
+namespace shot {
+class I18n;
+}  // namespace shot
+
 namespace tray {
 
 /** @brief tray_command_list 的列表 id（宿主登记的只读 JSON 列表，见 document/LISTS.md）。 */
@@ -34,7 +38,8 @@ inline constexpr char kTrayCommandListId[] = "tray_command_list";
  */
 struct TrayCommandItem {
     std::string id;         /**< 稳定标识：宿主按 (owner,id) upsert；托盘只用它写日志。 */
-    std::string label;      /**< 菜单文字；separator 条目可为空。 */
+    std::string owner;      /**< 贡献方 id；label 是文案 key 时用它查 i18n_list，separator 可为空。 */
+    std::string label;      /**< 菜单文字或文案 key；separator 条目可为空。 */
     std::string event;      /**< 点击时发布的事件主题；separator 条目可为空。 */
     std::string data;       /**< 事件负载（字符串）；空串 = 无负载。 */
     int order = 1000;       /**< 排序键，升序；缺省按宿主约定 1000（排在最后）。 */
@@ -60,18 +65,21 @@ public:
     /**
      * @brief 从宿主列表服务读取 tray_command_list 快照，重建模型。
      * @param[in] host 宿主服务表；nullptr 或列表服务不可用时按"列表不可用"装本地兜底。
+     * @param[in] i18n 多语言解析器；nullptr 时 label 原样保留（老宿主/降级路径）。
      * @return 模型里的条目数（兜底时固定为 1）。
      * @note 两段式只读快照由 shot::PluginLists 封装，任意线程可调；返回的是本地副本。
      */
-    std::size_t load(const ShotHostServices* host);
+    std::size_t load(const ShotHostServices* host, const shot::I18n* i18n);
 
     /**
      * @brief 用一段 JSON 文本重建模型（生产路径由 load 调用；离线自测也走这里）。
      * @param[in] host     宿主服务表，只用于写日志；可为 nullptr（日志静默丢弃）。
      * @param[in] jsonText 与 list_json("tray_command_list") 同形状的 UTF-8 JSON 文本。
+     * @param[in] i18n     多语言解析器；nullptr 时 label 原样保留。
      * @return 模型里的条目数（兜底时固定为 1）。
      */
-    std::size_t loadFromJson(const ShotHostServices* host, const std::string& jsonText);
+    std::size_t loadFromJson(const ShotHostServices* host, const std::string& jsonText,
+                             const shot::I18n* i18n);
 
     /** @brief 当前条目：已按 order 升序，separator 条目也在其中。 */
     const std::vector<TrayCommandItem>& items() const noexcept { return m_items; }
@@ -85,7 +93,8 @@ private:
      * @param[in] host   宿主服务表，只用于写日志；可为 nullptr。
      * @param[in] reason 走兜底的原因（中文短语），写进 WARN 日志方便排障。
      */
-    void installFallback(const ShotHostServices* host, const char* reason);
+    void installFallback(const ShotHostServices* host, const char* reason,
+                         const shot::I18n* i18n);
 
     std::vector<TrayCommandItem> m_items; /**< 已解析、已排序的条目。 */
     bool m_fallback = false;              /**< m_items 来自本地兜底而不是宿主列表。 */

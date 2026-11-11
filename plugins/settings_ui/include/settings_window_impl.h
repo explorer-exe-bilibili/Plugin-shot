@@ -19,6 +19,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -31,6 +32,12 @@
 #include "settings_window.h"
 
 struct GLFWwindow;  // 前置声明：内部头不拖 GLFW/GL 头文件
+
+namespace shot {
+
+class I18n;  // 前置声明：多语言对象只在 .cpp 里构造/销毁，内部头不拖 nlohmann-json
+
+}  // namespace shot
 
 namespace settings_ui {
 
@@ -83,6 +90,10 @@ struct SettingsWindow::Impl {
     const ShotHostServices* host = nullptr;
     bool busSubscribed = false;
 
+    // 多语言解析器：start() 里构造并发布语言表，stop() 在窗口线程 join 之后销毁。
+    // 用 unique_ptr 是因为 shot::I18n 不可拷贝/移动；前置声明让本头不拖 nlohmann-json。
+    std::unique_ptr<shot::I18n> i18n;
+
     SettingsPanel panel;
 
     // ---- 以下只在 UI 线程（GLFW 的主线程）上访问 ----
@@ -100,6 +111,7 @@ struct SettingsWindow::Impl {
     bool dpiScaleDirty = false; // content scale 回调置位；下一帧 / 下次显示时重建
 
     // ---- 生命周期与事件循环（settings_window.cpp） ----
+    ~Impl();  // 定义在 .cpp：unique_ptr<shot::I18n> 析构需要完整的 shot::I18n
     void run();
     void messageLoop();
     void drainEvents();
@@ -108,6 +120,15 @@ struct SettingsWindow::Impl {
     void requestQuit();  // 任意线程可调：置退出标记并唤醒事件循环
     void showWindow();
     void hideWindow();
+
+    /**
+     * @brief 按当前界面语言刷新窗口标题（任务栏/窗口管理器中可见）。
+     *
+     * 窗口创建发生在宿主 init 阶段，那时 i18n_list 还没生成（语言表也刚发布），
+     * 所以标题不能只在 createWindow 里算一次；打开窗口前和收到 lists.changed 后各刷新
+     * 一次，语言切换后标题才不会停留在启动时的语言。
+     */
+    void updateWindowTitle();
     bool initGlfw();
     bool createWindow();
     void shutdownGlfw();
@@ -115,6 +136,23 @@ struct SettingsWindow::Impl {
     static void onGlfwError(int errorCode, const char* description);
     static void onKey(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void onContentScale(GLFWwindow* window, float xScale, float yScale);
+
+    // ---- 多语言（settings_window.cpp 定义；对象为空时安静降级） ----
+    /**
+     * @brief 查本插件自己的文案。
+     * @param[in] key      文案 key（本插件用 settings_ui.*）。
+     * @param[in] fallback 查不到时的中文原文；i18n 为空（老宿主 / 构造失败）时直接返回它。
+     * @return 当前语言文本；指向语言表节点，跨语言切换后失效。
+     */
+    const char* tr(const char* key, const char* fallback) const;
+
+    /**
+     * @brief 把数据列表里的"文本 key 或字面量"解析成当前语言文本。
+     * @param[in] owner     贡献方 id（core 或插件 id）。
+     * @param[in] textOrKey key 或字面量。
+     * @return 当前语言文本；i18n 为空或查不到时原样返回 textOrKey。
+     */
+    const char* resolve(const char* owner, const char* textOrKey) const;
 
     // ---- ImGui / 字体与 DPI / 每帧渲染（settings_graphics.cpp） ----
     bool initImGui();

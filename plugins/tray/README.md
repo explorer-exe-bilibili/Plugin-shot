@@ -14,11 +14,16 @@ core 四项（截屏 / 区域截屏 / 打开设置 / 退出），插件运行期
 **通知全部移交独立插件**：托盘**不弹任何气泡**、也不订阅任何 `capture.*` 结果事件；
 截屏成功/失败提示都由 `plugins/notify` 负责（避免同一件事被两个插件各弹一次）。
 
+**多语言**：菜单 `label`、配置项 label/tooltip、兜底「退出」与图标悬停提示都跟随界面语言
+（`shot::I18n`；`document/I18N.md`）。菜单条目里的 `label` 允许是"字面量或文本 key"，
+托盘统一按 `display(owner,label) = i18n_list[(owner,label)] ?? label` 解析：老插件直接写
+中文菜单名照常显示（零破坏），新插件写命令 id 作为 key 就能自动翻译。
+
 ## 1. 目录
 
 ```
 plugins/tray/
-├── CMakeLists.txt                  # shot_add_plugin + nlohmann-json / user32 / shell32 依赖
+├── CMakeLists.txt                  # shot_add_plugin + nlohmann-json(i18n) / user32 / shell32 依赖
 ├── metadata.json                   # 插件清单（id tray.main，接口 shot.ui_provider + shot.configurable）
 ├── README.md
 ├── include/
@@ -102,7 +107,7 @@ cmake --build build
 | 字段 | 类型 | 必填 | 含义 |
 | --- | --- | --- | --- |
 | `id` | string | 可选 | 稳定标识：宿主按 `(owner, id)` upsert；托盘只用它写日志 |
-| `label` | string | 命令必填 | 菜单文字（UTF-8）；为空时退回 `id`，两者都空则跳过该条目 |
+| `label` | string | 命令必填 | 菜单文字：**字面量或文本 key**（UTF-8），托盘按 `display(owner,label)` 用 `i18n_list` 解析；为空时退回 `id`，两者都空则跳过该条目 |
 | `event` | string | 命令必填 | 点击时发布的事件主题；`separator` 条目可空 |
 | `data` | 任意 JSON | 可选 | 事件负载：字符串按原字节发布；对象/数组/数字等按 JSON 文本原样发布 |
 | `order` | number | 可选 | 升序排序键，缺省 `1000`（排在所有显式 order 之后）；同 order 保持宿主顺序 |
@@ -118,10 +123,10 @@ cmake --build build
 
 ```json
 [
-  {"id":"capture.request","label":"截屏","event":"capture.request","data":"","order":10,"separator":false},
-  {"id":"region.capture","label":"区域截屏","event":"capture.request","data":{"mode":"region"},"order":15,"separator":false},
-  {"id":"settings.open","label":"打开设置","event":"settings.open","data":"","order":20,"separator":false},
-  {"id":"app.quit","label":"退出","event":"app.quit","data":"","order":100,"separator":false}
+  {"id":"capture.request","label":"capture.request","event":"capture.request","data":"","order":10,"separator":false},
+  {"id":"region.capture","label":"region.capture","event":"capture.request","data":{"mode":"region"},"order":15,"separator":false},
+  {"id":"settings.open","label":"settings.open","event":"settings.open","data":"","order":20,"separator":false},
+  {"id":"app.quit","label":"app.quit","event":"app.quit","data":"","order":100,"separator":false}
 ]
 ```
 
@@ -138,7 +143,12 @@ cmake --build build
 
 **兜底**：列表服务不可用（旧宿主 / 列表还没注册）、列表为空、JSON 非法时，菜单只保留
 本地兜底的一项「退出」（发布 `app.quit`），并记一条 WARN。用户永远有办法从托盘退出
-宿主，不会因为列表数据坏了就没有退出入口。
+宿主，不会因为列表数据坏了就没有退出入口。兜底项文字与图标悬停提示同样按当前语言生成
+（`shot::I18n::tr`，老宿主退回中文）。
+
+**语言刷新**：`i18n_list` 变化同样走 `lists.changed`（负载 `{"list":"i18n_list"}`）；
+托盘本来就会因 `lists.changed` 重建菜单，所以不需要额外订阅——重建时
+`TrayMenu::load` 会用 `shot::I18n::resolve` 取新语言文本。
 
 ## 5. 图标
 

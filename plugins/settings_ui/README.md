@@ -229,6 +229,25 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | 录入中窗口被关闭 / 宿主退出 | 窗口层取消录入并补发 `hotkey.resume`，热键不会停在暂停状态 |
 | 旧配置里是非法热键字符串 | 原样显示、不做校验；重新录入一次即被规范化覆盖（解析仍归 hotkey 插件，注册时 warn 跳过） |
 
+### 6.1 多语言（i18n）
+
+设置页自身文案与从别处读来的 label/tooltip 都跟随界面语言（`document/I18N.md`）：
+
+- 语言表：`src/settings_window.cpp` 的 `kLangTables[]`（zh-CN / en-US 各一张 JSON，75 个
+  `settings_ui.*` key，`@meta` 必填）；`SettingsWindow::start()` 里
+  `shot::I18n(host, "settings_ui.main")` + `loadTables()`，并把只读解析器经
+  `SettingsPanel::setI18n()` 借给面板；`stop()` 在 UI 线程 join 之后先
+  `setI18n(nullptr)` 再销毁解析器。
+- 自己文案用 `Impl::tr(key, 中文兜底)`；窗口标题 `Plugin-shot 设置 / Plugin-shot Settings`
+  也按当前语言生成。
+- 配置区按**谁渲染谁解析**：`config_list` 的 `label`/`tooltip` 与 ENUM 候选值都可能
+  是文本 key，渲染时 `Impl::resolve(owner, 值)` → `i18n_list[(owner,值)] ?? 值`；
+  存储值仍是技术值（`auto` / `debug` / `png`），只有显示名变。
+- 刷新：`lists.changed` 同时接受 `config_list` 与 `i18n_list`——语言快照变化时重读配置区，
+  `resolve` 在下一次渲染自然取到新语言文本。
+- 降级：`i18n` 为空（老宿主 / 未启动）时 `tr` 返回中文原文、`resolve` 原样返回 key，
+  界面行为与改造前一致。**日志不翻译**（e2e 按中文日志断言）。
+
 ## 7. 刻意不做的事
 
 | 不做 | 原因 |

@@ -57,6 +57,13 @@ void SettingsPanel::refresh(const ShotHostServices* host) {
     m_impl->refresh();
 }
 
+void SettingsPanel::setI18n(const shot::I18n* i18n) {
+    if (!m_impl) {
+        return;
+    }
+    m_impl->i18n = i18n;
+}
+
 void SettingsPanel::render() {
     if (!m_impl) {
         return;

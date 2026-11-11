@@ -94,8 +94,8 @@ struct QueuedEvent {
 /** @brief 托盘图标 id：与 hWnd 一起定位一个图标（同一个窗口可以有多个托盘图标）。 */
 inline constexpr UINT kTrayIconId = 1;
 
-/** @brief 托盘图标的鼠标悬停提示（NOTIFYICONDATAW::szTip，最长 127 字符）。 */
-inline constexpr wchar_t kTooltip[] = L"Plugin-shot 托盘";
+/** @brief 托盘图标鼠标悬停提示的默认值（i18n 不可用时的中文兜底）。 */
+inline constexpr char kTooltipFallback[] = "Plugin-shot 托盘";
 
 /**
  * @brief TrayIcon 的实现：窗口句柄、线程握手、事件队列、托盘图标状态都在这里。
@@ -118,6 +118,8 @@ struct TrayIcon::Impl {
 
     const ShotHostServices* host = nullptr; /**< 宿主服务表；生命周期覆盖插件实例。 */
     TrayConfig* config = nullptr;           /**< 开关配置；只在托盘线程上读。 */
+    shot::I18n* i18n = nullptr;             /**< 多语言解析器；生命周期由 TrayState 持有。 */
+    std::wstring tooltip;                   /**< 托盘悬停提示（按当前语言生成，图标刷新时用）。 */
     bool busSubscribed = false;             /**< 是否成功订阅过事件总线。 */
 
     // ---- 托盘图标（只在托盘线程上访问；来源与刷新见 tray_icon_icon.cpp） ----

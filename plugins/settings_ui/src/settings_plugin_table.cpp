@@ -14,26 +14,34 @@
 namespace settings_ui {
 
 void SettingsPanel::Impl::renderPluginTable() {
-    if (!ImGui::CollapsingHeader("插件管理（勾选后要点「应用」才生效）",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (!ImGui::CollapsingHeader(
+            tr("settings_ui.plugin_table_title", "插件管理（勾选后要点「应用」才生效）"),
+            ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
     if (registryUnavailable) {
-        ImGui::TextDisabled("宿主未提供插件注册表服务（shot.host.plugin_registry）："
-                            "当前宿主不能管理插件启停。");
+        ImGui::TextDisabled(
+            "%s", tr("settings_ui.registry_unavailable",
+                     "宿主未提供插件注册表服务（shot.host.plugin_registry）："
+                     "当前宿主不能管理插件启停。"));
         return;
     }
     if (plugins.empty()) {
-        ImGui::TextDisabled("没有已安装的插件。");
+        ImGui::TextDisabled("%s", tr("settings_ui.no_plugins", "没有已安装的插件。"));
         return;
     }
     const ImGuiTableFlags tableFlags =
         ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg;
     if (ImGui::BeginTable("##plugins", 4, tableFlags)) {
-        ImGui::TableSetupColumn("启用", ImGuiTableColumnFlags_WidthFixed, 48.0f);
-        ImGui::TableSetupColumn("插件", ImGuiTableColumnFlags_WidthStretch, 2.2f);
-        ImGui::TableSetupColumn("版本", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-        ImGui::TableSetupColumn("状态", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+        // 固定列宽要同时放得下中文"启用"和英文"Enabled"（约 68px + padding）。
+        ImGui::TableSetupColumn(tr("settings_ui.column_enabled", "启用"),
+                                ImGuiTableColumnFlags_WidthFixed, 78.0f);
+        ImGui::TableSetupColumn(tr("settings_ui.column_plugin", "插件"),
+                                ImGuiTableColumnFlags_WidthStretch, 2.2f);
+        ImGui::TableSetupColumn(tr("settings_ui.column_version", "版本"),
+                                ImGuiTableColumnFlags_WidthFixed, 90.0f);
+        ImGui::TableSetupColumn(tr("settings_ui.column_status", "状态"),
+                                ImGuiTableColumnFlags_WidthStretch, 2.0f);
         ImGui::TableHeadersRow();
         for (PluginRow& row : plugins) {
             renderPluginRow(row);
@@ -56,24 +64,29 @@ void SettingsPanel::Impl::renderPluginRow(PluginRow& row) {
         ImGui::Checkbox("##enabled", &checked);
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            ImGui::SetTooltip("入口插件不能禁用自己（禁用会连设置页一起卸载）");
+            ImGui::SetTooltip(
+                "%s", tr("settings_ui.entry_disabled_tooltip",
+                         "入口插件不能禁用自己（禁用会连设置页一起卸载）"));
         }
     } else if (ImGui::Checkbox("##enabled", &checked)) {
         row.enabledPending = checked;
     }
 
     ImGui::TableNextColumn();
-    const std::string label = (row.status.name.empty() || row.status.name == row.status.id)
-                                  ? row.status.id
-                                  : (row.status.name + "（" + row.status.id + "）");
+    const std::string label =
+        (row.status.name.empty() || row.status.name == row.status.id)
+            ? row.status.id
+            : formatText(tr("settings_ui.name_with_id", "%s（%s）"), row.status.name.c_str(),
+                         row.status.id.c_str());
     ImGui::TextUnformatted(label.c_str());
     if (isEntry) {
         ImGui::SameLine();
-        ImGui::TextDisabled("（入口）");
+        ImGui::TextDisabled("%s", tr("settings_ui.entry_marker", "（入口）"));
     }
     if (row.enabledPending != row.enabledNow) {
         ImGui::SameLine();
-        ImGui::TextColored(kToneWarning, "（待应用）");
+        ImGui::TextColored(kToneWarning, "%s",
+                           tr("settings_ui.pending_marker", "（待应用）"));
     }
 
     ImGui::TableNextColumn();
@@ -81,18 +94,18 @@ void SettingsPanel::Impl::renderPluginRow(PluginRow& row) {
 
     ImGui::TableNextColumn();
     ImVec4 stateColor = kToneNormal;
-    const char* stateText = "未知状态";
+    const char* stateText = tr("settings_ui.state_unknown", "未知状态");
     switch (row.status.state) {
         case SHOT_PLUGIN_STATE_LOADED:
-            stateText = "已加载";
+            stateText = tr("settings_ui.state_loaded", "已加载");
             stateColor = kToneSuccess;
             break;
         case SHOT_PLUGIN_STATE_DISABLED:
-            stateText = "已禁用";
+            stateText = tr("settings_ui.state_disabled", "已禁用");
             stateColor = kToneWarning;
             break;
         case SHOT_PLUGIN_STATE_FAILED:
-            stateText = "加载失败";
+            stateText = tr("settings_ui.state_failed", "加载失败");
             stateColor = kToneError;
             break;
         default:

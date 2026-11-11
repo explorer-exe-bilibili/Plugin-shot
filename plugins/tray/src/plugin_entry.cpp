@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <new>
 
 #include "plugin_api.h"
@@ -138,10 +139,27 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void) { return &kModule; }
 namespace tray {
 namespace {
 
+// 托盘自己的用户可见文案（配置项 label/tooltip、兜底退出、悬停提示）。
+// 每语言一张 JSON 表，@meta 必填；key 与 tray_config.cpp / tray_menu.cpp 里的
+// 引用一一对应。日志不在这里：日志一律中文（document/I18N.md）。
+const char* const kLangTables[] = {
+    R"json({"@meta":"zh-CN",)json"
+    R"json("config.icon.label":"托盘图标",)json"
+    R"json("config.icon.tooltip":"选择 .ico 文件自定义托盘图标；留空使用宿主应用图标",)json"
+    R"json("tray.fallback.quit":"退出",)json"
+    R"json("tray.tooltip":"Plugin-shot 托盘"})json",
+    R"json({"@meta":"en-US",)json"
+    R"json("config.icon.label":"Tray icon",)json"
+    R"json("config.icon.tooltip":"Pick an .ico file to customize the tray icon; leave empty to use the host icon",)json"
+    R"json("tray.fallback.quit":"Quit",)json"
+    R"json("tray.tooltip":"Plugin-shot tray"})json",
+};
+
 /** @brief 插件状态：一个托盘图标 + 一个配置项（生命周期覆盖整个插件实例）。 */
 struct TrayState {
-    TrayConfig config; /**< shot.configurable：icon。 */
-    TrayIcon icon;     /**< shot.ui_provider：托盘线程 + 图标。 */
+    TrayConfig config;                 /**< shot.configurable：icon。 */
+    TrayIcon icon;                     /**< shot.ui_provider：托盘线程 + 图标。 */
+    std::unique_ptr<shot::I18n> i18n;  /**< 多语言：语言表 + i18n_list 解析。 */
 };
 
 void* create_state() {
@@ -156,6 +174,7 @@ void destroy_state(void* self) {
         } catch (...) {
             // 析构路径也不能让异常越过 ABI 边界；继续释放内存。
         }
+        state->i18n.reset();  // 析构会自动退订 lists.changed
         delete state;
     }
 }
@@ -164,7 +183,12 @@ std::int32_t ui_init(void* self, const ShotHostServices* host) {
     // 异常绝不能越过 extern "C" 边界：start() 内部已兜住建线程，这里再兜一层。
     if (auto* state = static_cast<TrayState*>(state_of(self))) {
         try {
-            return state->icon.start(host, &state->config) ? 0 : 1;
+            // 先建 i18n 再起托盘线程：托盘线程重建菜单时会用 resolve 解析 label。
+            if (!state->i18n) {
+                state->i18n = std::make_unique<shot::I18n>(host, kTray.id);
+                state->i18n->loadTables(kLangTables, std::size(kLangTables));
+            }
+            return state->icon.start(host, &state->config, state->i18n.get()) ? 0 : 1;
         } catch (...) {
             return 1;
         }
@@ -177,6 +201,7 @@ std::int32_t ui_deinit(void* self) {
     if (auto* state = static_cast<TrayState*>(state_of(self))) {
         try {
             state->icon.stop();
+            state->i18n.reset();  // 托盘线程已停，再退订/释放 i18n
         } catch (...) {
             return 1;
         }

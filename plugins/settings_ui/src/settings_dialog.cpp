@@ -18,16 +18,37 @@
 
 #include <nfd.h>
 
+#include "shot_plugin_helpers.h"
+
 namespace settings_ui {
 namespace {
 
 bool g_initialized = false;  // UI 线程独占，不需要锁
 bool g_available = false;
-std::string g_initError;
+std::string g_initLibraryError;  // NFD_Init 失败时的库错误文本（不含本地化外壳）
 
-const nfdu8filteritem_t kFileFilters[] = {
-    { "所有文件 (*.*)", "*" },
-};
+/**
+ * @brief 把"对话框不可用"的完整提示按当前语言拼出来。
+ *
+ * 库错误文本本身是第三方的（可能是英文），只做外壳本地化：不同语言的语序不同，
+ * 所以拆成"不可用 / 冒号 / 原文 / 请直接输入路径"四段，由语言表决定各段文本。
+ *
+ * @param[in] i18n         多语言解析器；nullptr 时用中文原文。
+ * @param[in] libraryError 库给出的错误文本；可为空。
+ * @return 当前语言的完整提示。
+ */
+std::string dialogUnavailableText(const shot::I18n* i18n, const char* libraryError) {
+    const auto tr = [i18n](const char* key, const char* fallback) -> const char* {
+        return (i18n != nullptr) ? i18n->tr(key, fallback) : fallback;
+    };
+    std::string text = tr("settings_ui.dialog_unavailable", "文件对话框不可用");
+    if (libraryError != nullptr && libraryError[0] != '\0') {
+        text += tr("settings_ui.dialog_error_prefix", "：");
+        text += libraryError;
+    }
+    text += tr("settings_ui.dialog_error_suffix", "，请直接输入路径");
+    return text;
+}
 
 /**
  * @brief 懒初始化对话框库；只在第一次弹窗时调用。
@@ -36,7 +57,7 @@ const nfdu8filteritem_t kFileFilters[] = {
  */
 bool ensureFileDialogsInitialized(std::string& error) {
     if (g_initialized) {
-        error = g_available ? std::string() : g_initError;
+        error = g_available ? std::string() : g_initLibraryError;
         return g_available;
     }
     g_initialized = true;
@@ -46,12 +67,8 @@ bool ensureFileDialogsInitialized(std::string& error) {
     }
     g_available = false;
     const char* libraryError = NFD_GetError();
-    g_initError = "文件对话框不可用";
-    if (libraryError != nullptr && libraryError[0] != '\0') {
-        g_initError += std::string("：") + libraryError;
-    }
-    g_initError += "，请直接输入路径";
-    error = g_initError;
+    g_initLibraryError = (libraryError != nullptr) ? libraryError : "";
+    error = g_initLibraryError;
     return false;
 }
 
@@ -77,34 +94,56 @@ bool finishDialog(nfdresult_t result, nfdu8char_t* outPath, std::string& path,
     if (result == NFD_CANCEL) {
         return false;  // 用户取消不是错误：error 留空，调用方只忽略即可
     }
-    const char* libraryError = NFD_GetError();
-    error = "文件对话框不可用";
-    if (libraryError != nullptr && libraryError[0] != '\0') {
-        error += std::string("：") + libraryError;
-    }
-    error += "，请直接输入路径";
-    return false;
+    return false;  // 库错误的本地化外壳由调用方补（需要它的 i18n）
 }
 
 }  // namespace
 
-bool pickExistingFile(std::string& path, std::string& error) {
-    if (!ensureFileDialogsInitialized(error)) {
-        return false;
-    }
-    nfdu8char_t* outPath = nullptr;
-    const nfdresult_t result = NFD_OpenDialogU8(&outPath, kFileFilters,
-                                                static_cast<nfdfiltersize_t>(1), nullptr);
-    return finishDialog(result, outPath, path, error);
+std::string localizedDialogError(const shot::I18n* i18n, const std::string& libraryError) {
+    return dialogUnavailableText(i18n, libraryError.empty() ? nullptr : libraryError.c_str());
 }
 
-bool pickExistingFolder(std::string& path, std::string& error) {
-    if (!ensureFileDialogsInitialized(error)) {
+bool pickExistingFile(std::string& path, std::string& error, const shot::I18n* i18n) {
+    std::string libraryError;
+    if (!ensureFileDialogsInitialized(libraryError)) {
+        error = localizedDialogError(i18n, libraryError);
+        return false;
+    }
+    // 过滤器名字也是用户可见文案：按当前语言取（指针在三方调用期间一直有效）。
+    const nfdu8filteritem_t filters[] = {
+        { (i18n != nullptr) ? i18n->tr("settings_ui.dialog_all_files", "所有文件 (*.*)")
+                            : "所有文件 (*.*)",
+          "*" },
+    };
+    nfdu8char_t* outPath = nullptr;
+    const nfdresult_t result =
+        NFD_OpenDialogU8(&outPath, filters, static_cast<nfdfiltersize_t>(1), nullptr);
+    if (finishDialog(result, outPath, path, error)) {
+        return true;
+    }
+    if (!error.empty() || result == NFD_CANCEL) {
+        return false;  // 用户取消：不是错误，调用方只忽略
+    }
+    error = localizedDialogError(i18n, NFD_GetError() != nullptr ? NFD_GetError() : "");
+    return false;
+}
+
+bool pickExistingFolder(std::string& path, std::string& error, const shot::I18n* i18n) {
+    std::string libraryError;
+    if (!ensureFileDialogsInitialized(libraryError)) {
+        error = localizedDialogError(i18n, libraryError);
         return false;
     }
     nfdu8char_t* outPath = nullptr;
     const nfdresult_t result = NFD_PickFolderU8(&outPath, nullptr);
-    return finishDialog(result, outPath, path, error);
+    if (finishDialog(result, outPath, path, error)) {
+        return true;
+    }
+    if (!error.empty() || result == NFD_CANCEL) {
+        return false;
+    }
+    error = localizedDialogError(i18n, NFD_GetError() != nullptr ? NFD_GetError() : "");
+    return false;
 }
 
 void shutdownFileDialogs() {
@@ -113,7 +152,7 @@ void shutdownFileDialogs() {
     }
     g_initialized = false;
     g_available = false;
-    g_initError.clear();
+    g_initLibraryError.clear();
 }
 
 }  // namespace settings_ui

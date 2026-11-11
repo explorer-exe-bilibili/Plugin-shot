@@ -16,12 +16,14 @@
 
 #include "settings_window.h"
 
+#include <iterator>
 #include <string>
 #include <utility>
 
 #include <GLFW/glfw3.h>  // 跨平台窗口库（不是平台头）：只用于窗口生命周期与事件循环
 
 #include "imgui.h"
+#include "plugin_entry.h"
 #include "settings_dialog.h"
 #include "settings_window_impl.h"
 #include "shot_plugin_helpers.h"
@@ -29,7 +31,184 @@
 namespace settings_ui {
 namespace {
 
-constexpr char kWindowTitle[] = "Plugin-shot 设置";
+// 设置页自己的用户可见文案（日志不在这里：日志一律中文，document/I18N.md）。
+// 每语言一张 JSON 表、@meta 必填；key 与 tr("settings_ui.xxx", ...) 的引用一一对应。
+// 长行按 88 字符切成相邻 raw 字面量，编译期拼回一条合法 JSON。
+const char* const kLangTables[] = {
+    R"json({"@meta":"zh-CN",)json"
+    R"json("settings_ui.window_title":"设置",)json"
+    R"json("settings_ui.apply":"应用",)json"
+    R"json("settings_ui.cancel":"取消",)json"
+    R"json("settings_ui.restore_all_defaults":"恢复全部默认",)json"
+    R"json("settings_ui.pending_changes":"有未应用的修改",)json"
+    R"json("settings_ui.no_pending_changes":"没有未应用的修改",)json"
+    R"json("settings_ui.no_config_items":"宿主与插件都没有声明配置项。",)json"
+    R"json("settings_ui.section_removed":"插件已卸载：本节只剩最后一次读到的值，不能编辑。",)json"
+    R"json("settings_ui.section_empty":"该提供者没有声明任何配置项。",)json"
+    R"json("settings_ui.column_item":"配置项",)json"
+    R"json("settings_ui.column_value":"值",)json"
+    R"json("settings_ui.restore_default":"恢复默认",)json"
+    R"json("settings_ui.key_prefix":"键：",)json"
+    R"json("settings_ui.write_failed":"写入失败：%s",)json"
+    R"json("settings_ui.modified":"已修改",)json"
+    R"json("settings_ui.enum_no_options":"（枚举没有候选值）",)json"
+    R"json("settings_ui.browse":"浏览…",)json"
+    R"json("settings_ui.unsupported_kind":"不支持的配置类型（kind=%u）",)json"
+    R"json("settings_ui.name_with_id":"%s（%s）",)json"
+    R"json("settings_ui.config_no_host":"宿主服务表为空：当前读不到配置目录。",)json"
+    R"json("settings_ui.config_no_list_service":"宿主不支持列表服务（shot.host.plugin_lists）：当前宿主不能读插件配置，设置页只)json"
+    R"json(剩插件管理。",)json"
+    R"json("settings_ui.config_no_list":"宿主暂未提供 config_list：当前没有可读的配置项。",)json"
+    R"json("settings_ui.config_bad_json":"config_list 不是合法的 JSON 数组：配置区暂时不可用（详见宿主日志）。",)json"
+    R"json("settings_ui.host_unavailable_apply":"宿主服务不可用，无法应用",)json"
+    R"json("settings_ui.nothing_to_apply":"没有需要应用的修改",)json"
+    R"json("settings_ui.publish_update_failed":"发布 lists.update 失败：宿主事件总线不可用或队列已满",)json"
+    R"json("settings_ui.publish_commit_failed":"发布 lists.commit 失败：配置值已写入，但可能没有落盘",)json"
+    R"json("settings_ui.plugin_toggle_rejected":"宿主拒绝了这次启停请求",)json"
+    R"json("settings_ui.busy_writing":"应用中…（写入配置）",)json"
+    R"json("settings_ui.busy_saving":"应用中…（保存配置）",)json"
+    R"json("settings_ui.busy_plugins":"应用中…（等待宿主完成插件启停）",)json"
+    R"json("settings_ui.busy":"应用中…",)json"
+    R"json("settings_ui.apply_rejected":"应用完成，但有 %d 项配置和 %d 个插件启停被拒绝",)json"
+    R"json("settings_ui.apply_unconfirmed":"有 %d 项配置没有被宿主确认",)json"
+    R"json("settings_ui.save_failed":"配置保存失败（值可能已生效，但没有落盘）",)json"
+    R"json("settings_ui.applied":"已应用",)json"
+    R"json("settings_ui.save_failed_with_error":"保存配置失败：%s",)json"
+    R"json("settings_ui.write_config_failed":"写入配置失败：%s",)json"
+    R"json("settings_ui.value_rejected":"该值不被接受",)json"
+    R"json("settings_ui.plugin_error":"插件 %s：%s",)json"
+    R"json("settings_ui.plugin_change_rejected":"有插件启停被拒绝，原因见插件管理表",)json"
+    R"json("settings_ui.plugin_list_updated":"插件列表已更新",)json"
+    R"json("settings_ui.timeout_update":"等待 lists.updated 超时：宿主没有确认配置写入（修改仍保留，可重试）",)json"
+    R"json("settings_ui.timeout_applied":"等待 config.applied 超时：配置可能已生效，但落盘结果未知",)json"
+    R"json("settings_ui.timeout_plugins":"等待插件启停超时：宿主没有发来 plugins.changed",)json"
+    R"json("settings_ui.discarded":"已丢弃未应用的修改",)json"
+    R"json("settings_ui.defaults_restored":"已恢复默认值，点「应用」后写回",)json"
+    R"json("settings_ui.no_defaults":"没有可恢复默认值的配置项",)json"
+    R"json("settings_ui.hotkey_unset":"（未设置）",)json"
+    R"json("settings_ui.hotkey_record":"录入…",)json"
+    R"json("settings_ui.hotkey_waiting":"等待按键…",)json"
+    R"json("settings_ui.hotkey_press_new":"按下新的组合键",)json"
+    R"json("settings_ui.hotkey_hint":"Ctrl / Alt / Shift / Win + 字母、数字、F1-F12 或 PrintScreen",)json"
+    R"json("settings_ui.hotkey_cancel_hint":"Esc 取消；Backspace / Delete 清空（该动作不再有热键）",)json"
+    R"json("settings_ui.hotkey_current":"当前组合键：%s",)json"
+    R"json("settings_ui.hotkey_bare_hint":"提示：没有修饰键的热键会拦截正常输入",)json"
+    R"json("settings_ui.hotkey_unsupported":"不支持的按键：只支持 A-Z / 0-9 / F1-F12 / PrintScreen（可加 Ctrl/Al)json"
+    R"json(t/Shift/Win）",)json"
+    R"json("settings_ui.plugin_table_title":"插件管理（勾选后要点「应用」才生效）",)json"
+    R"json("settings_ui.registry_unavailable":"宿主未提供插件注册表服务（shot.host.plugin_registry）：当前宿主不能管理插件启停)json"
+    R"json(。",)json"
+    R"json("settings_ui.no_plugins":"没有已安装的插件。",)json"
+    R"json("settings_ui.column_enabled":"启用",)json"
+    R"json("settings_ui.column_plugin":"插件",)json"
+    R"json("settings_ui.column_version":"版本",)json"
+    R"json("settings_ui.column_status":"状态",)json"
+    R"json("settings_ui.entry_disabled_tooltip":"入口插件不能禁用自己（禁用会连设置页一起卸载）",)json"
+    R"json("settings_ui.entry_marker":"（入口）",)json"
+    R"json("settings_ui.pending_marker":"（待应用）",)json"
+    R"json("settings_ui.state_unknown":"未知状态",)json"
+    R"json("settings_ui.state_loaded":"已加载",)json"
+    R"json("settings_ui.state_disabled":"已禁用",)json"
+    R"json("settings_ui.state_failed":"加载失败",)json"
+    R"json("settings_ui.dialog_all_files":"所有文件 (*.*)",)json"
+    R"json("settings_ui.dialog_unavailable":"文件对话框不可用",)json"
+    R"json("settings_ui.dialog_error_prefix":"：",)json"
+    R"json("settings_ui.dialog_error_suffix":"，请直接输入路径"})json",
+    R"json({"@meta":"en-US",)json"
+    R"json("settings_ui.window_title":"Settings",)json"
+    R"json("settings_ui.apply":"Apply",)json"
+    R"json("settings_ui.cancel":"Cancel",)json"
+    R"json("settings_ui.restore_all_defaults":"Restore all defaults",)json"
+    R"json("settings_ui.pending_changes":"Unapplied changes",)json"
+    R"json("settings_ui.no_pending_changes":"No unapplied changes",)json"
+    R"json("settings_ui.no_config_items":"The host and plugins declare no config items.",)json"
+    R"json("settings_ui.section_removed":"Plugin unloaded: these are the last known values and cann)json"
+    R"json(ot be edited.",)json"
+    R"json("settings_ui.section_empty":"This provider declares no config items.",)json"
+    R"json("settings_ui.column_item":"Setting",)json"
+    R"json("settings_ui.column_value":"Value",)json"
+    R"json("settings_ui.restore_default":"Reset",)json"
+    R"json("settings_ui.key_prefix":"Key: ",)json"
+    R"json("settings_ui.write_failed":"Write failed: %s",)json"
+    R"json("settings_ui.modified":"Modified",)json"
+    R"json("settings_ui.enum_no_options":"(no enum choices)",)json"
+    R"json("settings_ui.browse":"Browse…",)json"
+    R"json("settings_ui.unsupported_kind":"Unsupported config kind (kind=%u)",)json"
+    R"json("settings_ui.name_with_id":"%s (%s)",)json"
+    R"json("settings_ui.config_no_host":"Host services are unavailable: cannot read the config cata)json"
+    R"json(log.",)json"
+    R"json("settings_ui.config_no_list_service":"The host has no list service (shot.host.plugin_lis)json"
+    R"json(ts): plugin settings are unavailable; only plugin management remains.",)json"
+    R"json("settings_ui.config_no_list":"The host has not provided config_list yet: no settings to )json"
+    R"json(show.",)json"
+    R"json("settings_ui.config_bad_json":"config_list is not a valid JSON array: settings are unava)json"
+    R"json(ilable for now (see the host log).",)json"
+    R"json("settings_ui.host_unavailable_apply":"Host services unavailable, cannot apply",)json"
+    R"json("settings_ui.nothing_to_apply":"Nothing to apply",)json"
+    R"json("settings_ui.publish_update_failed":"Failed to publish lists.update: event bus unavailab)json"
+    R"json(le or queue full",)json"
+    R"json("settings_ui.publish_commit_failed":"Failed to publish lists.commit: values were written)json"
+    R"json( but may not be persisted",)json"
+    R"json("settings_ui.plugin_toggle_rejected":"The host rejected this enable/disable request",)json"
+    R"json("settings_ui.busy_writing":"Applying… (writing config)",)json"
+    R"json("settings_ui.busy_saving":"Applying… (saving config)",)json"
+    R"json("settings_ui.busy_plugins":"Applying… (waiting for plugin changes)",)json"
+    R"json("settings_ui.busy":"Applying…",)json"
+    R"json("settings_ui.apply_rejected":"Applied, but %d settings and %d plugin changes were reject)json"
+    R"json(ed",)json"
+    R"json("settings_ui.apply_unconfirmed":"%d settings were not confirmed by the host",)json"
+    R"json("settings_ui.save_failed":"Saving failed (values may be applied but not persisted)",)json"
+    R"json("settings_ui.applied":"Applied",)json"
+    R"json("settings_ui.save_failed_with_error":"Failed to save config: %s",)json"
+    R"json("settings_ui.write_config_failed":"Failed to write config: %s",)json"
+    R"json("settings_ui.value_rejected":"This value was rejected",)json"
+    R"json("settings_ui.plugin_error":"Plugin %s: %s",)json"
+    R"json("settings_ui.plugin_change_rejected":"Some plugin changes were rejected; see the plugin )json"
+    R"json(table",)json"
+    R"json("settings_ui.plugin_list_updated":"Plugin list updated",)json"
+    R"json("settings_ui.timeout_update":"Timed out waiting for lists.updated: the host did not conf)json"
+    R"json(irm the write (changes kept, retry possible)",)json"
+    R"json("settings_ui.timeout_applied":"Timed out waiting for config.applied: settings may be app)json"
+    R"json(lied but persistence is unknown",)json"
+    R"json("settings_ui.timeout_plugins":"Timed out waiting for plugin changes: the host sent no pl)json"
+    R"json(ugins.changed",)json"
+    R"json("settings_ui.discarded":"Discarded unapplied changes",)json"
+    R"json("settings_ui.defaults_restored":"Defaults restored; click Apply to write them back",)json"
+    R"json("settings_ui.no_defaults":"No settings have defaults to restore",)json"
+    R"json("settings_ui.hotkey_unset":"(not set)",)json"
+    R"json("settings_ui.hotkey_record":"Record…",)json"
+    R"json("settings_ui.hotkey_waiting":"Waiting for a key…",)json"
+    R"json("settings_ui.hotkey_press_new":"Press the new shortcut",)json"
+    R"json("settings_ui.hotkey_hint":"Ctrl / Alt / Shift / Win + letter, digit, F1-F12 or PrintScre)json"
+    R"json(en",)json"
+    R"json("settings_ui.hotkey_cancel_hint":"Esc cancels; Backspace / Delete clears it (no shortcut)json"
+    R"json( for this action)",)json"
+    R"json("settings_ui.hotkey_current":"Current shortcut: %s",)json"
+    R"json("settings_ui.hotkey_bare_hint":"Note: a shortcut without modifiers will swallow normal i)json"
+    R"json(nput",)json"
+    R"json("settings_ui.hotkey_unsupported":"Unsupported key: only A-Z / 0-9 / F1-F12 / PrintScreen)json"
+    R"json( (optionally with Ctrl/Alt/Shift/Win)",)json"
+    R"json("settings_ui.plugin_table_title":"Plugins (changes apply after clicking Apply)",)json"
+    R"json("settings_ui.registry_unavailable":"The host has no plugin registry service (shot.host.p)json"
+    R"json(lugin_registry): plugins cannot be managed.",)json"
+    R"json("settings_ui.no_plugins":"No plugins installed.",)json"
+    R"json("settings_ui.column_enabled":"Enabled",)json"
+    R"json("settings_ui.column_plugin":"Plugin",)json"
+    R"json("settings_ui.column_version":"Version",)json"
+    R"json("settings_ui.column_status":"Status",)json"
+    R"json("settings_ui.entry_disabled_tooltip":"The entry plugin cannot disable itself (that would)json"
+    R"json( unload this window)",)json"
+    R"json("settings_ui.entry_marker":"(entry)",)json"
+    R"json("settings_ui.pending_marker":"(pending)",)json"
+    R"json("settings_ui.state_unknown":"Unknown",)json"
+    R"json("settings_ui.state_loaded":"Loaded",)json"
+    R"json("settings_ui.state_disabled":"Disabled",)json"
+    R"json("settings_ui.state_failed":"Load failed",)json"
+    R"json("settings_ui.dialog_all_files":"All files (*.*)",)json"
+    R"json("settings_ui.dialog_unavailable":"File dialog unavailable",)json"
+    R"json("settings_ui.dialog_error_prefix":": ",)json"
+    R"json("settings_ui.dialog_error_suffix":"; please type the path directly"})json"
+};
 
 constexpr char kTopicSettingsOpen[] = "settings.open";
 constexpr char kTopicConfigApplied[] = "config.applied";
@@ -131,7 +310,10 @@ bool SettingsWindow::Impl::createWindow() {
     // macOS 只提供 3.2+ core profile，且必须是 forward-compatible 的上下文。
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 #endif
-    window = glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight, kWindowTitle, nullptr,
+    // 标题是窗口管理器/任务栏可见文案：按当前语言生成；GLFW 会拷贝字符串。
+    const std::string title =
+        std::string("Plugin-shot ") + tr("settings_ui.window_title", "设置");
+    window = glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight, title.c_str(), nullptr,
                               nullptr);
     if (window == nullptr) {
         shot::Logger(host).error("[settings_ui] 创建 GLFW 窗口/OpenGL 上下文失败");
@@ -215,6 +397,8 @@ void SettingsWindow::Impl::drainEvents() {
             panel.onPluginsChanged(event.payload);
         } else if (event.name == kTopicListsChanged) {
             panel.onListsChanged(event.payload);
+            // i18n_list 变化 = 语言可能变了：标题也要跟着刷新（窗口可能正开着）。
+            updateWindowTitle();
         } else if (event.name == kTopicListsUpdated) {
             panel.onListsUpdated(event.payload);
         }
@@ -264,11 +448,22 @@ void SettingsWindow::Impl::requestQuit() {
     }
 }
 
+void SettingsWindow::Impl::updateWindowTitle() {
+    if (window == nullptr) {
+        return;
+    }
+    const std::string title =
+        std::string("Plugin-shot ") + tr("settings_ui.window_title", "设置");
+    glfwSetWindowTitle(window, title.c_str());
+}
+
 void SettingsWindow::Impl::showWindow() {
     if (window == nullptr || !imguiInitialized) {
         return;
     }
     if (!visible) {
+        // 创建窗口时 i18n_list 可能还没生成：显示前按当前语言重算一次标题。
+        updateWindowTitle();
         restoreGeometry();
         // 恢复几何可能把窗口搬到另一块显示器（150% → 100%）：按目标显示器的
         // content scale 重建 ImGui 样式/字号，再显示，第一帧就是对的缩放。
@@ -333,6 +528,17 @@ void SettingsWindow::Impl::onKey(GLFWwindow* glfwWindow, int key, int /*scancode
 // ---------------------------------------------------------------------------
 // 公共接口
 // ---------------------------------------------------------------------------
+SettingsWindow::Impl::~Impl() = default;
+
+const char* SettingsWindow::Impl::tr(const char* key, const char* fallback) const {
+    // i18n 为空（老宿主 / stop 之后）时保留中文原文，界面行为与改造前一致。
+    return (i18n != nullptr) ? i18n->tr(key, fallback) : fallback;
+}
+
+const char* SettingsWindow::Impl::resolve(const char* owner, const char* textOrKey) const {
+    return (i18n != nullptr) ? i18n->resolve(owner, textOrKey) : textOrKey;
+}
+
 SettingsWindow::SettingsWindow() : m_impl(std::make_unique<Impl>()) {}
 
 SettingsWindow::~SettingsWindow() {
@@ -359,6 +565,12 @@ bool SettingsWindow::start(const ShotHostServices* host) {
         m_impl->failed = false;
     }
     m_impl->host = host;
+
+    // 多语言：先构造并发布本插件的语言表，再把只读解析器借给面板。窗口线程只读它，
+    // 语言切换由宿主 i18n_list 变化驱动（消费方 resolve 时自动取新缓存）。
+    m_impl->i18n = std::make_unique<shot::I18n>(host, kSettingsUi.id);
+    m_impl->i18n->loadTables(kLangTables, std::size(kLangTables));
+    m_impl->panel.setI18n(m_impl->i18n.get());
 
     // 先订阅再起线程：订阅之后到达的 settings.open 不会漏；窗口还没就绪时事件先入队，
     // 事件循环启动后统一 drain。
@@ -435,6 +647,10 @@ void SettingsWindow::stop() {
     if (m_impl->thread.joinable()) {
         m_impl->thread.join();
     }
+    // 4. 窗口线程已经停下：先解除面板对解析器的引用，再销毁解析器（析构自动退订
+    //    lists.changed）。顺序反了会留下悬空指针。
+    m_impl->panel.setI18n(nullptr);
+    m_impl->i18n.reset();
     {
         std::lock_guard<std::mutex> lock(m_impl->mutex);
         m_impl->quitRequested = false;

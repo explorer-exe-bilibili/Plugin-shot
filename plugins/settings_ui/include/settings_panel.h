@@ -5,6 +5,12 @@
 
 #include "plugin_api.h"
 
+namespace shot {
+
+class I18n;  // 前置声明：设置页只借一个只读解析器，不拥有它
+
+}  // namespace shot
+
 namespace settings_ui {
 
 /**
@@ -48,6 +54,15 @@ public:
      * @param[in] host 宿主服务表；可为 nullptr（老宿主），此时模型置空并显示降级提示。
      */
     void refresh(const ShotHostServices* host);
+
+    /**
+     * @brief 绑定多语言解析器；生命周期由窗口层（SettingsWindow::Impl）持有。
+     *
+     * @param[in] i18n 只读解析器；可为 nullptr（老宿主 / 尚未启动），此时 tr() 返回
+     *                 中文原文、resolve() 原样返回 key，界面行为与改造前一致。
+     * @note 只在 UI 线程上调用；窗口层在销毁解析器之前必须先解除绑定。
+     */
+    void setI18n(const shot::I18n* i18n);
 
     /**
      * @brief 画一帧设置页：顶部操作条 + 一页滚动的配置节与插件管理表。

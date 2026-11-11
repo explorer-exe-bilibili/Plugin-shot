@@ -132,7 +132,7 @@ bool TrayIcon::Impl::addIcon(HWND wnd) {
     data.uCallbackMessage = trayCallbackMessage;
     data.hIcon = resolved.handle;
     // szTip 是定长缓冲；_TRUNCATE 保证超长时安全截断，不会写坏结构体。
-    wcsncpy_s(data.szTip, kTooltip, _TRUNCATE);
+    wcsncpy_s(data.szTip, tooltip.c_str(), _TRUNCATE);
     if (!Shell_NotifyIconW(NIM_ADD, &data)) {
         shot::Logger(host).error("[tray] Shell_NotifyIconW(NIM_ADD) 失败");
         if (resolved.owned) {

@@ -73,7 +73,7 @@ void TrayIcon::Impl::rebuildMenu() {
     bool built = false;
     try {
         // 1. 从宿主列表服务取最新快照。列表不可用时 TrayMenu 会装本地兜底「退出」。
-        freshModel.load(host);
+        freshModel.load(host, i18n);
         // 2. 把模型渲染成新菜单。
         UINT commandId = kMenuCommandBase;
         for (std::size_t index = 0; index < freshModel.items().size(); ++index) {

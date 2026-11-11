@@ -27,7 +27,7 @@ TrayIcon::~TrayIcon() {
     stop();  // Impl 在这里才是完整类型，所以构造/析构必须写在本文件里
 }
 
-bool TrayIcon::start(const ShotHostServices* host, TrayConfig* config) {
+bool TrayIcon::start(const ShotHostServices* host, TrayConfig* config, shot::I18n* i18n) {
     if (!m_impl) {
         return false;
     }
@@ -47,6 +47,11 @@ bool TrayIcon::start(const ShotHostServices* host, TrayConfig* config) {
     }
     m_impl->host = host;
     m_impl->config = config;
+    m_impl->i18n = i18n;
+    // 悬停提示是用户可见文案：按当前语言生成一次，图标 (重新) 添加时用。
+    const std::string tooltip =
+        (i18n != nullptr) ? i18n->tr("tray.tooltip", kTooltipFallback) : kTooltipFallback;
+    m_impl->tooltip = m_impl->toWide(tooltip);
 
     // 先订阅再起线程：订阅之后到达的事件会被队列接住，不会因为线程没就绪而丢。
     shot::EventBus bus(host);

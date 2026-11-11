@@ -15,6 +15,10 @@
 
 #include <string>
 
+namespace shot {
+class I18n;  // 前置声明：对话框只借只读解析器，不拥有它
+}  // namespace shot
+
 namespace settings_ui {
 
 /**
@@ -22,19 +26,21 @@ namespace settings_ui {
  *
  * @param[in,out] path  进 = 当前值（只为选目录/文件类型判断用，不强制作为初始位置）；
  *                      出 = 用户选中的路径（UTF-8），仅在返回 true 时修改。
- * @param[out]    error 失败且对话框库本身不可用时写入中文原因；用户取消时清空。
+ * @param[out]    error 失败且对话框库本身不可用时写入当前语言的原因；用户取消时清空。
+ * @param[in]     i18n  多语言解析器；可为 nullptr（老宿主/降级），此时错误用中文原文。
  * @return true = 用户选了文件；false = 取消或对话框不可用（看 error 是否为空区分）。
  */
-bool pickExistingFile(std::string& path, std::string& error);
+bool pickExistingFile(std::string& path, std::string& error, const shot::I18n* i18n);
 
 /**
  * @brief 弹"选择文件夹"对话框让用户挑一个已存在的目录。
  *
  * @param[in,out] path  进 = 当前值；出 = 用户选中的路径（UTF-8），仅在返回 true 时修改。
- * @param[out]    error 失败且对话框库本身不可用时写入中文原因；用户取消时清空。
+ * @param[out]    error 失败且对话框库本身不可用时写入当前语言的原因；用户取消时清空。
+ * @param[in]     i18n  多语言解析器；可为 nullptr，此时错误用中文原文。
  * @return true = 用户选了目录；false = 取消或对话框不可用（看 error 是否为空区分）。
  */
-bool pickExistingFolder(std::string& path, std::string& error);
+bool pickExistingFolder(std::string& path, std::string& error, const shot::I18n* i18n);
 
 /**
  * @brief 关闭对话框库（如果用到过）；由 SettingsWindow 在 UI 线程收尾时调用。

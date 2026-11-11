@@ -26,7 +26,9 @@
 // ============================================================================
 
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -37,6 +39,12 @@
 #include "settings_panel.h"
 #include "shot_plugin_helpers/shot_plugin_lists.h"
 #include "shot_plugin_helpers/shot_plugin_registry.h"
+
+namespace shot {
+
+class I18n;  // 前置声明：设置页只借只读解析器，完整定义由各 .cpp 自己 include
+
+}  // namespace shot
 
 namespace settings_ui {
 
@@ -79,6 +87,29 @@ inline ImVec4 toneColor(Tone tone) {
         default:
             return kToneNormal;
     }
+}
+
+/**
+ * @brief 把已翻译的 printf 风格格式串和动态值拼成 std::string。
+ *
+ * 文案必须整句交给 tr()（不同语言词序不同，不能把中文前缀/后缀拆成多段硬拼），
+ * 动态值作为格式参数传入。本插件的提示都很短，512 字节缓冲区足够；截断时返回
+ * 已写入的前缀而不是越界。
+ *
+ * @param[in] format 已翻译的格式串（来自 tr()）。
+ * @param[in] ...    格式参数。
+ * @return 拼好的文本；格式化失败时返回空串（调用方按空提示处理）。
+ */
+inline std::string formatText(const char* format, ...) {
+    char buffer[512] = {};
+    va_list args;
+    va_start(args, format);
+    const int written = std::vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    if (written <= 0) {
+        return std::string();
+    }
+    return std::string(buffer);
 }
 
 /**
@@ -180,6 +211,7 @@ enum class PathPicker {
  */
 struct SettingsPanel::Impl {
     const ShotHostServices* host = nullptr;
+    const shot::I18n* i18n = nullptr;  // 窗口层在 start() 绑定、stop() 解除；空 = 安静降级
 
     std::vector<ProviderSection> sections;         // 配置提供者，渲染时 core 固定在最前
     std::vector<ProviderSection> removedSections;  // 上次刷新后消失的提供者：灰掉显示一节
@@ -240,6 +272,23 @@ struct SettingsPanel::Impl {
     /** @brief 找本次提交里 (owner, id) 的提交值；结果匹配基线时用，找不到返回 nullptr。 */
     const std::string* findPendingChangeValue(const std::string& owner,
                                               const std::string& key) const;
+
+    // ---- 多语言（settings_form.cpp 定义；i18n 为空时安静降级） ----
+    /**
+     * @brief 查设置页自己的文案。
+     * @param[in] key      文案 key（settings_ui.*）。
+     * @param[in] fallback 查不到时的中文原文；i18n 为空时直接返回它。
+     * @return 当前语言文本；跨语言切换后失效，不要长期持有。
+     */
+    const char* tr(const char* key, const char* fallback) const;
+
+    /**
+     * @brief 把 config_list 里的 label/tooltip/ENUM 选项解析成当前语言文本。
+     * @param[in] owner     贡献方 id（core 或插件 id）。
+     * @param[in] textOrKey key 或字面量。
+     * @return 当前语言文本；i18n 为空或查不到时原样返回 textOrKey。
+     */
+    const char* resolve(const char* owner, const char* textOrKey) const;
 
     // ---- 渲染（settings_panel.cpp 的顶层框架 + settings_form.cpp / settings_plugin_table.cpp） ----
     void render();

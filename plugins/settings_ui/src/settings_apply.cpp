@@ -78,13 +78,13 @@ void SettingsPanel::Impl::apply() {
         return;  // 按钮在等待期间置灰；这里再兜一层，避免重复发布同一批改动
     }
     if (host == nullptr) {
-        setStatus(Tone::Error, "宿主服务不可用，无法应用");
+        setStatus(Tone::Error, tr("settings_ui.host_unavailable_apply", "宿主服务不可用，无法应用"));
         return;
     }
     const bool hasConfig = hasPendingConfigChanges();
     const bool hasPlugins = hasPendingPluginChanges();
     if (!hasConfig && !hasPlugins) {
-        setStatus(Tone::Normal, "没有需要应用的修改");
+        setStatus(Tone::Normal, tr("settings_ui.nothing_to_apply", "没有需要应用的修改"));
         return;
     }
 
@@ -135,7 +135,9 @@ void SettingsPanel::Impl::beginApplyConfig() {
         {"list", "config_list"}, {"tag", pendingTag}, {"changes", std::move(changes)}};
     if (!publishEvent(host, kTopicListsUpdate, payload.dump())) {
         // 事件没发出去：保持脏标记，用户可以重试；不要假装修过。
-        setStatus(Tone::Error, "发布 lists.update 失败：宿主事件总线不可用或队列已满");
+        setStatus(Tone::Error,
+                  tr("settings_ui.publish_update_failed",
+                     "发布 lists.update 失败：宿主事件总线不可用或队列已满"));
         return;
     }
     applyConfigTotal = static_cast<int>(pendingChanges.size());
@@ -151,7 +153,9 @@ void SettingsPanel::Impl::beginApplyCommit() {
     const nlohmann::json payload = {{"list", "config_list"}, {"tag", pendingTag}};
     if (!publishEvent(host, kTopicListsCommit, payload.dump())) {
         applySaveFailed = true;
-        setStatus(Tone::Error, "发布 lists.commit 失败：配置值已写入，但可能没有落盘");
+        setStatus(Tone::Error,
+                  tr("settings_ui.publish_commit_failed",
+                     "发布 lists.commit 失败：配置值已写入，但可能没有落盘"));
         finishApplyConfig();
         return;
     }
@@ -182,7 +186,7 @@ void SettingsPanel::Impl::beginApplyPlugins() {
         // 宿主只登记 pending，下一轮 main 线程才真正卸载/加载。
         if (!registry.available() ||
             !registry.setEnabled(row.status.id.c_str(), row.enabledPending)) {
-            row.message = "宿主拒绝了这次启停请求";
+            row.message = tr("settings_ui.plugin_toggle_rejected", "宿主拒绝了这次启停请求");
             ++rejected;
             continue;
         }
@@ -215,31 +219,35 @@ bool SettingsPanel::Impl::isBusy() const {
 std::string SettingsPanel::Impl::busyText() const {
     switch (applyPhase) {
         case ApplyPhase::WaitingUpdate:
-            return "应用中…（写入配置）";
+            return tr("settings_ui.busy_writing", "应用中…（写入配置）");
         case ApplyPhase::WaitingCommit:
-            return "应用中…（保存配置）";
+            return tr("settings_ui.busy_saving", "应用中…（保存配置）");
         case ApplyPhase::WaitingPlugins:
-            return "应用中…（等待宿主完成插件启停）";
+            return tr("settings_ui.busy_plugins", "应用中…（等待宿主完成插件启停）");
         case ApplyPhase::Idle:
         default:
-            return "应用中…";
+            return tr("settings_ui.busy", "应用中…");
     }
 }
 
 void SettingsPanel::Impl::reportApplyResult() {
     const int unconfirmed = applyConfigTotal - applyConfigApplied - applyConfigRejected;
     if (applyConfigRejected > 0 || applyPluginRejected > 0) {
-        setStatus(Tone::Error, "应用完成，但有 " + std::to_string(applyConfigRejected) +
-                                   " 项配置和 " + std::to_string(applyPluginRejected) +
-                                   " 个插件启停被拒绝");
+        setStatus(Tone::Error,
+                  formatText(tr("settings_ui.apply_rejected",
+                                "应用完成，但有 %d 项配置和 %d 个插件启停被拒绝"),
+                             applyConfigRejected, applyPluginRejected));
     } else if (unconfirmed > 0) {
-        setStatus(Tone::Error, "有 " + std::to_string(unconfirmed) + " 项配置没有被宿主确认");
+        setStatus(Tone::Error,
+                  formatText(tr("settings_ui.apply_unconfirmed", "有 %d 项配置没有被宿主确认"),
+                             unconfirmed));
     } else if (applySaveFailed) {
-        setStatus(Tone::Error, "配置保存失败（值可能已生效，但没有落盘）");
+        setStatus(Tone::Error,
+                  tr("settings_ui.save_failed", "配置保存失败（值可能已生效，但没有落盘）"));
     } else if (applyConfigApplied > 0 || applyPluginChanged > 0) {
-        setStatus(Tone::Success, "已应用");
+        setStatus(Tone::Success, tr("settings_ui.applied", "已应用"));
     } else {
-        setStatus(Tone::Normal, "没有需要应用的修改");
+        setStatus(Tone::Normal, tr("settings_ui.nothing_to_apply", "没有需要应用的修改"));
     }
     shot::Logger(host).info("settings_ui：应用 " + std::to_string(applyConfigApplied) + "/" +
                             std::to_string(applyConfigTotal) + " 项配置、" +
@@ -274,14 +282,18 @@ void SettingsPanel::Impl::onListsUpdated(std::string_view payload) {
             return;
         }
         applySaveFailed = true;
-        setStatus(Tone::Error, "保存配置失败：" + error);
+        setStatus(Tone::Error,
+                  formatText(tr("settings_ui.save_failed_with_error", "保存配置失败：%s"),
+                             error.c_str()));
         finishApplyConfig();
         return;
     }
 
     if (!error.empty()) {
         // 整批写值失败（宿主在 results 之外给的兜底错误）：不再进入提交阶段。
-        setStatus(Tone::Error, "写入配置失败：" + error);
+        setStatus(Tone::Error,
+                  formatText(tr("settings_ui.write_config_failed", "写入配置失败：%s"),
+                             error.c_str()));
         resetApplyState();
         return;
     }
@@ -310,7 +322,8 @@ void SettingsPanel::Impl::onListsUpdated(std::string_view payload) {
                 ++applyConfigApplied;
             } else {
                 const std::string reason = result.value("reason", std::string());
-                item->error = reason.empty() ? "该值不被接受" : reason;
+                item->error =
+                    reason.empty() ? tr("settings_ui.value_rejected", "该值不被接受") : reason;
                 ++applyConfigRejected;
             }
         }
@@ -319,7 +332,8 @@ void SettingsPanel::Impl::onListsUpdated(std::string_view payload) {
 }
 
 void SettingsPanel::Impl::onListsChanged(std::string_view payload) {
-    // 负载 {"list":"config_list"}；只关心配置列表，其它列表是别的消费方的事。
+    // 负载 {"list":"config_list"} / {"list":"i18n_list"}。语言快照变化时配置项的
+    // label/tooltip/ENUM 显示名都会变，所以两种列表都刷新一次配置区（保留本地修改）。
     if (host == nullptr) {
         return;
     }
@@ -327,7 +341,7 @@ void SettingsPanel::Impl::onListsChanged(std::string_view payload) {
         const nlohmann::json document = parseObject(payload);
         if (!document.is_discarded() && document.is_object()) {
             const std::string listId = document.value("list", std::string());
-            if (!listId.empty() && listId != "config_list") {
+            if (!listId.empty() && listId != "config_list" && listId != "i18n_list") {
                 return;
             }
         }
@@ -378,17 +392,21 @@ void SettingsPanel::Impl::onPluginsChanged(std::string_view payload) {
                     }
                 }
                 if (!shown) {
-                    setStatus(Tone::Error, "插件 " + pluginId + "：" + reason);
+                    setStatus(Tone::Error,
+                              formatText(tr("settings_ui.plugin_error", "插件 %s：%s"),
+                                         pluginId.c_str(), reason.c_str()));
                 }
             }
         }
     }
     if (rejected) {
-        setStatus(Tone::Error, "有插件启停被拒绝，原因见插件管理表");
+        setStatus(Tone::Error,
+                  tr("settings_ui.plugin_change_rejected",
+                     "有插件启停被拒绝，原因见插件管理表"));
     } else if (wasWaiting) {
         reportApplyResult();  // 配置阶段的结果 + 启停成功 = 一次完整提交结束
     } else {
-        setStatus(Tone::Normal, "插件列表已更新");
+        setStatus(Tone::Normal, tr("settings_ui.plugin_list_updated", "插件列表已更新"));
     }
 }
 
@@ -401,16 +419,22 @@ void SettingsPanel::Impl::checkWaitTimeout() {
     }
     switch (applyPhase) {
         case ApplyPhase::WaitingUpdate:
-            setStatus(Tone::Error, "等待 lists.updated 超时：宿主没有确认配置写入（修改仍保留，可重试）");
+            setStatus(Tone::Error,
+                      tr("settings_ui.timeout_update",
+                         "等待 lists.updated 超时：宿主没有确认配置写入（修改仍保留，可重试）"));
             resetApplyState();
             break;
         case ApplyPhase::WaitingCommit:
             applySaveFailed = true;
-            setStatus(Tone::Error, "等待 config.applied 超时：配置可能已生效，但落盘结果未知");
+            setStatus(Tone::Error,
+                      tr("settings_ui.timeout_applied",
+                         "等待 config.applied 超时：配置可能已生效，但落盘结果未知"));
             finishApplyConfig();
             break;
         case ApplyPhase::WaitingPlugins:
-            setStatus(Tone::Error, "等待插件启停超时：宿主没有发来 plugins.changed");
+            setStatus(Tone::Error,
+                      tr("settings_ui.timeout_plugins",
+                         "等待插件启停超时：宿主没有发来 plugins.changed"));
             resetApplyState();
             break;
         case ApplyPhase::Idle:
@@ -439,7 +463,7 @@ void SettingsPanel::Impl::cancel() {
         row.enabledPending = row.enabledNow;
     }
     resetApplyState();
-    setStatus(Tone::Normal, "已丢弃未应用的修改");
+    setStatus(Tone::Normal, tr("settings_ui.discarded", "已丢弃未应用的修改"));
 }
 
 void SettingsPanel::Impl::restoreDefaults() {
@@ -462,9 +486,10 @@ void SettingsPanel::Impl::restoreDefaults() {
     }
     // 只改本地缓冲：默认值也要用户点「应用」才写回（SETTINGS.md §4 的编辑模型）。
     if (changed > 0) {
-        setStatus(Tone::Warning, "已恢复默认值，点「应用」后写回");
+        setStatus(Tone::Warning,
+                  tr("settings_ui.defaults_restored", "已恢复默认值，点「应用」后写回"));
     } else {
-        setStatus(Tone::Normal, "没有可恢复默认值的配置项");
+        setStatus(Tone::Normal, tr("settings_ui.no_defaults", "没有可恢复默认值的配置项"));
     }
 }
 

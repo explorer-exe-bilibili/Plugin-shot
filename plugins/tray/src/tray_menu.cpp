@@ -80,10 +80,13 @@ std::string dataField(const nlohmann::json& entry) {
 
 }  // namespace
 
-void TrayMenu::installFallback(const ShotHostServices* host, const char* reason) {
+void TrayMenu::installFallback(const ShotHostServices* host, const char* reason,
+                               const shot::I18n* i18n) {
     TrayCommandItem item;
     item.id = kFallbackId;
-    item.label = kFallbackLabel;
+    // 兜底项的文字也要跟随界面语言：i18n 不可用时退回原中文。
+    item.label = (i18n != nullptr) ? i18n->tr("tray.fallback.quit", kFallbackLabel)
+                                   : kFallbackLabel;
     item.event = kFallbackEvent;
     item.order = 0;  // 只有它一项，order 只用于语义完整
     m_items.clear();
@@ -95,24 +98,25 @@ void TrayMenu::installFallback(const ShotHostServices* host, const char* reason)
                             "，菜单只保留本地兜底「退出」(app.quit)");
 }
 
-std::size_t TrayMenu::load(const ShotHostServices* host) {
+std::size_t TrayMenu::load(const ShotHostServices* host, const shot::I18n* i18n) {
     // 列表服务可能不存在（旧宿主 / 宿主还没注册这个列表）：json() 会安静返回空串，
     // 下面按"列表不可用"走本地兜底，不会把托盘拖垮。
-    return loadFromJson(host, shot::PluginLists(host).json(kTrayCommandListId));
+    return loadFromJson(host, shot::PluginLists(host).json(kTrayCommandListId), i18n);
 }
 
-std::size_t TrayMenu::loadFromJson(const ShotHostServices* host, const std::string& jsonText) {
+std::size_t TrayMenu::loadFromJson(const ShotHostServices* host, const std::string& jsonText,
+                                   const shot::I18n* i18n) {
     m_items.clear();
     m_fallback = false;
     shot::Logger log(host);
     if (jsonText.empty()) {
-        installFallback(host, "tray_command_list 不可用（宿主未提供列表服务或列表未注册）");
+        installFallback(host, "tray_command_list 不可用（宿主未提供列表服务或列表未注册）", i18n);
         return m_items.size();
     }
     const nlohmann::json doc =
         nlohmann::json::parse(jsonText, nullptr, /*allow_exceptions=*/false);
     if (doc.is_discarded() || !doc.is_array()) {
-        installFallback(host, "tray_command_list 不是合法的 JSON 数组");
+        installFallback(host, "tray_command_list 不是合法的 JSON 数组", i18n);
         return m_items.size();
     }
 
@@ -125,6 +129,7 @@ std::size_t TrayMenu::loadFromJson(const ShotHostServices* host, const std::stri
         TrayCommandItem item;
         item.id = stringField(entry, "id");
         item.label = stringField(entry, "label");
+        item.owner = stringField(entry, "owner");
         item.event = stringField(entry, "event");
         item.data = dataField(entry);
         item.order = intField(entry, "order", kDefaultOrder);
@@ -137,6 +142,14 @@ std::size_t TrayMenu::loadFromJson(const ShotHostServices* host, const std::stri
         }
         if (item.label.empty()) {
             item.label = item.id;  // label 缺省时退回 id，至少让用户知道点的是什么
+        }
+        // label 是"文案 key 或字面量"：统一按 display(owner,label) 解析；查不到保留原文。
+        // 老插件写中文 label 时查不到 key，原样显示——零破坏。
+        if (i18n != nullptr && !item.label.empty()) {
+            const char* resolved = i18n->resolve(item.owner.c_str(), item.label.c_str());
+            if (resolved != nullptr) {
+                item.label = resolved;
+            }
         }
         if (item.label.empty() || item.event.empty()) {
             // 命令缺文字或缺事件：点了也没有意义，跳过而不是渲染一个死菜单项。
@@ -155,7 +168,7 @@ std::size_t TrayMenu::loadFromJson(const ShotHostServices* host, const std::stri
                      });
 
     if (m_items.empty()) {
-        installFallback(host, "tray_command_list 里没有可用条目");
+        installFallback(host, "tray_command_list 里没有可用条目", i18n);
         return m_items.size();
     }
 

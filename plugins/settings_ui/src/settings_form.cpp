@@ -23,25 +23,38 @@
 
 namespace settings_ui {
 
+const char* SettingsPanel::Impl::tr(const char* key, const char* fallback) const {
+    // i18n 为空（老宿主 / 窗口还没 start）时保留原中文文案，界面行为与改造前一致。
+    return (i18n != nullptr) ? i18n->tr(key, fallback) : fallback;
+}
+
+const char* SettingsPanel::Impl::resolve(const char* owner, const char* textOrKey) const {
+    // 查不到时原样返回 key/字面量：老宿主没有 i18n_list 时的兼容兜底，不是错误。
+    return (i18n != nullptr) ? i18n->resolve(owner, textOrKey) : textOrKey;
+}
+
 void SettingsPanel::Impl::renderActionBar() {
     const bool busy = isBusy();
     const bool pending = hasPendingChanges();
     const bool canApply = pending && !busy;
 
     ImGui::BeginDisabled(!canApply);
-    if (ImGui::Button("应用")) {
+    if (ImGui::Button(tr("settings_ui.apply",
+                         "应用"))) {
         apply();
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!canApply);
-    if (ImGui::Button("取消")) {
+    if (ImGui::Button(tr("settings_ui.cancel",
+                         "取消"))) {
         cancel();
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(busy);
-    if (ImGui::Button("恢复全部默认")) {
+    if (ImGui::Button(tr("settings_ui.restore_all_defaults",
+                         "恢复全部默认"))) {
         restoreDefaults();
     }
     ImGui::EndDisabled();
@@ -55,11 +68,12 @@ void SettingsPanel::Impl::renderActionBar() {
         text = busyText();
         tone = Tone::Warning;
     } else if (pending) {
-        text = "有未应用的修改";
+        text = tr("settings_ui.pending_changes", "有未应用的修改");
         tone = Tone::Warning;
     }
     if (text.empty()) {
-        ImGui::TextDisabled("没有未应用的修改");
+        ImGui::TextDisabled("%s",
+                            tr("settings_ui.no_pending_changes", "没有未应用的修改"));
     } else {
         ImGui::TextColored(toneColor(tone), "%s", text.c_str());
     }
@@ -85,7 +99,8 @@ void SettingsPanel::Impl::renderConfigSections() {
     }
     renderPluginTable();
     if (sections.empty()) {
-        ImGui::TextDisabled("宿主与插件都没有声明配置项。");
+        ImGui::TextDisabled("%s",
+                            tr("settings_ui.no_config_items", "宿主与插件都没有声明配置项。"));
     }
     for (ProviderSection& section : sections) {
         if (section.id == "core") {
@@ -100,15 +115,23 @@ void SettingsPanel::Impl::renderConfigSections() {
 }
 
 void SettingsPanel::Impl::renderProviderSection(ProviderSection& section) {
-    const std::string header = (section.name == section.id)
-                                   ? section.name
-                                   : (section.name + "（" + section.id + "）");
+    // 分区标题就是 config_list 的 owner_name：core 现在是 key（core.owner_name），
+    // 老插件可能直接写中文（resolve 查不到会原样返回）。
+    const std::string displayName = resolve(section.id.c_str(), section.name.c_str());
+    const std::string header =
+        (displayName == section.id)
+            ? displayName
+            : formatText(tr("settings_ui.name_with_id", "%s（%s）"), displayName.c_str(),
+                         section.id.c_str());
     ImGui::PushID(section.id.c_str());
     if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
         if (section.removed) {
-            ImGui::TextColored(kToneWarning, "插件已卸载：本节只剩最后一次读到的值，不能编辑。");
+            ImGui::TextColored(kToneWarning, "%s",
+                               tr("settings_ui.section_removed",
+                                  "插件已卸载：本节只剩最后一次读到的值，不能编辑。"));
         } else if (section.items.empty()) {
-            ImGui::TextDisabled("该提供者没有声明任何配置项。");
+            ImGui::TextDisabled("%s",
+                                tr("settings_ui.section_empty", "该提供者没有声明任何配置项。"));
         }
         if (section.removed) {
             ImGui::BeginDisabled();
@@ -118,8 +141,10 @@ void SettingsPanel::Impl::renderProviderSection(ProviderSection& section) {
                                                ImGuiTableFlags_BordersInnerH |
                                                ImGuiTableFlags_PadOuterX;
             if (ImGui::BeginTable("##items", 2, tableFlags)) {
-                ImGui::TableSetupColumn("配置项", ImGuiTableColumnFlags_WidthFixed, 200.0f);
-                ImGui::TableSetupColumn("值", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn(tr("settings_ui.column_item", "配置项"),
+                                        ImGuiTableColumnFlags_WidthFixed, 200.0f);
+                ImGui::TableSetupColumn(tr("settings_ui.column_value", "值"),
+                                        ImGuiTableColumnFlags_WidthStretch);
                 for (ConfigItem& item : section.items) {
                     renderConfigItem(item, section.id);
                 }
@@ -140,10 +165,17 @@ void SettingsPanel::Impl::renderConfigItem(ConfigItem& item, const std::string& 
 
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(desc.label.empty() ? desc.key.c_str() : desc.label.c_str());
+    // label/tooltip 是 config_list 给的"文本 key 或字面量"：谁渲染谁解析。
+    const char* label = resolve(owner.c_str(), desc.label.c_str());
+    ImGui::TextUnformatted(label);
     // 悬停提示：插件的 tooltip 是给用户看的；把 key 也带上，排查配置问题时不用翻代码。
-    const std::string tooltip = desc.tooltip.empty() ? ("键：" + desc.key)
-                                                     : (desc.tooltip + "\n键：" + desc.key);
+    const std::string keyPrefix = tr("settings_ui.key_prefix", "键：");
+    std::string tooltip;
+    if (desc.tooltip.empty()) {
+        tooltip = keyPrefix + desc.key;
+    } else {
+        tooltip = std::string(resolve(owner.c_str(), desc.tooltip.c_str())) + "\n" + keyPrefix + desc.key;
+    }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s", tooltip.c_str());
     }
@@ -153,7 +185,7 @@ void SettingsPanel::Impl::renderConfigItem(ConfigItem& item, const std::string& 
     renderItemControl(item, owner);
 
     ImGui::SameLine();
-    if (ImGui::SmallButton("恢复默认")) {
+    if (ImGui::SmallButton(tr("settings_ui.restore_default", "恢复默认"))) {
         item.value = defaultValueFor(desc);
         item.error.clear();
         syncColorHex(item);
@@ -162,10 +194,14 @@ void SettingsPanel::Impl::renderConfigItem(ConfigItem& item, const std::string& 
     if (!item.error.empty()) {
         ImGui::SameLine();
         // 失败原因来自 lists.updated 的 reason（宿主转述插件 set_config 的结果）。
-        ImGui::TextColored(kToneError, "写入失败：%s", item.error.c_str());
+        ImGui::TextColored(kToneError, "%s",
+                           formatText(tr("settings_ui.write_failed", "写入失败：%s"),
+                                      item.error.c_str())
+                               .c_str());
     } else if (item.value != item.baseline) {
         ImGui::SameLine();
-        ImGui::TextColored(kToneWarning, "已修改");
+        ImGui::TextColored(kToneWarning, "%s",
+                           tr("settings_ui.modified", "已修改"));
     }
     // 控件级提示（例如文件对话框不可用 → 请手输）：换一行显示，别把表格撑宽。
     if (!item.hint.empty()) {
@@ -237,7 +273,8 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item, const std::string&
         }
         case SHOT_CONFIG_KIND_ENUM: {
             if (item.enumOptions.empty()) {
-                ImGui::TextDisabled("（枚举没有候选值）");
+                ImGui::TextDisabled("%s",
+                                    tr("settings_ui.enum_no_options", "（枚举没有候选值）"));
                 return false;
             }
             int current = 0;
@@ -247,9 +284,16 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item, const std::string&
                     break;
                 }
             }
-            std::vector<const char*> labels;
-            labels.reserve(item.enumOptions.size());
+            // 显示名走 display(owner, option) ?? option；存储值仍是原技术值（item.value）。
+            // 先把解析结果拷成 std::string，再取 c_str：i18n 返回的指针只保证到下次列表变化。
+            std::vector<std::string> displayOptions;
+            displayOptions.reserve(item.enumOptions.size());
             for (const std::string& option : item.enumOptions) {
+                displayOptions.emplace_back(resolve(owner.c_str(), option.c_str()));
+            }
+            std::vector<const char*> labels;
+            labels.reserve(displayOptions.size());
+            for (const std::string& option : displayOptions) {
                 labels.push_back(option.c_str());
             }
             ImGui::SetNextItemWidth(200.0f);
@@ -295,7 +339,8 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item, const std::string&
             ImGui::SetNextItemWidth(320.0f);
             bool changed = ImGui::InputText("##path", &item.value);
             ImGui::SameLine();
-            if (ImGui::Button("浏览…")) {
+            if (ImGui::Button(tr("settings_ui.browse",
+                                 "浏览…"))) {
                 std::string chosen = item.value;
                 std::string dialogError;
                 // 描述符可以声明该 PATH 是文件还是目录（options = "directory"/"file"）；
@@ -317,8 +362,8 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item, const std::string&
                         break;
                     }
                 }
-                if (pickFolder ? pickExistingFolder(chosen, dialogError)
-                               : pickExistingFile(chosen, dialogError)) {
+                if (pickFolder ? pickExistingFolder(chosen, dialogError, i18n)
+                               : pickExistingFile(chosen, dialogError, i18n)) {
                     item.value = std::move(chosen);
                     item.hint.clear();
                     changed = true;
@@ -330,7 +375,11 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item, const std::string&
             return changed;
         }
         default:
-            ImGui::TextDisabled("不支持的配置类型（kind=%u）", desc.kind);
+            ImGui::TextDisabled("%s",
+                                formatText(tr("settings_ui.unsupported_kind",
+                                              "不支持的配置类型（kind=%u）"),
+                                           desc.kind)
+                                    .c_str());
             return false;
     }
 }

@@ -28,6 +28,10 @@
 
 #include "plugin_api.h"
 
+namespace shot {
+class I18n;
+}  // namespace shot
+
 namespace tray {
 
 class TrayConfig;
@@ -77,7 +81,7 @@ public:
      * @return true = 托盘图标已添加、线程已就绪；false = 建线程/建窗口/加图标失败。
      * @note 建线程可能抛异常（线程资源耗尽），这里就地兜住，异常绝不越过 DLL 边界。
      */
-    bool start(const ShotHostServices* host, TrayConfig* config);
+    bool start(const ShotHostServices* host, TrayConfig* config, shot::I18n* i18n);
 
     /**
      * @brief 退订事件总线、让托盘线程退出消息循环并 join，最后删掉托盘图标。

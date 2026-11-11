@@ -208,19 +208,19 @@ void SettingsPanel::Impl::renderHotkeyControl(ConfigItem& item, const std::strin
                            hotkeyCapture.key == item.desc.key;
     // 空值不是错误：hotkey 插件解析空串时按"热键为空"warn 跳过，语义是"这个动作没有热键"。
     if (item.value.empty()) {
-        ImGui::TextDisabled("（未设置）");
+        ImGui::TextDisabled("%s", tr("settings_ui.hotkey_unset", "（未设置）"));
     } else {
         ImGui::TextUnformatted(item.value.c_str());
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(hotkeyCapture.active);
-    if (ImGui::Button("录入…")) {
+    if (ImGui::Button(tr("settings_ui.hotkey_record", "录入…"))) {
         beginHotkeyCapture(owner, item.desc.key);
     }
     ImGui::EndDisabled();
     if (capturing) {
         ImGui::SameLine();
-        ImGui::TextDisabled("等待按键…");
+        ImGui::TextDisabled("%s", tr("settings_ui.hotkey_waiting", "等待按键…"));
     }
 }
 
@@ -245,21 +245,27 @@ void SettingsPanel::Impl::renderHotkeyCapturePopup() {
     }
 
     bool closed = false;
-    ImGui::TextUnformatted("按下新的组合键");
-    ImGui::TextDisabled("Ctrl / Alt / Shift / Win + 字母、数字、F1-F12 或 PrintScreen");
+    ImGui::TextUnformatted(tr("settings_ui.hotkey_press_new", "按下新的组合键"));
+    ImGui::TextDisabled(
+        "%s", tr("settings_ui.hotkey_hint", "Ctrl / Alt / Shift / Win + 字母、数字、F1-F12 或 PrintScreen"));
     ImGui::Spacing();
     if (hotkeyCapture.hint.empty()) {
-        ImGui::TextDisabled("Esc 取消；Backspace / Delete 清空（该动作不再有热键）");
+        ImGui::TextDisabled(
+            "%s", tr("settings_ui.hotkey_cancel_hint",
+                     "Esc 取消；Backspace / Delete 清空（该动作不再有热键）"));
     } else {
         ImGui::TextColored(kToneWarning, "%s", hotkeyCapture.hint.c_str());
     }
     ImGui::Separator();
     ConfigItem* item = findConfigItem(hotkeyCapture.owner, hotkeyCapture.key);
     const std::string current = (item != nullptr) ? item->value : std::string();
-    ImGui::Text("当前组合键：%s", current.empty() ? "（未设置）" : current.c_str());
+    const char* currentText =
+        current.empty() ? tr("settings_ui.hotkey_unset", "（未设置）") : current.c_str();
+    ImGui::TextUnformatted(
+        formatText(tr("settings_ui.hotkey_current", "当前组合键：%s"), currentText).c_str());
     ImGui::Separator();
 
-    if (ImGui::Button("取消")) {
+    if (ImGui::Button(tr("settings_ui.cancel", "取消"))) {
         closed = true;
     }
     // Esc 只取消录入，不隐藏窗口（窗口层的 Esc 处理会先看 isCapturingHotkey）。
@@ -287,15 +293,18 @@ void SettingsPanel::Impl::renderHotkeyCapturePopup() {
                 item->value = label;
                 item->error.clear();
                 // 裸键（没有修饰键）语法合法，但会拦截全局输入：不擅自改用户的选择，只提示。
-                item->hint = hasModifier ? std::string()
-                                         : std::string("提示：没有修饰键的热键会拦截正常输入");
+                item->hint = hasModifier
+                                 ? std::string()
+                                 : tr("settings_ui.hotkey_bare_hint",
+                                      "提示：没有修饰键的热键会拦截正常输入");
             }
             shot::Logger(host).info("settings_ui：录入热键 " + hotkeyCapture.owner + "/" +
                                     hotkeyCapture.key + " = " + label);
             closed = true;
         } else if (unsupported) {
-            hotkeyCapture.hint =
-                "不支持的按键：只支持 A-Z / 0-9 / F1-F12 / PrintScreen（可加 Ctrl/Alt/Shift/Win）";
+            hotkeyCapture.hint = tr(
+                "settings_ui.hotkey_unsupported",
+                "不支持的按键：只支持 A-Z / 0-9 / F1-F12 / PrintScreen（可加 Ctrl/Alt/Shift/Win）");
         }
     }
     if (closed) {
