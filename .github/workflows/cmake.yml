@@ -128,8 +128,9 @@ jobs:
             bison flex gperf gettext autopoint python3-venv \
             nasm yasm \
             libgl1-mesa-dev libglu1-mesa-dev libegl1-mesa-dev \
-            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-            libxext-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxext-dev libxfixes-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev \
             libselinux1-dev libpam0g-dev \
             libportal-dev libpipewire-0.3-dev libspa-0.2-dev \
             libglib2.0-dev libnotify-dev

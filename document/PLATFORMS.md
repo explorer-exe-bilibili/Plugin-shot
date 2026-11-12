@@ -54,7 +54,7 @@ Linux X11（**第二优先**）、macOS。
 | 通知 `plugins/notify` | ✅ 隐藏占位图标 + `Shell_NotifyIconW(NIF_INFO)`，Windows 11 真机显示成功 | 🟡 Linux 实现（libnotify → `org.freedesktop.Notifications`）已编译；Wayland 真机未验证 | 🟡 同一份 libnotify 实现，编译通过；X11 真机未验证 | ⛔ 没有 `UNUserNotificationCenter` 实现，CMake 跳过 |
 | 区域框选 `plugins/region_selector` | ✅ GLFW 覆盖层 + Win32 物理坐标；悬停窗口吸附、单击截窗、DWM 扩展边界、主题色折角已实测 | 🟡 B 方案已实现、编译通过：门户抓一张定格图 → 自有窗口里拖选；真机未验证，且没有窗口悬停吸附（§3.1） | ⛔ 没有 override-redirect 覆盖层 + `_NET_CLIENT_LIST`/`_NET_FRAME_EXTENTS` 枚举实现（§3.2） | ⛔ 没有 `NSScreen`/`CGWindowList` 覆盖层实现，CMake 跳过 |
 | 外部语言包 / 翻译 `plugins/translator` | ✅ 扫描官方/用户目录、用户包覆盖官方包、坏包只 WARN，`smoke_i18n_translator.ps1` 已跑 | 🟡 能编译未验证：CMake 不跳过，POSIX 分支编译过；未在 Wayland 会话跑过 | 🟡 能编译未验证：同一份 POSIX 路径 | 🟡 `pack_dirs.cpp` 有 `_NSGetExecutablePath` + `$HOME` 分支，但 macOS 未构建 |
-| 长截图 `plugins/long_capture` | 🟡 已实现、编译通过：`region.select.request` / `region.selected` 选目标窗口 → 自带 GDI 采集层连续抓帧 → 只在保存时发一条 `capture.done`；真机交互未验证（§3.3） | ⛔ 未实现；计划走 ScreenCast 的**窗口流**持续取帧 + 复用 `long_capture` 的拼接核心（该核心已随 Windows 构建通过，§3.1） | ⛔ 未实现；计划 `XGetImage` 逐帧 + `XTest`/手动滚动 + 行指纹拼接（§3.2） | ⛔ 未实现；需要 `AXUIElement` 读滚动位置并模拟滚动 |
+| 长截图 `plugins/long_capture` | 🟡 已实现、编译通过：`region.select.request` / `region.selected` 选目标窗口 → 自带 GDI 采集层连续抓帧 → 只在保存时发一条 `capture.done`；作为实验特性随 0.1.0 分发、默认关闭（`enabled=1` 并重启后启用）；真机交互未验证（§3.3） | ⛔ 未实现；计划走 ScreenCast 的**窗口流**持续取帧 + 复用 `long_capture` 的拼接核心（该核心已随 Windows 构建通过，§3.1） | ⛔ 未实现；计划 `XGetImage` 逐帧 + `XTest`/手动滚动 + 行指纹拼接（§3.2） | ⛔ 未实现；需要 `AXUIElement` 读滚动位置并模拟滚动 |
 
 **结论**：唯一跑通过完整“采集 → 处理 → 保存 → 消费”链路的仍是 Windows，本轮全量构建 exit 0、
 8 个 e2e/冒烟脚本全绿。Linux 已能 configure/build，产出宿主与全部可构建插件的 `.so`（含 Linux
@@ -74,7 +74,7 @@ B 方案、剪贴板依赖 XWayland、通知依赖会话服务，这些一律只
 | 授权弹窗 | 每次新建 ScreenCast 会话，合成器都会弹系统授权对话框（Ubuntu 24.04 / GNOME 46 的预期行为）；portal 的 `persist_mode`/`restore_token` 能否免弹窗取决于桌面实现与版本，**不要当既有能力** | 已实现授权等待与失败路径并随 Linux 构建通过，但真机未跑；拒绝授权必须走 `capture.failed`，不能假装成功 |
 | 全局热键 | 没有全局热键协议；改用 `plugins/session_control` 在会话总线暴露 `org.pluginshot.Control`，用户在 GNOME「自定义快捷键」里绑一条 `gdbus call`，桌面负责按键 | `hotkey` 在非 Windows 上编 stub（发布列表与配置项、不注册，启动 WARN 指向本入口）；`session_control` 已实现并随 Linux 构建通过，GNOME 自定义快捷键的绑定端到端未真机验证；绑定步骤见 `plugins/session_control/README.md` |
 | 区域框选（B 方案） | 先用门户抓一张整屏定格图 → 在自己的窗口里显示这张图 → 用户拖选 → 按选区裁像素 | 已实现、编译通过：门户 Screenshot + 自有覆盖层拖选；真机未验证。**没有窗口悬停吸附**：portal 不提供其它应用的窗口列表与几何。窗口位置与大小由合成器决定，做不成全屏遮罩，只能“先看图、再拖选” |
-| 长截图 | ScreenCast 的 `SelectSources` 选**窗口**源持续取帧，在内存里按行指纹拼接；拼接核心可复用 `long_capture` 的 `stitch_canvas` / `scroll_stitcher` / `frame_loader` / `long_image_saver`（不含平台头） | 未实现；被复用的拼接核心已实现并随 Windows 构建通过（§3.3），Wayland 的取帧与滚动编排尚未开始 |
+| 长截图 | ScreenCast 的 `SelectSources` 选**窗口**源持续取帧，在内存里按行指纹拼接；拼接核心可复用 `long_capture` 的 `stitch_canvas` / `scroll_stitcher`（不含平台头） | 未实现；被复用的拼接核心已实现并随 Windows 构建通过（§3.3），Wayland 的取帧与滚动编排尚未开始 |
 | 托盘 | StatusNotifierItem + `com.canonical.dbusmenu`（D-Bus）；GNOME 需要 **AppIndicator 扩展**（Ubuntu 默认随系统安装并启用），扩展缺失时图标不显示 | 未实现，构建期跳过。这是“能显示但依赖桌面扩展”，不是平台限制 |
 | 剪贴板 | 见 §2 的 🚫：普通客户端只在自身窗口有键盘焦点时能写 selection | Wayland 下仍不计划后台写剪贴板；Linux 的 X11 selection 实现（`clipboard_x11*.cpp`，经 XWayland 桥接）已编译，但 Wayland 真机未验证 |
 | 通知 | `org.freedesktop.Notifications`（libnotify）与显示服务器无关，Wayland 下同样可用 | 已实现、编译通过（`notify` 的 libnotify 路径）；Wayland 真机未验证 |
