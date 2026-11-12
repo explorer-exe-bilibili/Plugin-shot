@@ -78,17 +78,56 @@ StaticBands detectStaticBands(const std::vector<std::uint64_t>& current,
     if (height <= 1) {
         return bands;
     }
+    // 先标记"同一行号且哈希相同"的行，再按 90% 覆盖率找顶部/底部条带。
+    // 为什么不能要求逐行严格连续：标题栏/状态栏里可能有一两个会闪的元素（光标、
+    // 进度点），只要有 3 行不同就把整条固定条判成 0，后面会退化成"不上不下"的
+    // 错误坐标。允许少量不匹配、但要求整段覆盖率 >= 90%。
+    std::vector<std::uint8_t> same(static_cast<std::size_t>(height), 0);
+    int sameCount = 0;
+    for (int i = 0; i < height; ++i) {
+        if (current[static_cast<std::size_t>(i)] == previous[static_cast<std::size_t>(i)]) {
+            same[static_cast<std::size_t>(i)] = 1;
+            ++sameCount;
+        }
+    }
+
+    const auto coverRatio = [&](int begin, int end) {
+        int count = 0;
+        for (int i = begin; i < end; ++i) {
+            count += same[static_cast<std::size_t>(i)];
+        }
+        return (end > begin) ? static_cast<double>(count) / static_cast<double>(end - begin) : 0.0;
+    };
+
+    // 顶部：从第 0 行往下扩展，最多允许 2 行连续"不同"，覆盖率不足 90% 就回退。
     int top = 0;
-    while (top < height && current[static_cast<std::size_t>(top)] ==
-                               previous[static_cast<std::size_t>(top)]) {
-        ++top;
+    int gapRun = 0;
+    for (int i = 0; i < height / 2; ++i) {
+        if (same[static_cast<std::size_t>(i)]) {
+            top = i + 1;
+            gapRun = 0;
+        } else if (++gapRun > 2) {
+            break;
+        }
     }
+    if (top >= kMinStaticBand && coverRatio(0, top) < 0.90) {
+        top = 0;
+    }
+    // 底部：对称处理。
     int bottom = 0;
-    while (bottom < height - top &&
-           current[static_cast<std::size_t>(height - 1 - bottom)] ==
-               previous[static_cast<std::size_t>(height - 1 - bottom)]) {
-        ++bottom;
+    gapRun = 0;
+    for (int i = height - 1; i >= height / 2; --i) {
+        if (same[static_cast<std::size_t>(i)]) {
+            bottom = height - i;
+            gapRun = 0;
+        } else if (++gapRun > 2) {
+            break;
+        }
     }
+    if (bottom >= kMinStaticBand && coverRatio(height - bottom, height) < 0.90) {
+        bottom = 0;
+    }
+
     bands.top = (top >= kMinStaticBand) ? top : 0;
     bands.bottom = (bottom >= kMinStaticBand) ? bottom : 0;
     return bands;
@@ -128,7 +167,9 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         }
         m_canvasTop = 0;
         m_refTop = 0;
-        m_trimmed = false;
+        m_bandsLocked = false;
+        m_staticTop = 0;
+        m_staticBottom = 0;
         updateReference(frame, thumb, hashes);
         match.matched = true;
         return match;
@@ -138,7 +179,9 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
     if (frame.width != m_width || frame.height != m_height) {
         m_canvasTop = 0;
         m_refTop = 0;
-        m_trimmed = false;
+        m_bandsLocked = false;
+        m_staticTop = 0;
+        m_staticBottom = 0;
         updateReference(frame, thumb, hashes);
         return match;
     }
@@ -148,22 +191,37 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         return match;
     }
 
-    const StaticBands bands = detectStaticBands(hashes, m_rowHashes);
-    if (!m_trimmed && (bands.top > 0 || bands.bottom > 0)) {
-        // 首帧里同样的固定条也一起裁掉：内容坐标从首帧移动区的第一行开始。
-        canvas.trimTop(bands.top);
-        canvas.trimBottom(bands.bottom);
-        m_canvasTop = 0;
-        m_refTop = 0;
-        m_trimmed = true;
-    }
-    const int movingHeight = frame.height - bands.top - bands.bottom;
+    const StaticBands detected = detectStaticBands(hashes, m_rowHashes);
 
+    // 已锁定的固定条优先：一旦判定过，后续帧都按同一套条带搜索，避免"这一帧
+    // 恰好能对上 30 行"之类的偶然检测改变搜索区间、把位移带偏。
+    const int searchTop = m_bandsLocked ? m_staticTop : detected.top;
+    const int searchBottom = m_bandsLocked ? m_staticBottom : detected.bottom;
     double score = 0.0;
     int informative = 0;
     const std::int32_t delta =
-        findDelta(hashes, bands.top, bands.bottom, score, informative);
+        findDelta(hashes, searchTop, searchBottom, score, informative);
     match.score = score;
+
+    // 固定条只在"第一次出现非零位移"时判定一次，之后锁死：内容滚动之后再判定，
+    // 会把恰好对上号的若干内容行误当固定条，裁掉画布 → 坐标整体错位（历史上表现为
+    // 画布突然变矮、之后怎么滚都不再增长、图片里成段重复）。
+    if (!m_bandsLocked && delta != 0) {
+        m_bandsLocked = true;
+        m_staticTop = detected.top;
+        m_staticBottom = detected.bottom;
+        if (m_staticTop > 0) {
+            canvas.trimTop(m_staticTop);
+        }
+        if (m_staticBottom > 0) {
+            canvas.trimBottom(m_staticBottom);
+        }
+        m_canvasTop = 0;
+        m_refTop = 0;
+    }
+    const int bandsTop = m_bandsLocked ? m_staticTop : 0;
+    const int bandsBottom = m_bandsLocked ? m_staticBottom : 0;
+    const int movingHeight = frame.height - bandsTop - bandsBottom;
 
     if (delta == 0) {
         if (score >= kMinMatchScore && informative >= kMinInformativeRows) {
@@ -201,7 +259,7 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
             updateReference(frame, thumb, hashes);
             return match;
         }
-        if (!canvas.prepend(frame, bands.top, rows)) {
+        if (!canvas.prepend(frame, bandsTop, rows)) {
             match.heightLimited = true;
             return match;
         }
@@ -213,7 +271,7 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
             updateReference(frame, thumb, hashes);
             return match;
         }
-        if (!canvas.append(frame, frame.height - bands.bottom - rows, rows)) {
+        if (!canvas.append(frame, frame.height - bandsBottom - rows, rows)) {
             match.heightLimited = true;
             return match;
         }

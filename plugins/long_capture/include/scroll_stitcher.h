@@ -51,8 +51,8 @@ public:
     /** @brief 最佳候选的行匹配分数低于它就不拼（0.90 = 90% 的信息行要对上）。 */
     static constexpr double kMinMatchScore = 0.90;
 
-    /** @brief 行指纹采样列数：每行在这些列上取 24 位颜色做 64 位哈希。 */
-    static constexpr int kRowSamples = 128;
+    /** @brief 行指纹采样列数：每行在这些列上取 24 位颜色做 64 位哈希（越密越能区分相似行）。 */
+    static constexpr int kRowSamples = 256;
 
     /** @brief 参与打分的"信息行"下限：太少说明重叠区全是空白/重复行，位移不可信。 */
     static constexpr int kMinInformativeRows = 64;
@@ -160,8 +160,12 @@ private:
     std::int64_t m_refTop = 0;
     /** 画布第 0 行对应的内容坐标行号；画布只存移动内容，固定条不进来。 */
     std::int64_t m_canvasTop = 0;
-    /** 首帧里的固定条是否已经裁掉（识别出条带只做一次）。 */
-    bool m_trimmed = false;
+    /** 固定条是否已判定并裁掉（只在第一次出现非零位移时判定一次）。 */
+    bool m_bandsLocked = false;
+    /** 锁定的顶部固定条行数（0 = 没有/未判定）。 */
+    int m_staticTop = 0;
+    /** 锁定的底部固定条行数。 */
+    int m_staticBottom = 0;
 };
 
 }  // namespace long_capture
