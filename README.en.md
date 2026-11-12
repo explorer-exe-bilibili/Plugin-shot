@@ -123,7 +123,7 @@ current main line.
 ├── vcpkg.json              # dependency manifest
 ├── vcpkg-configuration.json# vcpkg builtin-baseline
 ├── .github/
-│   └── workflows/cmake.yml # cross-platform CI (Linux/macOS/Windows; currently blocked by account billing)
+│   └── workflows/cmake.yml # cross-platform CI (Linux/macOS/Windows)
 ├── files/
 │   └── lang/                 # official language packs shipped with the installer (<tag>.json; synced to bin/files/ at build time)
 ├── include/

@@ -290,6 +290,7 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 
 | 脚本 | 验证内容 |
 | --- | --- |
+| `build.sh` / `build.bat` / `run.bat` / `common.ps1` | 构建包装、脚本运行器与公共辅助函数（不是独立用例） |
 | `smoke_capture.ps1` | `--capture`：exit 0、日志有 `Capture saved:`、落盘尺寸 = 物理虚拟桌面 |
 | `smoke_cursor_capture.ps1` | 抓屏合成鼠标光标：光标两个位置各截一张，比对对应区域像素差异且尺寸 = 物理虚拟桌面 |
 | `smoke_settings.ps1` | `--settings`：设置窗口出现、能截到画面、日志有"设置窗口已显示"、无 error（窗口查找语言无关） |

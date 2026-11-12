@@ -116,7 +116,7 @@
 ├── vcpkg.json              # 依赖清单
 ├── vcpkg-configuration.json# vcpkg builtin-baseline
 ├── .github/
-│   └── workflows/cmake.yml # 跨平台 CI（Linux/macOS/Windows；当前受账号 billing 限制）
+│   └── workflows/cmake.yml # 跨平台 CI（Linux/macOS/Windows）
 ├── files/
 │   └── lang/                 # 随安装包分发的官方语言包（<tag>.json；构建同步到 bin/files/）
 ├── include/

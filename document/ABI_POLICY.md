@@ -124,6 +124,8 @@ major 涨到 2。**从 2.0 起，新增一种 UI/宿主数据不再改 ABI**：�
 | `ShotPluginStatus` | 56 | `id`=8, `state`=40, `reason`=48 |
 | `ShotHostPluginRegistryV1` | 40 | `installed_count`=8, `set_enabled`=32 |
 | `ShotHostPluginListsV1` | 32 | `list_count`=8, `list_id`=16, `list_json`=24 |
+| `ShotHostConfigV1` | 32 | `get_config`=8, `set_config`=16, `save_config`=24 |
+| `ShotHostBoardEventV1` | 16 | `broadcast_event`=8 |
 | `ShotModule` | 64 | `destroy`=48, `query_interface`=56 |
 
 追加字段时你会被迫更新这张表与那几行 `static_assert` —— 这正是它们存在的意义：

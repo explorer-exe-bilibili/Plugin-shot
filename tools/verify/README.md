@@ -18,6 +18,8 @@
 | 脚本 | 验证内容 | 依赖 |
 | --- | --- | --- |
 | `build.sh` / `build.bat` | 加构建锁后构建宿主 + 全部插件（`build.sh --target <t>` 可只构建一个） | 无 |
+| `run.bat` | 用 `-ExecutionPolicy Bypass` 运行同目录下的验证脚本（`run.bat smoke_settings.ps1`） | 无 |
+| `common.ps1` | 所有脚本共用的辅助函数（日志锚点、窗口查找、热键注入、配置备份恢复），不是独立用例 | 无 |
 | `smoke_capture.ps1` | `--capture` 一次性截屏：exit 0、日志有 `Capture saved:`、落盘尺寸 = 物理虚拟桌面 | 采集/保存插件 |
 | `smoke_cursor_capture.ps1` | 抓屏合成鼠标光标：光标在两个已知位置各截一张，断言两次图在对应位置附近像素不同、尺寸 = 物理虚拟桌面 | screen_capture（`include_cursor`） |
 | `smoke_settings.ps1` | `--settings`：设置窗口出现、可见、能截到画面、日志无 error（窗口查找语言无关） | settings_ui |

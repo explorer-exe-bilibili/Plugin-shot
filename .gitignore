@@ -76,3 +76,6 @@ build/
 sdk/
 *.db
 .dsh/
+
+# 构建脚本每次 configure 自动 +1，不能入库（否则每次构建都弄脏工作区）
+build_number.txt
