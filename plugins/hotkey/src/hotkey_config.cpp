@@ -1,87 +1,37 @@
-// 全局热键的配置项：enabled + 三个热键字符串。
+// 热键的配置项：固定 enabled + hotkey_list 动态条目。
 //
-// 配置项声明、字符串值解析后的当前值读写都在这个文件里；ABI 回调在
-// plugin_entry.cpp 只做参数转发。值一律按契约用字符串表达：
-//   · enabled          → "1" / "0"
-//   · capture_hotkey   → "Ctrl+Alt+S" 这类文本（语法见 hotkey_binding.h）
-//   · region_hotkey    → 同上
-//   · settings_hotkey  → 同上
-//
-//  三个热键项的 ShotConfigDesc.options 写 "hotkey"：设置页据此把 STRING 渲染成
-//  "按组合键录入"控件（document/LISTS.md §5.1、document/SETTINGS.md §6）。
-//  options 只是给设置页的约定，值语法 / 解析 / 存值都不变。
-//
-// 线程模型：set_config 可能在宿主任意线程上被调用（init 的 apply_stored、设置页
-// 应用），热键线程同时可能正在读这三个值做重注册；所以字符串用 mutex 保护、
-// 布尔开关用 std::atomic，读侧永远拿到完整值。
+// 动态项的声明每调用一次现算（条目数、key、label、default 都来自 HotkeyCatalog），
+// 这样列表变化后设置页下一次枚举就能看到新条目，不需要重建插件实例。
+// 值仍然按旧机制存在宿主配置 hotkey.main/<id> 里，本文件只做转发。
 
 #include "hotkey_config.h"
 
 #include <cstring>
-#include <iterator>
 #include <string>
+#include <vector>
+
+#include "hotkey_catalog.h"
 
 namespace hotkey {
 namespace {
 
-// 配置键：全小写 + 下划线，发布后不能改名（它是存盘标识，见 ABI_POLICY.md §5）。
+// 唯一的静态配置项：总开关。三个热键不再是静态项——它们由 hotkey.main 自己
+// 贡献到 hotkey_list，再由本类的动态声明路径暴露给设置页。
 const char kKeyEnabled[] = "enabled";
-const char kKeyCaptureHotkey[] = "capture_hotkey";
-const char kKeyRegionHotkey[] = "region_hotkey";
-const char kKeySettingsHotkey[] = "settings_hotkey";
 
-// label / tooltip 存的是文案 key，不是最终显示文本：设置页按 display(owner, key)
-// 到 i18n_list 里取当前语言（owner = "hotkey.main"，语言表在 plugin_entry.cpp 的
-// kLangTables；key 规范见 plugins/hotkey/README.md §3.1）。
-const ShotConfigDesc kConfig[] = {
-    {
-        .struct_size   = sizeof(ShotConfigDesc),
-        .kind          = SHOT_CONFIG_KIND_BOOL,
-        .key           = kKeyEnabled,
-        .label         = "config.enabled.label",
-        .default_value = "1",
-        .options       = nullptr,
-        .min           = 0.0,
-        .max           = 1.0,
-        .step          = 1.0,
-        .tooltip       = "config.enabled.tooltip",
-    },
-    {
-        .struct_size   = sizeof(ShotConfigDesc),
-        .kind          = SHOT_CONFIG_KIND_STRING,
-        .key           = kKeyCaptureHotkey,
-        .label         = "config.capture_hotkey.label",
-        .default_value = "Ctrl+Alt+S",
-        .options       = "hotkey",
-        .min           = 0.0,
-        .max           = 0.0,
-        .step          = 0.0,
-        .tooltip       = "config.capture_hotkey.tooltip",
-    },
-    {
-        .struct_size   = sizeof(ShotConfigDesc),
-        .kind          = SHOT_CONFIG_KIND_STRING,
-        .key           = kKeyRegionHotkey,
-        .label         = "config.region_hotkey.label",
-        .default_value = "Ctrl+Alt+A",
-        .options       = "hotkey",
-        .min           = 0.0,
-        .max           = 0.0,
-        .step          = 0.0,
-        .tooltip       = "config.region_hotkey.tooltip",
-    },
-    {
-        .struct_size   = sizeof(ShotConfigDesc),
-        .kind          = SHOT_CONFIG_KIND_STRING,
-        .key           = kKeySettingsHotkey,
-        .label         = "config.settings_hotkey.label",
-        .default_value = "Ctrl+Alt+O",
-        .options       = "hotkey",
-        .min           = 0.0,
-        .max           = 0.0,
-        .step          = 0.0,
-        .tooltip       = "config.settings_hotkey.tooltip",
-    },
+// label / tooltip 存的是文案 key，不是最终显示文本（设置页按 display(owner,key)
+// 解析；owner = "hotkey.main"，语言表在 plugin_entry.cpp 的 kLangTables）。
+const ShotConfigDesc kEnabledDesc = {
+    .struct_size   = sizeof(ShotConfigDesc),
+    .kind          = SHOT_CONFIG_KIND_BOOL,
+    .key           = kKeyEnabled,
+    .label         = "config.enabled.label",
+    .default_value = "1",
+    .options       = nullptr,
+    .min           = 0.0,
+    .max           = 1.0,
+    .step          = 1.0,
+    .tooltip       = "config.enabled.tooltip",
 };
 
 /**
@@ -100,20 +50,49 @@ bool parseBool(const char* value) {
 
 }  // namespace
 
-HotkeyConfig::HotkeyConfig()
-    : m_captureHotkey("Ctrl+Alt+S"),
-      m_regionHotkey("Ctrl+Alt+A"),
-      m_settingsHotkey("Ctrl+Alt+O") {}
+HotkeyConfig::HotkeyConfig(HotkeyCatalog& catalog) : m_catalog(catalog) {}
 
 std::uint32_t HotkeyConfig::configCount() const noexcept {
-    return static_cast<std::uint32_t>(std::size(kConfig));
+    // 枚举前刷新：见头文件注释（同一轮 tick 里 lists.add 已处理、lists.changed 还没发）。
+    // 刷新失败只保留旧快照，不影响宿主继续枚举；绝不能把异常抛给宿主。
+    try {
+        m_catalog.reload();
+    } catch (...) {
+    }
+    return 1u + m_catalog.entryCount();
 }
 
 std::int32_t HotkeyConfig::configDesc(std::uint32_t index, ShotConfigDesc* out) const {
-    if (index >= std::size(kConfig)) {
+    if (out == nullptr) {
         return 1;
     }
-    return copyDesc(&kConfig[index], out);
+    if (index == 0) {
+        return copyDesc(&kEnabledDesc, out);
+    }
+    const std::vector<HotkeyEntry> entries = m_catalog.entries();
+    const std::size_t entryIndex = static_cast<std::size_t>(index) - 1;
+    if (entryIndex >= entries.size()) {
+        return 1;
+    }
+    const HotkeyEntry& entry = entries[entryIndex];
+    // m_desc* 是返回值里指针的宿主：宿主一次只问一项，下一次调用前这些指针有效。
+    std::lock_guard<std::mutex> lock(m_descMutex);
+    m_descKey = entry.id;
+    m_descLabel = entry.label.empty() ? entry.id : entry.label;
+    m_descDefault = entry.defaultCombo;
+    const ShotConfigDesc desc = {
+        .struct_size   = sizeof(ShotConfigDesc),
+        .kind          = SHOT_CONFIG_KIND_STRING,
+        .key           = m_descKey.c_str(),
+        .label         = m_descLabel.c_str(),
+        .default_value = m_descDefault.c_str(),
+        .options       = "hotkey",
+        .min           = 0.0,
+        .max           = 0.0,
+        .step          = 0.0,
+        .tooltip       = "",
+    };
+    return copyDesc(&desc, out);
 }
 
 std::int32_t HotkeyConfig::getValue(const char* key, char* buf, std::uint32_t bufSize) const {
@@ -123,21 +102,11 @@ std::int32_t HotkeyConfig::getValue(const char* key, char* buf, std::uint32_t bu
     if (std::strcmp(key, kKeyEnabled) == 0) {
         return copyValue(m_enabled.load() ? "1" : "0", buf, bufSize);
     }
-    // 三个热键共用一把锁：锁内拷一份副本，出锁后再写宿主缓冲区。
-    std::string value;
-    {
-        std::lock_guard<std::mutex> lock(m_hotkeyMutex);
-        if (std::strcmp(key, kKeyCaptureHotkey) == 0) {
-            value = m_captureHotkey;
-        } else if (std::strcmp(key, kKeyRegionHotkey) == 0) {
-            value = m_regionHotkey;
-        } else if (std::strcmp(key, kKeySettingsHotkey) == 0) {
-            value = m_settingsHotkey;
-        } else {
-            return -1;  // 不认识的 key：安全忽略（宿主升级后多传一项也不会踩这里）
-        }
+    HotkeyEntry entry;
+    if (!m_catalog.readConfigValue(key, entry)) {
+        return -1;  // 不认识的 key：安全忽略（列表已变化时宿主可能多问一项）
     }
-    return copyValue(value.c_str(), buf, bufSize);
+    return copyValue(entry.value.c_str(), buf, bufSize);
 }
 
 std::int32_t HotkeyConfig::setValue(const char* key, const char* value) {
@@ -148,42 +117,10 @@ std::int32_t HotkeyConfig::setValue(const char* key, const char* value) {
         m_enabled.store(parseBool(value));
         return 0;
     }
-    {
-        std::lock_guard<std::mutex> lock(m_hotkeyMutex);
-        if (std::strcmp(key, kKeyCaptureHotkey) == 0) {
-            m_captureHotkey = value;
-            return 0;
-        }
-        if (std::strcmp(key, kKeyRegionHotkey) == 0) {
-            m_regionHotkey = value;
-            return 0;
-        }
-        if (std::strcmp(key, kKeySettingsHotkey) == 0) {
-            m_settingsHotkey = value;
-            return 0;
-        }
-    }
-    return -1;
+    return m_catalog.writeConfigValue(key, value) ? 0 : -1;
 }
 
-bool HotkeyConfig::enabled() const noexcept {
-    return m_enabled.load();
-}
-
-std::string HotkeyConfig::captureHotkey() const {
-    std::lock_guard<std::mutex> lock(m_hotkeyMutex);
-    return m_captureHotkey;
-}
-
-std::string HotkeyConfig::regionHotkey() const {
-    std::lock_guard<std::mutex> lock(m_hotkeyMutex);
-    return m_regionHotkey;
-}
-
-std::string HotkeyConfig::settingsHotkey() const {
-    std::lock_guard<std::mutex> lock(m_hotkeyMutex);
-    return m_settingsHotkey;
-}
+bool HotkeyConfig::enabled() const noexcept { return m_enabled.load(); }
 
 std::int32_t HotkeyConfig::copyValue(const char* value, char* buf, std::uint32_t bufSize) {
     if (value == nullptr) {

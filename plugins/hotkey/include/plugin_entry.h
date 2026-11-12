@@ -18,13 +18,13 @@ namespace hotkey {
 struct PluginEntry {
     const char* id;                /**< 全局唯一 id（"作者.名字"），必须与 metadata.json 一致。 */
     const char* name;              /**< 界面显示名。 */
-    const char* version;           /**< 插件自己的语义化版本，如 "0.1.0"。 */
-    void* (*create)();             /**< 创建插件状态；失败返回 nullptr，写 nullptr 表示无状态。 */
+    const char* version;           /**< 插件自己的语义化版本，如 "0.2.0"。 */
+    void* (*create)(const ShotHostServices* host); /**< 创建插件状态；host 可为 nullptr。 */
     void (*destroy)(void* self);   /**< 释放 create 返回的状态；与 create 成对，可为 nullptr。 */
     const ShotIfaceEntry* ifaces;  /**< 能力目录，必须以 { nullptr, 0, nullptr } 结尾。 */
 };
 
-/** @brief 插件 hotkey.main 的静态描述：全局热键由插件自己注册，实现 shot.ui_provider。 */
+/** @brief 插件 hotkey.main 的静态描述：列表驱动的全局热键 provider，实现 shot.ui_provider。 */
 extern const PluginEntry kHotkey;
 
 /**

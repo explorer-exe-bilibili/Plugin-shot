@@ -5,16 +5,19 @@
 //
 //  插件自己开线程、自己建隐藏消息窗口、自己调 RegisterHotKey；宿主只调
 //  start / stop / post，从不接触 HWND，也不知道插件开了线程。事件总线的订阅
-//  （config.applied）也由本对象管理：回调运行在宿主分发线程上，只置一个
-//  "需要重注册"标记并 PostMessage 唤醒热键线程，注册/解析全部在热键线程上做。
+//  （config.applied / hotkey.suspend / hotkey.resume）由本对象管理：回调运行在
+//  宿主分发线程上，只置"需要重注册"标记并 PostMessage 唤醒热键线程，注册/解析
+//  全部在热键线程上做。hotkey_list 变化的订阅在 HotkeyCatalog 里（create 阶段
+//  建立），变化后通过 change handler 让本对象重注册。
 //
-//  热键只发事件，不直接调用任何插件：
-//    capture_hotkey  → capture.request（空负载）
-//    region_hotkey   → capture.request，负载 {"mode":"region"}
-//    settings_hotkey → settings.open（空负载）
+//  热键只发事件，不直接调用任何插件：具体主题与负载来自 hotkey_list 条目，
+//  内置三条是 capture.request（空）/ capture.request + {"mode":"region"} /
+//  settings.open（空）。
 //
 //  Win32 类型（HWND / HINSTANCE）全部关在 Impl 里（定义在内部头
-//  hotkey_window_impl.h），公共头不包含 <windows.h>。
+//  hotkey_window_impl.h），公共头不包含 <windows.h>。非 Windows 平台由
+//  hotkey_window_stub.cpp 提供同一接口的降级实现（发布列表与配置项，但不注册
+//  全局热键：Wayland 没有该能力，应改用 session_control 的 D-Bus 入口）。
 // ============================================================================
 
 #include <cstdint>
@@ -24,26 +27,26 @@
 
 namespace hotkey {
 
+class HotkeyCatalog;
 class HotkeyConfig;
 
 /**
- * @brief Windows 全局热键：一个隐藏消息窗口 + 一个热键线程 + 至多三个注册。
+ * @brief 全局热键：一个隐藏消息窗口 + 一个热键线程 + 任意条数的注册。
  *
  * 对应契约里的 `shot.ui_provider`：宿主只调 init / deinit / post_to_plugin
  * （本类分别包装成 start / stop / post），生命周期与线程模型：
  *
- *   - start() 返回 true 时热键线程已就绪、配置里的热键已注册（非法/被占用的项
- *     只 warn 跳过，不影响 start 成功）；
- *   - 订阅 config.applied：设置页应用后重新解析配置并重注册（先全部
- *     UnregisterHotKey，再逐项注册）；订阅 hotkey.suspend / hotkey.resume：
- *     设置页录入组合键时暂停（撤销全部注册）/ 恢复（按当前配置重新注册）；
+ *   - start() 返回 true 时热键线程已就绪、列表里的热键已按当前配置注册（非法/
+ *     被占用的项只 warn 跳过，不影响 start 成功）；
+ *   - 订阅 config.applied：设置页应用后重新按目录快照注册；订阅
+ *     hotkey.suspend / hotkey.resume：设置页录入组合键时暂停（撤销全部注册）/
+ *     恢复（按当前配置重新注册）；
  *   - 收到 WM_HOTKEY 只发布对应事件，不直接调用任何插件；
  *   - stop() 退订事件总线、撤掉全部热键、让消息循环退出、join 线程；返回前
  *     窗口、热键与线程都已不存在——宿主热卸载/退出都靠它把资源收干净。
  *
  * @note 全局热键是进程级资源：同一个组合键在一个进程里只能注册一次。本插件
- *       只注册截屏 / 区域截屏 / 打开设置三个位置，重复或与其它程序冲突的配置
- *       由宿主 warn 后跳过。
+ *       按 hotkey_list 顺序注册，冲突时先到者生效、后者 warn 跳过。
  */
 class HotkeyWindow {
 public:
@@ -58,18 +61,22 @@ public:
     HotkeyWindow& operator=(const HotkeyWindow&) = delete;
 
     /**
-     * @brief 建隐藏消息窗口、注册配置里的热键并启动热键线程。
+     * @brief 建隐藏消息窗口、按目录快照注册热键并启动热键线程。
      *
      * 幂等：已在运行时直接返回 true（重复 init 是空操作）。启动时先订阅
-     * config.applied 再起线程；线程创建窗口后按配置注册热键，随后握手返回。
+     * config.applied / hotkey.suspend / hotkey.resume 再起线程；线程创建窗口后
+     * 按当前配置注册热键，随后握手返回。
      *
-     * @param[in] host   宿主服务表；可为 nullptr（老宿主没有服务表，热键仍可注册，
-     *                   只是发不了事件）。指针必须活到 stop() 返回。
-     * @param[in] config 热键配置；可为 nullptr（按默认值）。指针必须活到 stop() 返回。
+     * @param[in] host    宿主服务表；可为 nullptr（老宿主没有服务表，热键仍可注册，
+     *                    只是发不了事件）。指针必须活到 stop() 返回。
+     * @param[in] config  热键配置；可为 nullptr（按空配置处理）。指针必须活到
+     *                    stop() 返回。
+     * @param[in] catalog 热键目录（hotkey_list 快照）；可为 nullptr（不注册任何热键）。
+     *                    指针必须活到 stop() 返回。
      * @return true = 线程已就绪；false = 建线程/建窗口失败。
      * @note 建线程可能抛异常（线程资源耗尽），这里就地兜住，异常绝不越过 DLL 边界。
      */
-    bool start(const ShotHostServices* host, HotkeyConfig* config);
+    bool start(const ShotHostServices* host, HotkeyConfig* config, HotkeyCatalog* catalog);
 
     /**
      * @brief 退订事件总线、撤掉全部热键、让热键线程退出消息循环并 join。
@@ -79,10 +86,10 @@ public:
     void stop();
 
     /**
-     * @brief 任意线程可调：请求热键线程按当前配置重新解析并重注册。
+     * @brief 任意线程可调：请求热键线程按当前目录快照重新解析并重注册。
      *
-     * 三条路径都走这里：启动时 apply_stored 直接 set_config（没有 config.applied
-     * 事件）、设置页应用后宿主发布 config.applied、以及将来的其它配置变更。
+     * 三条路径都走这里：启动时由线程自己注册一次、设置页应用后宿主发布
+     * config.applied、hotkey_list 变化后 HotkeyCatalog 的 change handler。
      * 重复调用是幂等的：热键线程整批撤掉再注册，不会叠加。
      */
     void requestReapply();

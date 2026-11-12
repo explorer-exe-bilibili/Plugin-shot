@@ -188,15 +188,40 @@ shot::EventBus(host).publish("lists.add", R"json({
 条目，托盘按 `display(owner,label)` 用 `i18n_list` 解析（`document/I18N.md`）；写中文
 字面量的老插件照常显示。
 
-### 5.3 新增一类 UI 数据（新 list）
+### 5.3 给功能加热键 = 贡献 hotkey_list 条目，不要自己注册
 
-1. 在 `document/LISTS.md` §5.5 登记新 list id + JSON schema；
+全局热键只有 `plugins/hotkey`（`hotkey.main`）一个 provider 负责注册；功能插件只贡献数据：
+
+```cpp
+shot::EventBus(host).publish("lists.add", R"json({
+  "list":"hotkey_list","owner":"<自己的插件 id>",
+  "items":[{"id":"long_capture.start","combo":"Ctrl+Alt+L",
+            "event":"long_capture.start","data":"","label":"long.config.hotkey.label"}]
+})json");
+```
+
+- `id` 在 owner 内唯一，**同时是设置页配置键** `hotkey.main/<id>`，所以不同 owner 之间
+  也应避免同名（冲突时先到者生效并 WARN）；发布后不要改；
+- `combo` 是默认组合键（语法见 `plugins/hotkey/include/hotkey_binding.h`）；用户在设置页
+  改过的值存 `hotkey.main/<id>`，key 不存在或非法时回落到 `combo`；
+- `event` / `data` 是按下时发布的事件主题与负载（`data` 空串 = 空负载）；
+- `label` 是设置页显示文本 key（i18n，缺省用 `id`）；设置页按 `display("hotkey.main", label)`
+  解析（配置项 owner 是 provider），所以贡献方自己的 key 要么配 `target:"hotkey.main"` 的
+  i18n 译文，要么直接写中文字面量；
+- provider 在 `lists.changed` 后重读快照并**整批重注册**，注册顺序 = 列表顺序；插件卸载时
+  宿主自动清掉它的 `hotkey_list` 条目；
+- **不要**在功能插件里自己调用 `RegisterHotKey`，也不要为热键新增 ABI 结构体/宿主服务；
+  完整 schema 与运行时语义见 `document/LISTS.md` §5.5。
+
+### 5.4 新增一类 UI 数据（新 list）
+
+1. 在 `document/LISTS.md` §5.6 登记新 list id + JSON schema；
 2. 提供方用 `lists.add` 注册、变化时（数据变化后由宿主）发 `lists.changed`；
 3. 消费方读 `shot::PluginLists(host).json("<list id>")`；
 4. 需要写值就定义 `lists.update` 语义并在宿主 `HostListCatalog` 里实现对应分支
    （**只允许宿主 main 线程处理**）。
 
-### 5.4 新建一个插件
+### 5.5 新建一个插件
 
 照抄 `plugins/image_saver`（最干净的样板）：
 
@@ -212,7 +237,7 @@ plugins/<name>/{CMakeLists.txt, metadata.json, README.md, include/, src/}
 - 纯订阅者/纯配置插件（只声明 `shot.configurable`）也能加载——宿主会按 `PluginType::Generic`
   包装（**前提是有 metadata**）；订阅必须在 `create` 做、`destroy` 里退订。
 
-### 5.5 新增一种能力（ABI minor +1）
+### 5.6 新增一种能力（ABI minor +1）
 
 1. 契约头：新 interface id 宏加进 `plugin_api/interfaces.h`，新 `...V1` 结构体加进对应的
    能力子头（`plugin_api/*.h`，末尾定义、带 `struct_size`），布局 `static_assert` 加进
@@ -222,7 +247,7 @@ plugins/<name>/{CMakeLists.txt, metadata.json, README.md, include/, src/}
 4. 宿主 `PluginInstances/` 加包装 + `PluginManager::createPlugin` 识别 + `PluginType` 枚举；
 5. 新插件实现它并在 README 写清线程/返回码语义。
 
-### 5.6 UI 插件的热卸载要求（硬要求）
+### 5.7 UI 插件的热卸载要求（硬要求）
 
 `deinit` 返回前必须：停线程 → 销毁窗口 → **`UnregisterClassW` 注销窗口类**（类属于进程，
 不随 DLL 卸载消失，不注销会在禁用→启用后踩悬空 WndProc，历史上崩过）→ 退订事件总线 →

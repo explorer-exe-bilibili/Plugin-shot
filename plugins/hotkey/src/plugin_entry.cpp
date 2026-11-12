@@ -18,6 +18,7 @@
 #include <new>
 #include <utility>
 
+#include "hotkey_catalog.h"
 #include "hotkey_config.h"
 #include "hotkey_window.h"
 #include "plugin_api.h"
@@ -41,7 +42,7 @@ void* create_instance(std::uint32_t index, const ShotHostServices* host) {
         return nullptr;
     }
     const PluginEntry* entry = kEntries[index];
-    void* state = entry->create ? entry->create() : nullptr;
+    void* state = entry->create ? entry->create(host) : nullptr;
     if (state == nullptr) {
         return nullptr;
     }
@@ -142,7 +143,7 @@ namespace {
 /**
  * @brief 用户可见文案的语言表（每个语言一张 JSON 对象，键集必须完全一致）。
  *
- * 只放设置页会显示的内容：四个配置项的 label / tooltip 在 ShotConfigDesc 里存的是
+ * 只放设置页会显示的内容：配置项的 label / tooltip 在 ShotConfigDesc 里存的是
  * key，设置页按 display(owner, key) 到 i18n_list 里取这里的文本。日志文案固定中文、
  * 不进表（e2e 按中文日志断言，见 STYLE.md §6.4）；事件主题与配置 key 也不是用户文案。
  *
@@ -154,37 +155,60 @@ const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
     R"json("config.enabled.label":"启用全局热键",)json"
     R"json("config.enabled.tooltip":"关闭后撤销全部热键注册；热键线程与窗口保留，重新启用立即生效",)json"
-    R"json("config.capture_hotkey.label":"截屏热键",)json"
-    R"json("config.capture_hotkey.tooltip":"发布 capture.request（空负载）；语法 )json"
+    R"json("config.capture.label":"截屏热键",)json"
+    R"json("config.capture.tooltip":"发布 capture.request（空负载）；语法 )json"
     R"json(Ctrl/Alt/Shift/Win + A-Z / 0-9 / F1-F12 / PrintScreen，大小写不敏感",)json"
-    R"json("config.region_hotkey.label":"区域截屏热键",)json"
-    R"json("config.region_hotkey.tooltip":"发布 capture.request，负载 {\"mode\":\"region\"}；语法同上",)json"
-    R"json("config.settings_hotkey.label":"打开设置热键",)json"
-    R"json("config.settings_hotkey.tooltip":"发布 settings.open（空负载）；语法同上"})json",
+    R"json("config.region.label":"区域截屏热键",)json"
+    R"json("config.region.tooltip":"发布 capture.request，负载 {\"mode\":\"region\"}；语法同上",)json"
+    R"json("config.settings.label":"打开设置热键",)json"
+    R"json("config.settings.tooltip":"发布 settings.open（空负载）；语法同上"})json",
     // en-US：与 zh-CN 表一一对应。
     R"json({"@meta":"en-US",)json"
     R"json("config.enabled.label":"Enable global hotkeys",)json"
     R"json("config.enabled.tooltip":"Unregisters all hotkeys when off; )json"
     R"json(the hotkey thread and window stay alive, and re-enabling takes effect immediately",)json"
-    R"json("config.capture_hotkey.label":"Capture hotkey",)json"
-    R"json("config.capture_hotkey.tooltip":"Publishes capture.request (empty payload); syntax )json"
+    R"json("config.capture.label":"Capture hotkey",)json"
+    R"json("config.capture.tooltip":"Publishes capture.request (empty payload); syntax )json"
     R"json(Ctrl/Alt/Shift/Win + A-Z / 0-9 / F1-F12 / PrintScreen, case-insensitive",)json"
-    R"json("config.region_hotkey.label":"Region capture hotkey",)json"
-    R"json("config.region_hotkey.tooltip":"Publishes capture.request with payload )json"
+    R"json("config.region.label":"Region capture hotkey",)json"
+    R"json("config.region.tooltip":"Publishes capture.request with payload )json"
     R"json({\"mode\":\"region\"}; same syntax as above",)json"
-    R"json("config.settings_hotkey.label":"Open settings hotkey",)json"
-    R"json("config.settings_hotkey.tooltip":"Publishes settings.open (empty payload); same syntax as above"})json",
+    R"json("config.settings.label":"Open settings hotkey",)json"
+    R"json("config.settings.tooltip":"Publishes settings.open (empty payload); same syntax as above"})json",
 };
 
-/** @brief 插件状态：一个热键窗口 + 四个配置项（生命周期覆盖整个插件实例）。 */
+/** @brief 插件状态：热键目录 + 配置项 + 热键窗口（生命周期覆盖整个插件实例）。 */
 struct HotkeyState {
-    HotkeyConfig config; /**< shot.configurable：enabled + 三个热键字符串。 */
-    HotkeyWindow window; /**< shot.ui_provider：隐藏消息窗口 + 热键线程。 */
+    HotkeyCatalog catalog; /**< 列表驱动：hotkey_list 快照 + 宿主配置值。 */
+    HotkeyConfig config;   /**< shot.configurable：enabled + 动态热键项。 */
+    HotkeyWindow window;   /**< shot.ui_provider：隐藏消息窗口 + 热键线程。 */
     std::unique_ptr<shot::I18n> i18n; /**< 多语言：ui_init 构造并发布语言表，deinit/destroy 释放。 */
+
+    /** @brief 构造：配置项依赖目录，所以成员按 catalog → config 的顺序初始化。 */
+    HotkeyState() : config(catalog) {}
 };
 
-void* create_state() {
-    return new (std::nothrow) HotkeyState();
+void* create_state(const ShotHostServices* host) {
+    HotkeyState* state = nullptr;
+    try {
+        state = new (std::nothrow) HotkeyState();
+    } catch (...) {
+        return nullptr;  // 构造期内存不足：让宿主按"create 失败"处理
+    }
+    if (state == nullptr) {
+        return nullptr;
+    }
+    // 列表变化后请求重注册；此时窗口可能还没 start，requestReapply 会安全丢弃，
+    // start 时会按最新快照注册一次。先设回调再启动目录，目录部分初始化也能接住变化。
+    state->catalog.setChangeHandler([state]() { state->window.requestReapply(); });
+    try {
+        // 列表订阅与内置贡献在 create 阶段建立：宿主在加载完成后才分发 lists.add，
+        // 所以这里拿不到自己的条目是正常的，第一次 lists.changed 会补齐。
+        state->catalog.start(host);
+    } catch (...) {
+        // 目录初始化失败不阻止插件：内置条目仍在，热键按默认值注册。
+    }
+    return state;
 }
 
 void destroy_state(void* self) {
@@ -192,6 +216,7 @@ void destroy_state(void* self) {
     if (state != nullptr) {
         try {
             state->window.stop();  // 先收热键线程/窗口，再释放状态
+            state->catalog.stop(); // 退订 lists.changed，不能留给 delete 之后的回调
             state->i18n.reset();   // 析构自动退订 lists.changed，不能留给 delete 之后的回调
         } catch (...) {
             // 析构路径也不能让异常越过 ABI 边界；继续释放内存。
@@ -205,15 +230,15 @@ std::int32_t ui_init(void* self, const ShotHostServices* host) {
     // 这里统一兜一层。
     if (auto* state = static_cast<HotkeyState*>(state_of(self))) {
         try {
-            // ui_init 是第一个拿得到宿主服务表的生命周期回调：在这里构造 I18n 并把语言表
-            // 发布到 i18n_source_list（设置页靠它把配置项 label/tooltip 解析成当前语言）。
-            // 先构造到局部变量，loadTables 抛异常时 state 里不会留下半初始化的对象。
+            // ui_init 在窗口启动前构造 I18n 并把语言表发布到 i18n_source_list
+            // （设置页靠它把配置项 label/tooltip 解析成当前语言）。先构造到局部
+            // 变量，loadTables 抛异常时 state 里不会留下半初始化的对象。
             if (state->i18n == nullptr) {
                 auto i18n = std::make_unique<shot::I18n>(host, "hotkey.main");
                 i18n->loadTables(kLangTables, std::size(kLangTables));
                 state->i18n = std::move(i18n);
             }
-            return state->window.start(host, &state->config) ? 0 : 1;
+            return state->window.start(host, &state->config, &state->catalog) ? 0 : 1;
         } catch (...) {
             return 1;
         }
@@ -226,6 +251,8 @@ std::int32_t ui_deinit(void* self) {
     if (auto* state = static_cast<HotkeyState*>(state_of(self))) {
         try {
             state->window.stop();
+            // lists.changed 的订阅在 create 建立：deinit 返回前退订，之后不再有回调。
+            state->catalog.stop();
             // 语言表随实例一起释放；宿主按 owner 清掉本插件贡献的 i18n_source_list 条目。
             state->i18n.reset();
         } catch (...) {
@@ -250,7 +277,7 @@ std::int32_t ui_post(void* self, const ShotEvent* ev) {
     }
 }
 
-// ---- shot.configurable：四个配置项由 HotkeyConfig 拥有，ABI 层只做参数转发 ----
+// ---- shot.configurable：enabled + 按 hotkey_list 动态生成的项由 HotkeyConfig 拥有 ----
 
 std::uint32_t config_count(void* self) {
     auto* state = static_cast<HotkeyState*>(state_of(self));
@@ -307,7 +334,7 @@ const ShotIfaceEntry kIfaces[] = {
 }  // namespace
 
 const PluginEntry kHotkey = {
-    "hotkey.main", "Hotkey", "0.1.0", &create_state, &destroy_state, kIfaces,
+    "hotkey.main", "Hotkey", "0.2.0", &create_state, &destroy_state, kIfaces,
 };
 
 }  // namespace hotkey

@@ -5,8 +5,8 @@
     {
       "id": "hotkey.main",
       "name": "Hotkey",
-      "version": "0.1.0",
-      "description": "Windows 全局热键：截屏 / 区域截屏 / 打开设置各绑定一个可配置热键，按热键只发布事件（capture.request / settings.open），不直接调用任何插件",
+      "version": "0.2.0",
+      "description": "Windows 全局热键 provider：从贡献型 hotkey_list 读取条目（自己贡献 capture / region / settings 三条内置项）并按 hotkey.main/<id> 配置注册，按热键只发布条目声明的事件，不直接调用任何插件；非 Windows 平台保留列表与配置项但不注册全局热键",
       "interfaces": ["shot.ui_provider", "shot.configurable"],
       "requires": ["core>=0.1.0"],
       "provides": []

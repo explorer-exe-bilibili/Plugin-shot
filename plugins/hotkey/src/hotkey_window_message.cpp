@@ -1,19 +1,17 @@
-// 热键线程主体：隐藏消息窗口、消息循环、热键注册与 WM_HOTKEY 事件发布。
+// 热键线程主体：隐藏消息窗口、消息循环、暂停状态与 WM_HOTKEY 分发。
 //
 // 为什么需要一个窗口：RegisterHotKey 可以绑定一个窗口，热键按下时系统把
 // WM_HOTKEY 投递给这个窗口所在的线程；与其在裸线程消息队列里自己区分消息，
 // 不如建一个永远不显示的窗口（没有 WS_VISIBLE）当消息泵：
 //   · WM_HOTKEY   → 按 id 找到对应动作，往事件总线发布一条事件；
-//   · kMsgReapply → 配置变了：先 UnregisterHotKey 全部，再按新配置逐项注册；
+//   · kMsgReapply → 目录/配置变了：交给 hotkey_window_register.cpp 整批重注册；
 //   · kMsgSetSuspend → 设置页录入组合键：撤销全部注册（暂停）或按配置恢复；
 //   · kMsgQuit    → stop() 请求退出：撤掉全部注册后退出消息循环；
 //   · WM_DESTROY  → 兜底退出。
 //
 // 热键注册与撤销都在热键线程上做：UnregisterHotKey 要求"由注册它的线程撤销"，
-// 把两者放在同一个线程可以彻底避开跨线程撤销的失败与竞态。
-//
-// 非法/被占用的配置只 warn 跳过，不影响其它键，也不让 start() 失败——热键插件
-// 少一个键仍能工作，宿主不该因为用户写错一个字符串就丢整个插件。
+// 把两者放在同一个线程可以彻底避开跨线程撤销的失败与竞态。具体注册逻辑在
+// hotkey_window_register.cpp（按 hotkey_list 快照顺序，先到者生效）。
 
 #include "hotkey_window_impl.h"
 
@@ -26,44 +24,8 @@
 namespace hotkey {
 namespace {
 
-// 下面两个辅助函数只服务本文件的热键注册路径、与任何类无关，所以放匿名命名空间
-// （STYLE.md §6.7：只在本 TU 用的具名函数）。
 constexpr wchar_t kWindowClass[] = L"PluginShotHotkeyWnd"; /**< 进程内唯一；类不随 DLL 卸载消失，必须显式注销。 */
 constexpr wchar_t kWindowTitle[] = L"Plugin-shot 热键";     /**< 隐藏窗口标题，只排障用、不显示给用户，故不进 i18n。 */
-/** @brief Win32 VK_SNAPSHOT（PrintScreen）；裸按在 Win11 上会被系统截图工具先接管，见 registerOne。 */
-constexpr std::uint32_t kVkSnapshot = 0x2Cu;
-
-/** @brief 把 hotkey::Modifier 转成 Win32 的 MOD_* 组合；额外加 MOD_NOREPEAT。 */
-DWORD toWin32Modifiers(std::uint32_t modifiers) {
-    DWORD result = 0;
-    if ((modifiers & kModCtrl) != 0) {
-        result |= MOD_CONTROL;
-    }
-    if ((modifiers & kModAlt) != 0) {
-        result |= MOD_ALT;
-    }
-    if ((modifiers & kModShift) != 0) {
-        result |= MOD_SHIFT;
-    }
-    if ((modifiers & kModWin) != 0) {
-        result |= MOD_WIN;
-    }
-    // 按住不放只触发一次：全局热键最常见的用法是"按一下执行一个动作"，
-    // 自动重复会在长按时连续截屏/连续打开设置。
-    result |= MOD_NOREPEAT;
-    return result;
-}
-
-/** @brief 注册失败的简短中文提示（错误码数值留给排障用）。 */
-std::string registerFailureHint(DWORD error) {
-    if (error == ERROR_HOTKEY_ALREADY_REGISTERED) {
-        return "，该组合键已被其它程序占用";
-    }
-    if (error == ERROR_ACCESS_DENIED) {
-        return "，可能被更高权限的程序占用";
-    }
-    return "";
-}
 
 }  // namespace
 
@@ -141,8 +103,13 @@ void HotkeyWindow::Impl::run() {
             std::lock_guard<std::mutex> lock(mutex);
             hwnd = wnd;
         }
-        // 启动时按当前配置注册一次：默认值，或宿主 apply_stored 之后更新的已存值。
-        applyHotkeys();
+        // 启动时按当前目录快照注册一次：默认值，或宿主 apply_stored 之后更新的已存值。
+        // 注册会分配字符串（动态条目数量/负载不是编译期常量），线程入口不能抛异常。
+        try {
+            applyHotkeys();
+        } catch (...) {
+            shot::Logger(host).warn("[hotkey] 启动时注册热键发生异常，本轮按没有热键继续");
+        }
         // 订阅先于线程就绪：启动期间到达的 hotkey.suspend 只置了 pending（那时还没有窗口
         // 可以投递消息）。注册完补一次，避免"设置页正在录入、热键却先注册上"。
         bool suspendPendingNow = false;
@@ -154,7 +121,11 @@ void HotkeyWindow::Impl::run() {
             suspendPending = false;
         }
         if (suspendPendingNow) {
-            setSuspended(suspendNow);
+            try {
+                setSuspended(suspendNow);
+            } catch (...) {
+                shot::Logger(host).warn("[hotkey] 应用暂停/恢复状态失败，已保持启动时的注册状态");
+            }
         }
     }
 
@@ -192,7 +163,11 @@ void HotkeyWindow::Impl::run() {
     // 消息循环退出（stop() 或宿主退出）：窗口与类的收尾放这里，保证本 DLL 被
     // FreeLibrary 后进程里不残留指向本模块代码的 WndProc。热键已在 kMsgQuit
     // 分支里撤销；这里再兜一次，防止窗口被外部销毁时漏撤。
-    unregisterAllHotkeys();
+    try {
+        unregisterAllHotkeys();
+    } catch (...) {
+        shot::Logger(host).warn("[hotkey] 线程退出时撤销热键发生异常，继续释放窗口");
+    }
     DestroyWindow(wnd);
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -366,129 +341,6 @@ void HotkeyWindow::Impl::setSuspended(bool suspend) {
     // 恢复：重新解析当前配置再注册（录入期间配置可能被别处改过，不能复用旧注册表）。
     shot::Logger(host).info("[hotkey] 收到 hotkey.resume：按当前配置重新注册热键");
     applyHotkeys();
-}
-
-void HotkeyWindow::Impl::applyHotkeys() {
-    unregisterAllHotkeys();
-    if (suspended) {
-        // 录入期间配置可能变化（set_config / config.applied 都会走到这里）：只撤销、不注册。
-        // 恢复时 setSuspended(false) 会重新读配置注册，所以这里不用缓存"待注册"状态。
-        shot::Logger(host).info("[hotkey] 热键处于暂停状态（设置页录入中），跳过注册");
-        return;
-    }
-    if (config == nullptr) {
-        shot::Logger(host).warn("[hotkey] 没有配置对象，跳过热键注册");
-        return;
-    }
-    if (!config->enabled()) {
-        shot::Logger(host).info("[hotkey] 全局热键已禁用（enabled=0），不注册任何热键");
-        return;
-    }
-    // 先在宿主线程外把三个值拷成副本，再逐项注册：读配置加锁、注册不持锁。
-    const std::string capture = config->captureHotkey();
-    const std::string region = config->regionHotkey();
-    const std::string settings = config->settingsHotkey();
-    registerOne(kHotkeyCapture, capture.c_str(), "截屏", kTopicCaptureRequest, nullptr);
-    registerOne(kHotkeyRegion, region.c_str(), "区域截屏", kTopicCaptureRequest,
-                kRegionCapturePayload);
-    registerOne(kHotkeySettings, settings.c_str(), "打开设置", kTopicSettingsOpen, nullptr);
-}
-
-void HotkeyWindow::Impl::unregisterAllHotkeys() {
-    for (int index = 0; index < kHotkeyCount; ++index) {
-        RegisteredHotkey& slot = hotkeys[index];
-        if (!slot.registered) {
-            continue;
-        }
-        const int id = index + 1;
-        if (!UnregisterHotKey(hwnd, id)) {
-            shot::Logger(host).warn("[hotkey] 撤销热键失败（id=" + std::to_string(id) +
-                                    "，错误码 " + std::to_string(GetLastError()) + "）");
-        }
-        slot = RegisteredHotkey{};
-    }
-}
-
-bool HotkeyWindow::Impl::registerOne(int id, const char* text, const char* action,
-                                     const char* topic, const char* payload) {
-    if (id < 1 || id > kHotkeyCount) {
-        return false;
-    }
-    RegisteredHotkey& slot = hotkeys[id - 1];
-    slot = RegisteredHotkey{};
-
-    Binding binding;
-    std::string error;
-    if (!parse_binding(text, binding, error)) {
-        shot::Logger(host).warn(std::string("[hotkey] ") + action + "热键配置 \"" +
-                                (text != nullptr ? text : "") + "\" 不合法（" + error +
-                                "），已跳过这一项");
-        return false;
-    }
-    const DWORD modifiers = toWin32Modifiers(binding.modifiers);
-    if (!RegisterHotKey(hwnd, id, modifiers, binding.virtualKey)) {
-        const DWORD registerError = GetLastError();
-        shot::Logger(host).warn(std::string("[hotkey] ") + action + "热键 " + binding.label +
-                                " 注册失败（错误码 " + std::to_string(registerError) +
-                                registerFailureHint(registerError) + "），已跳过这一项");
-        return false;
-    }
-
-    slot.registered = true;
-    slot.modifiers = modifiers;
-    slot.virtualKey = binding.virtualKey;
-    slot.label = binding.label;
-    slot.action = action;
-    slot.topic = topic;
-    slot.payload = payload;
-
-    std::string message = std::string("[hotkey] 已注册") + action + "热键 " + binding.label +
-                          " → " + topic;
-    if (payload != nullptr) {
-        message += "（负载 ";
-        message += payload;
-        message += "）";
-    }
-    shot::Logger(host).info(message);
-
-    // Win11 默认把「裸按 PrintScreen」交给系统截图工具（设置→辅助功能→键盘→
-    // "使用 Print Screen 键打开截图工具"）。这种情况下 RegisterHotKey 会返回成功，
-    // 但按键先被系统消费、WM_HOTKEY 不会到达本插件；带修饰键（Ctrl+PrintScreen 等）
-    // 不受影响（本机实测两种行为都复现过）。注册成功后再提示一句，避免用户以为
-    // "配了却不生效"是插件的 bug。
-    if (binding.virtualKey == kVkSnapshot && binding.modifiers == 0) {
-        shot::Logger(host).warn(
-            "[hotkey] 注意：裸按 PrintScreen 在 Windows 11 上默认会被系统截图工具接管，"
-            "可能收不到 WM_HOTKEY；建议改用 Ctrl+PrintScreen 等组合，或在 Windows 设置 → "
-            "辅助功能 → 键盘 关闭「使用 Print Screen 键打开截图工具」");
-    }
-    return true;
-}
-
-void HotkeyWindow::Impl::publishHotkey(int id) {
-    if (id < 1 || id > kHotkeyCount) {
-        return;  // 不是本插件注册的 id：安静忽略
-    }
-    const RegisteredHotkey& slot = hotkeys[id - 1];
-    if (!slot.registered || slot.topic == nullptr) {
-        // 注册被跳过/撤销之后才到达的 WM_HOTKEY：忽略，不当作错误。
-        return;
-    }
-    shot::EventBus bus(host);
-    const std::string_view payload = (slot.payload != nullptr) ? slot.payload : std::string_view();
-    if (!bus.publish(slot.topic, payload)) {
-        shot::Logger(host).warn(std::string("[hotkey] 发布 ") + slot.topic +
-                                " 失败（宿主没有事件总线或队列已满）");
-        return;
-    }
-    // 这条日志是验收锚点："发布 capture.request" 出现即说明热键通路打通。
-    std::string message = std::string("[hotkey] 发布 ") + slot.topic + "（" + slot.action +
-                          "热键 " + slot.label + "）";
-    if (!payload.empty()) {
-        message += "，负载 ";
-        message += payload;
-    }
-    shot::Logger(host).info(message);
 }
 
 }  // namespace hotkey

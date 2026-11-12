@@ -7,9 +7,10 @@
 //  （HWND / HINSTANCE / UINT），因为热键线程确实要持有它们；公共头
 //  hotkey_window.h 不包含 <windows.h>，宿主与其它插件看不到任何 Win32 句柄。
 //
-//  定义按职责拆成两个 .cpp：
-//    hotkey_window.cpp         —— 生命周期 / 线程握手 / 事件订阅（start / stop / post）
-//    hotkey_window_message.cpp —— 窗口类 / 消息循环 / 热键注册 / WM_HOTKEY 发布事件
+//  定义按职责拆成三个 .cpp：
+//    hotkey_window.cpp          —— 生命周期 / 线程握手 / 事件订阅（start / stop / post）
+//    hotkey_window_message.cpp  —— 窗口类 / 消息循环 / 暂停状态 / WM_HOTKEY 分发
+//    hotkey_window_register.cpp —— 按 hotkey_list 快照注册 / 撤销热键
 // ============================================================================
 
 #include <condition_variable>
@@ -17,6 +18,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #ifndef NOMINMAX
 #define NOMINMAX  // 防止 <windows.h> 的 min/max 宏把 std::min / std::max 顶掉
@@ -32,25 +34,19 @@
 
 namespace hotkey {
 
+class HotkeyCatalog;
 class HotkeyConfig;
 
 // ---------------------------------------------------------------------------
 //  事件主题（document/EVENT_BUS.md 的约定：全小写、点分隔、动词放最后）
 // ---------------------------------------------------------------------------
 
-/** @brief 发布：请求采集一次屏幕；区域截屏靠负载 {"mode":"region"} 区分。 */
-inline constexpr char kTopicCaptureRequest[] = "capture.request";
-/** @brief 发布：请求设置页打开（由 settings_ui 插件订阅）。 */
-inline constexpr char kTopicSettingsOpen[] = "settings.open";
 /** @brief 订阅：设置页应用后宿主发布空负载的 config.applied，触发热键重注册。 */
 inline constexpr char kTopicConfigApplied[] = "config.applied";
 /** @brief 订阅：设置页开始录入组合键（空负载），请求撤掉全部全局注册。 */
 inline constexpr char kTopicHotkeySuspend[] = "hotkey.suspend";
 /** @brief 订阅：设置页结束录入（空负载），请求按当前配置恢复注册。 */
 inline constexpr char kTopicHotkeyResume[] = "hotkey.resume";
-
-/** @brief 区域截屏的 capture.request 负载（固定 JSON 字面量，不需要 JSON 库）。 */
-inline constexpr char kRegionCapturePayload[] = R"json({"mode":"region"})json";
 
 /** @brief 宿主卸载 UI 插件前投递的事件（走 post_to_plugin，不走总线）。 */
 inline constexpr char kEventHostShutdown[] = "host.shutdown";
@@ -75,33 +71,27 @@ inline constexpr UINT kMsgSetSuspend = WM_APP + 3;
 //  注册表
 // ---------------------------------------------------------------------------
 
-/** @brief 热键 id：RegisterHotKey 的 id + WM_HOTKEY 的 wParam，从 1 起。 */
-inline constexpr int kHotkeyCapture = 1;  /**< 截屏：capture.request（空负载）。 */
-inline constexpr int kHotkeyRegion = 2;   /**< 区域截屏：capture.request + {"mode":"region"}。 */
-inline constexpr int kHotkeySettings = 3; /**< 打开设置：settings.open（空负载）。 */
-/** @brief 注册表容量：与上面三个 id 一一对应（下标 = id - 1）。 */
-inline constexpr int kHotkeyCount = 3;
-
 /**
  * @brief 一个已注册（或尝试过）的热键。
  *
- * 热键线程独占访问：解析、RegisterHotKey / UnregisterHotKey、WM_HOTKEY 分发
- * 都只发生在热键线程上，所以这里不需要加锁。
+ * 条目数量在运行期变化（hotkey_list 可以随时增删），所以不再用固定数组；
+ * 这个结构只在热键线程上访问，不需要加锁。
  */
 struct RegisteredHotkey {
-    bool registered = false;        /**< RegisterHotKey 是否成功；失败/未启用时 false。 */
-    std::uint32_t modifiers = 0;    /**< Win32 MOD_* 组合（已包含 MOD_NOREPEAT）。 */
-    std::uint32_t virtualKey = 0;   /**< Win32 VK 数值。 */
-    std::string label;              /**< 规范化显示名，如 "Ctrl+Alt+S"（日志用）。 */
-    const char* action = "";        /**< 动作名（日志用），如 "截屏"。 */
-    const char* topic = "";         /**< 要发布的事件主题。 */
-    const char* payload = nullptr;  /**< 事件负载；nullptr = 空负载。 */
+    int id = 0;                    /**< RegisterHotKey 的 id + WM_HOTKEY 的 wParam，从 1 起。 */
+    bool registered = false;       /**< RegisterHotKey 是否成功。 */
+    std::uint32_t modifiers = 0;   /**< hotkey::kMod* 位集合（注册时再转 Win32 MOD_*）。 */
+    std::uint32_t virtualKey = 0;  /**< Win32 VK 数值。 */
+    std::string label;             /**< 规范化显示名，如 "Ctrl+Alt+S"（日志用）。 */
+    std::string action;            /**< 条目 id（日志用），如 "capture" / "long_capture.start"。 */
+    std::string topic;             /**< 要发布的事件主题。 */
+    std::string payload;           /**< 事件负载；空串 = 空负载。 */
 };
 
 /**
  * @brief HotkeyWindow 的实现：窗口句柄、线程握手、注册表都在这里。
  *
- * 声明集中在这个结构里，定义按职责分散到两个 .cpp（STYLE.md §6.7 / §6.8）。
+ * 声明集中在这个结构里，定义按职责分散到三个 .cpp（STYLE.md §6.7 / §6.8）。
  */
 struct HotkeyWindow::Impl {
     // ---- start() / stop() 跨线程共享的状态（mutex 保护） ----
@@ -121,10 +111,11 @@ struct HotkeyWindow::Impl {
 
     const ShotHostServices* host = nullptr; /**< 宿主服务表；生命周期覆盖插件实例。 */
     HotkeyConfig* config = nullptr;         /**< 配置；只在热键线程上读。 */
+    HotkeyCatalog* catalog = nullptr;       /**< hotkey_list 快照来源；只在热键线程上读。 */
     bool busSubscribed = false;             /**< 是否成功订阅过事件总线。 */
 
     // ---- 热键注册表（只在热键线程上访问） ----
-    RegisteredHotkey hotkeys[kHotkeyCount]; /**< 下标 0/1/2 = 截屏 / 区域截屏 / 打开设置。 */
+    std::vector<RegisteredHotkey> hotkeys; /**< 当前这批注册，下标不代表 id。 */
     bool suspended = false; /**< true = 设置页正在录入组合键：全部注册已撤销，不重新注册。 */
 
     // ---- 生命周期与窗口线程（hotkey_window.cpp / hotkey_window_message.cpp） ----
@@ -162,11 +153,11 @@ struct HotkeyWindow::Impl {
      */
     void setSuspended(bool suspend);
 
-    // ---- 热键注册与事件发布（hotkey_window_message.cpp） ----
+    // ---- 热键注册与事件发布（hotkey_window_register.cpp） ----
     void applyHotkeys();
     void unregisterAllHotkeys();
-    bool registerOne(int id, const char* text, const char* action, const char* topic,
-                     const char* payload);
+    bool registerOne(int id, const Binding& binding, const std::string& action,
+                     const std::string& topic, const std::string& payload);
     void publishHotkey(int id);
 };
 

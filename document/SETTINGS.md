@@ -77,6 +77,34 @@ UI 线程里发生（见 `document/EVENT_BUS.md` 的线程模型）。
 - `plugins.disabled` 是宿主内部键（JSON 字符串数组，如 `["example.invert"]`），由宿主读写，
   插件不感知；它的值在插件扫描之前读取，所以"禁用 → 重启"仍然生效。
 
+### 2.1 运行期动态配置项（以 `hotkey.main` 为例）
+
+配置项不一定是静态数组：插件可以在 `get_config_count()` / `get_config_desc()` 里
+按当前运行期状态现算（**不要缓存成固定表**），宿主每次重建 `config_list` 时会重新
+枚举。当前唯一的内置例子是 `hotkey.main`：
+
+- 固定项只有 `enabled`（BOOL）；
+- 每条 `hotkey_list` 条目生成一个 STRING 项：`key = <entry.id>`、
+  `label = <entry.label>`（缺省 id）、`default_value = <entry.combo>`、
+  `options = "hotkey"`；设置页因此继续用现有的"当前组合键 + 录入…"控件，
+  控件映射（§6）不需要增加新类型；
+- 值仍然按既有约定存在宿主配置 `hotkey.main/<entry.id>`：`lists.update` →
+  `set_config` → 宿主写内存配置，`lists.commit` 落盘；
+- 列表变化（`lists.changed` → `hotkey_list`）后 provider 会重读快照并重注册热键；
+  `get_config_count()` 枚举前也会主动重读一次快照，保证"宿主同一轮先处理 lists.add、
+  再重建 config_list、最后才 flush lists.changed"时设置页就能看到新条目；
+  但 `config_list` 是宿主快照，重建时机仍由宿主决定（启动、插件启停、
+  `lists.update` / `lists.commit`、语言目录变化、`hotkey_list` 变化）。
+
+**热键冲突与迁移**（`document/LISTS.md` §5.5 是完整 schema）：
+
+- 同一组合键在进程内先到者注册（注册顺序 = `hotkey_list` 顺序），后者 WARN 跳过，
+  不静默换键；
+- 配置值为空串 = 设置页语义上的"清空/不设热键"，provider 不注册该项；
+- 配置值非空但语法非法 → WARN 后回落到条目的 `combo`，`combo` 也非法才跳过；
+- 旧版三个键（`hotkey.main/capture_hotkey` 等）在 start 时迁移到新条目 id
+  （仅当新键不存在，幂等，旧键保留）。
+
 ## 3. 插件注册表：`shot.host.plugin_registry`
 
 `ShotHostPluginRegistryV1`（版本 1），插件侧封装是 `shot::PluginRegistry`。
@@ -316,19 +344,22 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
   （其它控件不响应），按下 `[Ctrl+][Alt+][Shift+][Win+]<A-Z|0-9|F1..F12|PrintScreen>` 就把**规范化文本**
   （修饰键固定顺序 `Ctrl+Alt+Shift+Win`；小键盘数字按 `0-9` 算）写回本地缓冲——仍然走
   §4 的"本地编辑 + 应用"流程，不会立刻写宿主。Esc 取消（值不变）；Backspace / Delete
-  清空：空串的语义是**"这个动作不设热键"**，hotkey 插件解析时按"热键为空" warn 跳过该项，
-  不报错、也不让插件失败。裸键（无修饰键，如 `F9` 或裸字母）语法合法、允许录入，但会
-  拦截正常输入，界面用提示行说明（用户配置责任，设置页不擅自改）。录入期间设置页发布
-  `hotkey.suspend`、结束/取消时发布 `hotkey.resume`，让 hotkey 插件撤掉/恢复全局注册，
+  清空：空串的语义是**"这个动作不设热键"**，hotkey provider 注册时跳过该项（记 INFO，
+  不报错、也不让插件失败）。该控件不关心描述符从哪来：`hotkey.main` 的条目由
+  `hotkey_list` 动态生成（§2.1），控件行为与静态配置项完全一致。裸键（无修饰键，
+  如 `F9` 或裸字母）语法合法、允许录入，但会拦截正常输入，界面用提示行说明（用户配置
+  责任，设置页不擅自改）。录入期间设置页发布
+  `hotkey.suspend`、结束/取消时发布 `hotkey.resume`，让 hotkey provider 撤掉/恢复全局注册，
   避免按下旧组合键先触发真实动作（比如立刻截一张图）；hotkey 插件未加载或宿主没有事件
   总线时安静降级（录入照常可用，只是不能避免触发已注册热键，日志记 WARN）。旧配置里的
-  非法值**原样显示、不做语法校验**——解析仍归 hotkey 插件，注册时非法只 warn 跳过；重新
-  录入一次即被规范化覆盖。录入中关窗/隐藏/宿主退出时，窗口层取消录入并补发
+  非法值**原样显示、不做语法校验**——解析仍归 hotkey provider，注册时非法值 WARN 后回落到
+  列表条目的默认组合键，默认值也非法才跳过；重新录入一次即被规范化覆盖。录入中关窗/
+  隐藏/宿主退出时，窗口层取消录入并补发
   `hotkey.resume`（漏发会让热键永久停在暂停状态）。**PrintScreen 的 Win11 系统拦截**：
   Windows 11 默认把裸按 PrintScreen 交给系统截图工具（设置→辅助功能→键盘→"使用
   Print Screen 键打开截图工具"），此时 `RegisterHotKey` 成功但 `WM_HOTKEY` 可能收不到；
   带修饰键的组合（如 `Ctrl+PrintScreen`）不受影响。要用裸 PrintScreen 需关闭该 Windows
-  设置，hotkey 插件注册裸 PrintScreen 时会打 WARN 提示。
+  设置，hotkey provider 注册裸 PrintScreen 时会打 WARN 提示。
 - **每项**：label + 悬停 `tooltip` + "恢复默认"小按钮（写 `default_value` 到本地副本）。
 - **状态**：脏标记（没有脏项时"应用"置灰）；`lists.updated` 里 `ok=false` 的项标红
   "写入失败：reason"并保留脏标记；插件已被卸载 → 该节灰掉；窗口位置/大小存宿主配置的
@@ -397,6 +428,8 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
 ## 8. 检查清单
 
 - [ ] 新增配置项只改插件自己的 `kConfig[]`，`config_list` 自动多一条，没有改宿主代码？
+- [ ] 运行期动态配置项（如 `hotkey.main` 按 `hotkey_list` 生成）在
+      `get_config_count` / `get_config_desc` 里每次现算，没有在 create 时缓存死？
 - [ ] 新增的是**纯订阅者 / 纯配置项插件**？→ 确认它在 metadata 里声明过、订阅在 `create`
       建立 / `destroy` 退订，并且没有为了拿 `post_to_plugin` 而假装 `shot.ui_provider`（§3.3）
 - [ ] 配置值一律用字符串，没有跨边界传结构体/数字？

@@ -249,6 +249,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | `tray_command_list` | 宿主预置 core 四项 + 插件贡献 | 宿主预置 core；插件 `lists.add` / `lists.remove` | 托盘 | §5.2 |
 | `i18n_source_list` | 插件 / 语言包贡献 | 插件在 `create()`/`init()` 里 `lists.add` 语言表（helper 拼好）；外部语言包由翻译插件贡献 `target`/`priority` 与 `@language/` 声明；宿主只读、合并生成 `i18n_list` | 宿主 | §5.3 |
 | `i18n_list` | 宿主生成（只读快照） | 宿主按当前语言把 core 文案 + `i18n_source_list` 投影；插件不能 add/remove | 设置页 / 托盘 / 插件 helper | §5.4 |
+| `hotkey_list` | 插件贡献（`hotkey.main` 自己贡献三条内置项） | 各插件 `lists.add` / `lists.remove`；`hotkey.main` 只读快照并据此注册全局热键 | `hotkey.main`（provider） | §5.5 |
 
 ### 5.1 `config_list`
 
@@ -404,7 +405,65 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
   `@language/` 目录变化、插件启停/卸载清理都会在下一次 `tick` 重建并统一 flush。
 - 消费方刷新：订阅 `lists.changed`，`list == "i18n_list"` 时刷新；不新增事件主题。
 
-### 5.5 登记一个新列表的规则
+### 5.5 `hotkey_list`
+
+列表驱动的全局热键：**数据由功能插件贡献，`hotkey.main` 只当 provider**（读取快照、
+注册、按条目发布事件）。`hotkey.main` 自己也贡献三条内置项，所以默认的截屏 /
+区域截屏 / 打开设置不依赖任何其它插件。
+
+```json
+{"list":"hotkey_list","owner":"long_capture.main","items":[
+  {"id":"long_capture.start","combo":"Ctrl+Alt+L","event":"long_capture.start",
+   "data":"","label":"long.config.hotkey.label"}
+]}
+```
+
+`hotkey.main` 的内置三条（owner 必须是 `hotkey.main` 自己）：
+
+```json
+[
+  {"id":"capture","combo":"Ctrl+Alt+S","event":"capture.request","data":"","label":"config.capture.label"},
+  {"id":"region","combo":"Ctrl+Alt+A","event":"capture.request","data":"{\"mode\":\"region\"}","label":"config.region.label"},
+  {"id":"settings","combo":"Ctrl+Alt+O","event":"settings.open","data":"","label":"config.settings.label"}
+]
+```
+
+条目 schema（由 provider 解释）：
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `id` | string | ✅ | 稳定标识，在 owner 内唯一；**同时是配置键**（`hotkey.main/<id>`），所以不同 owner 之间也应避免同名 |
+| `combo` | string | ✅ | 默认组合键，语法同 `hotkey_binding.h`（`Ctrl+Alt+S` 等）；配置值缺失/非法时回落到它 |
+| `event` | string | ✅ | 按下时发布的事件主题；为空时 provider 忽略该条（WARN） |
+| `data` | string | 可选 | 事件负载：空串 = 空负载；对象/数组会被 provider 序列化成 JSON 文本 |
+| `label` | string | 可选 | 设置页显示文本 key（`display(hotkey.main, label)`）；缺省用 `id`。注意解析 owner 是 `hotkey.main`：贡献方自己的 key 要么配 `target:"hotkey.main"` 的 i18n 译文，要么直接写中文字面量 |
+
+读写语义：
+
+- **写**：只允许功能插件用 `lists.add` / `lists.remove` 贡献，`owner` 必须等于
+  发布插件自己的 id；宿主按 `(list, owner, id)` upsert，插件卸载/禁用时宿主
+  `removeOwner` 自动清掉；`lists.update` 不支持本列表（值写的是 `config_list`，
+  不是 `hotkey_list`）。
+- **读**：`hotkey.main` 在 create 时订阅 `lists.changed`，读
+  `shot.host.plugin_lists` 的 `hotkey_list` 快照；provider **只读，不贡献别人的
+  条目、也不修改别人条目**。
+- **刷新**：`lists.changed`（`list == "hotkey_list"`）后 provider 重读全量快照并
+  整批重注册。注册顺序 = 列表顺序（`order` 升序，缺省 1000）；同一组合键冲突时
+  先到者生效、后者 WARN 跳过。
+- **配置投影**：provider 为每条条目动态暴露一个 `config_list` 项
+  （`kind=STRING`、`key=<id>`、`label=<label>`、`default_value=<combo>`、
+  `options="hotkey"`），值存宿主配置 `hotkey.main/<id>`。描述符每次枚举现算；
+  `get_config_count()` 前 provider 会主动重读一次 `hotkey_list`，所以宿主在同一轮
+  tick 里先处理 `lists.add` 再重建 `config_list`（此时 `lists.changed` 还没 flush）
+  也能看到新条目。`config_list` 快照本身的重建时机仍由宿主决定（插件加载/启停、
+  `lists.update` / `lists.commit`、`i18n` 语言目录变化、`hotkey_list` 贡献变化）。
+- **旧配置迁移**：`hotkey.main` 在 create 时把 `capture_hotkey` / `region_hotkey` /
+  `settings_hotkey` 三个旧键迁移到 `capture` / `region` / `settings`（仅当新键
+  不存在）；旧键保留不删。
+- **平台**：非 Windows（Wayland）仍然贡献/读取本列表与配置项，但 provider 不注册
+  全局热键，启动 WARN 指向 `session_control` 的 D-Bus 入口。
+
+### 5.6 登记一个新列表的规则
 
 1. 选 list id：全小写 + 下划线，建议以 `_list` 结尾；宿主内置列表用 `<名词>_list`
    （如 `config_list`），第三方列表加作者前缀避免与将来的内置列表撞名

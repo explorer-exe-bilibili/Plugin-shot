@@ -27,7 +27,8 @@ HotkeyWindow::~HotkeyWindow() {
     stop();  // Impl 在这里才是完整类型，所以构造/析构必须写在本文件里
 }
 
-bool HotkeyWindow::start(const ShotHostServices* host, HotkeyConfig* config) {
+bool HotkeyWindow::start(const ShotHostServices* host, HotkeyConfig* config,
+                         HotkeyCatalog* catalog) {
     if (!m_impl) {
         return false;
     }
@@ -42,8 +43,10 @@ bool HotkeyWindow::start(const ShotHostServices* host, HotkeyConfig* config) {
         m_impl->suspendPending = false;
         m_impl->suspendValue = false;
     }
-    // suspended 只在热键线程上读写；这里线程还没起来（stop 已 join 过），可以直接复位。
+    // suspended 与注册表只在热键线程上读写；这里线程还没起来（stop 已 join 过），
+    // 可以直接复位。注册表清空也放在这里，避免上一次失败残留半条记录。
     m_impl->suspended = false;
+    m_impl->hotkeys.clear();
     {
         std::lock_guard<std::mutex> lock(m_impl->readyMutex);
         m_impl->ready = false;
@@ -51,6 +54,7 @@ bool HotkeyWindow::start(const ShotHostServices* host, HotkeyConfig* config) {
     }
     m_impl->host = host;
     m_impl->config = config;
+    m_impl->catalog = catalog;
 
     // 先订阅再起线程：订阅之后到达的 config.applied 会被接住，不会因为线程没就绪而丢。
     // hotkey.suspend / hotkey.resume 是设置页录入组合键时的"暂停/恢复"握手（见
