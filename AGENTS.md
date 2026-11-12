@@ -5,7 +5,7 @@
 > `STYLE.md` 管"代码长什么样"，`AGENTS.md` 管"怎么干活、怎么验收、别踩哪些坑"。
 >
 > 上一任负责人（AI）的上下文快满了，这份是交接。当前基线：`main` 分支、
-> 契约 **ABI 2.0**、13 个插件工程（其中 2 个是工作区草稿）、9 份设计文档。
+> 契约 **ABI 2.0**、13 个插件工程、9 份设计文档。
 
 ---
 
@@ -50,17 +50,17 @@ src/                宿主实现 + main.cpp
 plugins/            13 个插件工程，各自独立 CMakeLists + metadata.json
   example_processor  一 DLL 两插件（image_processor）+ 贡献一条托盘命令
   opencv_provider    lib_provider（把 OpenCV 带进进程）
-  screen_capture     shot.screen_capture（Windows GDI，多屏）
+  screen_capture     shot.screen_capture（Windows GDI 多屏；Wayland 走 portal ScreenCast + PipeWire，已编译、真机未验证）
   image_saver        shot.image_saver（PNG/JPEG，stb）
   settings_ui        设置页（ImGui + GLFW + OpenGL3，跨平台）
   translator         外部语言包（Generic；扫描官方/用户目录，跨平台代码，Windows 已验证）
   tray               托盘（图标 + 数据驱动菜单，Windows）
-  region_selector    区域框选覆盖层（Windows）
-  hotkey             全局热键（Windows）
-  session_control    Linux 会话总线控制入口（Generic；Wayland 下代替全局热键；草稿，未编译）
-  long_capture       手动滚动长截图（Windows P1；草稿，源文件未落齐，Windows configure 会失败）
-  clipboard          截图 → 剪贴板（Windows）
-  notify             截图结果气泡（Windows）
+  region_selector    区域框选覆盖层（Windows 完整交互；Wayland 为门户定格图 + 拖选，已编译、真机未验证）
+  hotkey             全局热键（Windows 用 RegisterHotKey；非 Windows 编 stub，不注册）
+  session_control    Linux Wayland 的 D-Bus 触发入口（Generic；代替全局热键；已随 Linux 构建通过）
+  long_capture       手动滚动长截图（Windows P1；已编译通过，真机交互待验证）
+  clipboard          截图 → 剪贴板（Windows CF_DIB；Linux 走 X11 selection，已编译、真机未验证）
+  notify             截图结果气泡（Windows Shell 通知；Linux 用 libnotify，已编译、真机未验证）
 document/           设计文档（改代码必须同步，见 §4）
 cmake/              构建规则（ShotPlugin.cmake / ValidatePluginMeta.cmake / export_sdk.cmake …）
 tools/verify/       真机验证脚本（带构建锁的 build 包装 + e2e 冒烟，见 tools/verify/README.md）
@@ -75,8 +75,10 @@ STYLE.md            ★ 代码风格与工程约定（硬约定）
 
 > 平台状态见 [`document/PLATFORMS.md`](document/PLATFORMS.md)：Windows 是唯一真机验证过的完整链路；
 > Linux 默认目标是 Wayland（Ubuntu 24.04 GNOME），X11 列为第二优先但仍缺 `XGetImage`/`XGrabKey`/
-> 覆盖层；`session_control`、`long_capture` 只是工作区草稿（未编译，后者缺源文件）；macOS 尚未成功
-> 构建。改平台相关代码、CMake 跳过条件或根 README 平台段前先看矩阵。
+> 覆盖层；Wayland 链路（ScreenCast + PipeWire 抓屏、门户定格图 + B 方案框选、`session_control`
+> 的 D-Bus 触发入口）已实现并随 Linux 构建通过，**尚未在真机验证**；`hotkey` 在 Linux 编 stub
+> （提供列表与配置项、不注册热键）；`long_capture` 已随 Windows 构建通过，**交互待真机验证**；
+> macOS 尚未成功构建。改平台相关代码、CMake 跳过条件或根 README 平台段前先看矩阵。
 
 ```text
 插件 DLL ──(唯一导出符号 shot_module_entry)──► ShotModule{get_info, create, destroy, query_interface}
