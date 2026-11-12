@@ -48,14 +48,14 @@ public:
     /** @brief 重叠不足的阈值：重叠行少于视口高度的 30% 按缺口处理（document/README 同步）。 */
     static constexpr int kMinOverlapPercent = 30;
 
-    /** @brief 最佳候选的行匹配分数低于它就不拼（0.85 = 85% 的重叠行要对上）。 */
-    static constexpr double kMinMatchScore = 0.85;
+    /** @brief 最佳候选的行匹配分数低于它就不拼（0.90 = 90% 的信息行要对上）。 */
+    static constexpr double kMinMatchScore = 0.90;
 
-    /** @brief 行指纹采样列数：越多越稳，32 列已经能区分绝大多数文本/图片行。 */
-    static constexpr int kRowSamples = 32;
+    /** @brief 行指纹采样列数：每行在这些列上取 24 位颜色做 64 位哈希。 */
+    static constexpr int kRowSamples = 128;
 
-    /** @brief 单列灰度差不超过它就算这一行"对上"（容忍光标闪烁/抗锯齿的微小差异）。 */
-    static constexpr int kRowTolerance = 12;
+    /** @brief 参与打分的"信息行"下限：太少说明重叠区全是空白/重复行，位移不可信。 */
+    static constexpr int kMinInformativeRows = 64;
 
     /** @brief 去重缩略图的降采样倍数：先缩到 1/4 灰度再比，成本几乎为零。 */
     static constexpr int kThumbScale = 4;
@@ -99,29 +99,42 @@ private:
                            int& h);
 
     /**
-     * @brief 把一帧每行抽样成灰度指纹（拼接用）。
+     * @brief 把一帧每行算成 64 位哈希（拼接用）。
+     *
+     * 为什么用哈希而不是"灰度差 <= 阈值"：会话层只在画面静止时送帧，同一行在两帧里
+     * 是逐像素一致的，哈希相等是精确判据；原来 32 列灰度容差在文本/代码这类高频
+     * 内容上会把"差一两行"也算成匹配，导致位移估小、拼出重复行。
+     *
      * @param[in] frame 待处理帧。
-     * @param[out] out  height × kRowSamples 字节，第 y 行指纹在下标 y * kRowSamples。
+     * @param[out] out  每行一个哈希。
      */
-    static void buildRowSamples(const CaptureFrame& frame, std::vector<std::uint8_t>& out);
+    static void buildRowHashes(const CaptureFrame& frame, std::vector<std::uint64_t>& out);
 
     /**
-     * @brief 在新帧指纹与上一帧指纹之间搜索带符号位移。
-     * @param[in]  rows  新帧的行指纹。
-     * @param[out] score 最佳候选的匹配分数。
+     * @brief 在新帧哈希与上一帧哈希之间搜索带符号位移。
+     * @param[in]  hashes 新帧的行哈希。
+     * @param[out] score  最佳候选的信息行匹配分数。
+     * @param[out] informative 最佳候选参与打分的信息行数。
      * @return 最佳位移；没有可用候选时返回 0（与"完全没滚动"由 score 区分）。
      */
-    std::int32_t findDelta(const std::vector<std::uint8_t>& rows, double& score) const;
+    std::int32_t findDelta(const std::vector<std::uint64_t>& hashes, int topStatic,
+                           int bottomStatic, double& score, int& informative) const;
 
     /**
-     * @brief 统计位移 d 下重叠区的行匹配分数。
-     * @param[in] rows      新帧行指纹。
-     * @param[in] delta     带符号位移。
-     * @param[in] sampleCap 最多比较多少行；<= 0 表示比较全部重叠行（精度优先）。
-     * @return 0..1 的匹配分数；重叠为空时返回 0。
+     * @brief 统计位移 d 下重叠区里"信息行"的匹配分数。
+     *
+     * 信息行 = 两边都不是高频重复行（空白行、分隔线、大面积纯色）。不过滤的话这些
+     * 行在任意位移下都相等，会把错误位移刷到满分。
+     *
+     * @param[in]  hashes      新帧行哈希。
+     * @param[in]  delta       带符号位移。
+     * @param[in]  isFrequent  高频哈希判定（下标是哈希本身的值，用 lambda 传入）。
+     * @param[out] informative 参与打分的信息行数。
+     * @return 0..1 的匹配分数；没有信息行时返回 0。
      */
-    double scoreDelta(const std::vector<std::uint8_t>& rows, std::int32_t delta,
-                      int sampleCap) const;
+    template <typename FrequentPredicate>
+    double scoreDelta(const std::vector<std::uint64_t>& hashes, std::int32_t delta, int topStatic,
+                      int bottomStatic, FrequentPredicate isFrequent, int& informative) const;
 
     /**
      * @brief 判断新帧缩略图与上一保留帧是否几乎一致（去重）。
@@ -131,18 +144,18 @@ private:
     bool looksIdentical(const std::vector<std::uint8_t>& thumb) const;
 
     /**
-     * @brief 把当前帧记为新的"上一保留帧"（缩略图 + 行指纹）。
-     * @param[in] frame 刚处理完的帧。
-     * @param[in] thumb 该帧的缩略图（避免重复计算）。
-     * @param[in] rows  该帧的行指纹。
+     * @brief 把当前帧记为新的"上一保留帧"（缩略图 + 行哈希）。
+     * @param[in] frame  刚处理完的帧。
+     * @param[in] thumb  该帧的缩略图（避免重复计算）。
+     * @param[in] hashes 该帧的行哈希。
      */
     void updateReference(const CaptureFrame& frame, const std::vector<std::uint8_t>& thumb,
-                         const std::vector<std::uint8_t>& rows);
+                         const std::vector<std::uint64_t>& hashes);
 
-    int m_width = 0;                    /**< 上一帧宽度；0 = 还没有基准。 */
-    int m_height = 0;                   /**< 上一帧高度。 */
-    std::vector<std::uint8_t> m_thumb;  /**< 上一帧灰度缩略图。 */
-    std::vector<std::uint8_t> m_rows;   /**< 上一帧逐行灰度指纹。 */
+    int m_width = 0;                         /**< 上一帧宽度；0 = 还没有基准。 */
+    int m_height = 0;                        /**< 上一帧高度。 */
+    std::vector<std::uint8_t> m_thumb;       /**< 上一帧灰度缩略图。 */
+    std::vector<std::uint64_t> m_rowHashes;  /**< 上一帧逐行哈希。 */
 };
 
 }  // namespace long_capture

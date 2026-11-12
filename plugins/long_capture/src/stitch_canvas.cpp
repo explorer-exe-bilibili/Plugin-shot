@@ -30,8 +30,9 @@ constexpr int kMinReserveRows = 1024;
 StitchCanvas::StitchCanvas(int width, int maxHeight)
     : m_width(std::max(1, width)), m_limit(std::max(1, maxHeight)) {}
 
-bool StitchCanvas::append(const CaptureFrame& frame, int rows) {
-    if (rows <= 0 || frame.width != m_width || rows > frame.height) {
+bool StitchCanvas::append(const CaptureFrame& frame, int srcRow, int rows) {
+    if (rows <= 0 || frame.width != m_width || rows > frame.height || srcRow < 0 ||
+        srcRow + rows > frame.height) {
         return false;
     }
     if (m_height + rows > m_limit) {
@@ -41,16 +42,17 @@ bool StitchCanvas::append(const CaptureFrame& frame, int rows) {
         return false;
     }
     const std::size_t bytes = rowBytes();
-    // frame 里要把"最底部 rows 行"追加到画布底部：新内容在滚动方向上位于帧尾。
-    const std::uint8_t* src = frame.row(frame.height - rows);
+    // srcRow 由调用方按"去掉底部固定条"算好；这里只负责把连续 rows 行拷到画布底部。
+    const std::uint8_t* src = frame.row(srcRow);
     std::uint8_t* dst = m_pixels.get() + static_cast<std::size_t>(m_top + m_height) * bytes;
     std::memcpy(dst, src, bytes * static_cast<std::size_t>(rows));
     m_height += rows;
     return true;
 }
 
-bool StitchCanvas::prepend(const CaptureFrame& frame, int rows) {
-    if (rows <= 0 || frame.width != m_width || rows > frame.height) {
+bool StitchCanvas::prepend(const CaptureFrame& frame, int srcRow, int rows) {
+    if (rows <= 0 || frame.width != m_width || rows > frame.height || srcRow < 0 ||
+        srcRow + rows > frame.height) {
         return false;
     }
     if (m_height + rows > m_limit) {
@@ -60,8 +62,8 @@ bool StitchCanvas::prepend(const CaptureFrame& frame, int rows) {
         return false;
     }
     const std::size_t bytes = rowBytes();
-    // frame 顶部 rows 行是向上滚动时出现的新内容；整段搬到画布顶部之前。
-    const std::uint8_t* src = frame.row(0);
+    // srcRow 由调用方按"去掉顶部固定条"算好（通常是 topStatic）。
+    const std::uint8_t* src = frame.row(srcRow);
     m_top -= rows;
     std::uint8_t* dst = m_pixels.get() + static_cast<std::size_t>(m_top) * bytes;
     std::memcpy(dst, src, bytes * static_cast<std::size_t>(rows));

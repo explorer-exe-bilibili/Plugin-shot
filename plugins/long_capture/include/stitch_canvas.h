@@ -70,7 +70,7 @@ public:
      * @param[in] rows  要追加的行数（正位移 d）。
      * @return true = 已拷贝；false = 参数非法或会超过高度上限。
      */
-    bool append(const CaptureFrame& frame, int rows);
+    bool append(const CaptureFrame& frame, int srcRow, int rows);
 
     /**
      * @brief 把一帧顶部的 rows 行前插到画布顶部。
@@ -79,7 +79,7 @@ public:
      * @param[in] rows  要前插的行数（负位移的绝对值）。
      * @return true = 已拷贝；false = 参数非法或会超过高度上限。
      */
-    bool prepend(const CaptureFrame& frame, int rows);
+    bool prepend(const CaptureFrame& frame, int srcRow, int rows);
 
     /**
      * @brief 生成一张等比缩小的预览（给 HUD 缩略图用）。

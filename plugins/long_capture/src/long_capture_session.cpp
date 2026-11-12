@@ -42,6 +42,66 @@ constexpr int kFrameIntervalMs = 60;
 /** @brief HUD 缩略图刷新间隔（毫秒）：需求是 5Hz。 */
 constexpr int kHudRefreshMs = 200;
 
+/** @brief 帧签名尺寸：48×48 灰度足够判断"这一帧变没变"，成本可以忽略。 */
+constexpr int kSignatureWidth = 48;
+constexpr int kSignatureHeight = 48;
+
+/** @brief 两帧签名平均灰度差不超过它就算"画面没动"。 */
+constexpr double kSignatureSameDiff = 1.5;
+
+/**
+ * @brief 把一帧缩成 48×48 灰度签名，用于判断画面是否静止。
+ * @param[in] frame 已抓到的帧。
+ * @return 签名；frame 为空时返回空 vector。
+ */
+std::vector<std::uint8_t> buildSignature(const CaptureFrame& frame) {
+    std::vector<std::uint8_t> signature;
+    if (frame.empty()) {
+        return signature;
+    }
+    signature.resize(static_cast<std::size_t>(kSignatureWidth) *
+                     static_cast<std::size_t>(kSignatureHeight));
+    for (int sy = 0; sy < kSignatureHeight; ++sy) {
+        const int y0 = sy * frame.height / kSignatureHeight;
+        const int y1 = std::max(y0 + 1, (sy + 1) * frame.height / kSignatureHeight);
+        for (int sx = 0; sx < kSignatureWidth; ++sx) {
+            const int x0 = sx * frame.width / kSignatureWidth;
+            const int x1 = std::max(x0 + 1, (sx + 1) * frame.width / kSignatureWidth);
+            long long sum = 0;
+            int count = 0;
+            for (int y = y0; y < y1; ++y) {
+                const std::uint8_t* row = frame.row(y);
+                for (int x = x0; x < x1; ++x) {
+                    const std::uint8_t* pixel = row + static_cast<std::size_t>(x) * 4;
+                    sum += (pixel[0] * 77 + pixel[1] * 150 + pixel[2] * 29) >> 8;
+                    ++count;
+                }
+            }
+            signature[static_cast<std::size_t>(sy) * kSignatureWidth +
+                      static_cast<std::size_t>(sx)] =
+                (count > 0) ? static_cast<std::uint8_t>(sum / count) : 0;
+        }
+    }
+    return signature;
+}
+
+/**
+ * @brief 两个签名是否表示"画面没动"。
+ * @param[in] a 签名 A。
+ * @param[in] b 签名 B；尺寸不同直接判不同。
+ * @return true = 平均灰度差 <= kSignatureSameDiff。
+ */
+bool signaturesEqual(const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {
+    if (a.empty() || b.empty() || a.size() != b.size()) {
+        return false;
+    }
+    long long difference = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        difference += std::abs(static_cast<int>(a[i]) - static_cast<int>(b[i]));
+    }
+    return static_cast<double>(difference) / static_cast<double>(a.size()) <= kSignatureSameDiff;
+}
+
 /** @brief 把模板里的一个占位符替换成文本。 */
 std::string replaceToken(std::string text, const char* token, const std::string& value) {
     if (token == nullptr || token[0] == '\0') {
@@ -110,9 +170,13 @@ void LongCapture::runSession() {
     std::unique_ptr<StitchCanvas> canvas;
     ScrollStitcher stitcher;
     int frameCount = 0;
+    int feedCount = 0;
     int gapCount = 0;
     int duplicateCount = 0;
     int failureCount = 0;
+    // 静止判据：只在"当前帧与上一帧几乎一致、且与上次送拼的帧不同"时才拼接。
+    std::vector<std::uint8_t> previousSignature;
+    std::vector<std::uint8_t> lastFedSignature;
     bool failed = false;
     bool limitReached = false;
     auto lastHudRefresh = std::chrono::steady_clock::now() - std::chrono::milliseconds(kHudRefreshMs);
@@ -195,6 +259,29 @@ void LongCapture::runSession() {
             break;
         }
 
+        // 只在画面静止时送拼：平滑滚动的中间帧带亚像素抖动，位移估计会偏一两行，
+        // 拼出来就是重复行/重影。等两帧几乎一致再送，位移是"停到停"的整数跳变，
+        // 行哈希可以逐行精确比较。
+        const std::vector<std::uint8_t> signature = buildSignature(frame);
+        const bool settled =
+            !previousSignature.empty() && signaturesEqual(signature, previousSignature);
+        const bool changedSinceFed =
+            lastFedSignature.empty() || !signaturesEqual(signature, lastFedSignature);
+        const bool firstFrame = lastFedSignature.empty();
+        previousSignature = signature;
+        if (!firstFrame && !(settled && changedSinceFed)) {
+            frame.release();  // 画面还在动：这一轮不拼，等它停下来
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - frameStart);
+            const int remaining = kFrameIntervalMs - static_cast<int>(elapsed.count());
+            if (remaining > 0 && waitCommand(remaining)) {
+                break;
+            }
+            continue;
+        }
+        lastFedSignature = signature;
+        ++feedCount;
+
         const ScrollMatch match = stitcher.addFrame(frame, *canvas);
         frame.release();
         if (match.heightLimited) {
@@ -254,8 +341,10 @@ void LongCapture::runSession() {
                 saved = true;
                 log.info("[long_capture] 已保存长图：" + path + "（" +
                          std::to_string(canvas->width()) + "x" +
-                         std::to_string(canvas->height()) + "，帧 " +
-                         std::to_string(frameCount) + "，缺口 " + std::to_string(gapCount) + "）");
+                         std::to_string(canvas->height()) + "，抓帧 " +
+                         std::to_string(frameCount) + "，送拼 " + std::to_string(feedCount) +
+                         "，重复 " + std::to_string(duplicateCount) + "，缺口 " +
+                         std::to_string(gapCount) + "）");
                 if (hudReady) {
                     hud.showSaved(path);
                     // HUD 自己 2 秒后关闭；这里等它展示完，同时 stop() 能提前打断。
