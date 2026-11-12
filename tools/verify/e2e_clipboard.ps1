@@ -34,7 +34,10 @@ Check "宿主仍在运行" (-not $process.HasExited)
 $loaded = Wait-LogPattern "clipboard" 10 -SinceLine $mark
 Check "clipboard 插件出现在日志里" ($null -ne $loaded) ([string]$loaded)
 
-$hotkeySpec = Get-ConfigValue "hotkey.main/capture_hotkey"
+$hotkeySpec = Get-ConfigValue "hotkey.main/capture"
+if (-not $hotkeySpec -or $hotkeySpec -eq "<missing>" -or $hotkeySpec -eq "<no-config>") {
+    $hotkeySpec = Get-ConfigValue "hotkey.main/capture_hotkey"   # 旧键：迁移前的配置
+}
 if (-not $hotkeySpec -or $hotkeySpec -eq "<missing>" -or $hotkeySpec -eq "<no-config>") { $hotkeySpec = "Ctrl+Alt+S" }
 $virtualKeys = Convert-HotkeyToVirtualKeys $hotkeySpec
 if ($null -eq $virtualKeys) {

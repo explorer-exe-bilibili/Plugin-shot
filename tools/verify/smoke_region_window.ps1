@@ -13,7 +13,7 @@
 #
 #  用法： powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify/smoke_region_window.ps1
 #  注意： 会占用鼠标/键盘约 1~2 分钟；运行期间不要并行跑其它 e2e。
-#         会临时改 hotkey.main/region_hotkey，结束时恢复 config.json。
+#         会临时改 hotkey.main/region（列表驱动后的新键），结束时恢复 config.json。
 # ============================================================================
 . (Join-Path $PSScriptRoot "common.ps1")
 Initialize-PmAwareness
@@ -85,7 +85,7 @@ function Test-ThemeColorNearRect([string]$Path, $Rect) {
 Write-Step "区域框选：悬停吸附 / 单击截窗口 / 拖动选区"
 Stop-Host
 Backup-Config
-Set-ConfigValue "hotkey.main/region_hotkey" "Ctrl+Alt+A"
+Set-ConfigValue "hotkey.main/region" "Ctrl+Alt+A"
 
 # 控制台窗口现在通常由 Windows Terminal 承载（类名不再是 ConsoleWindowClass），
 # 所以不按类名找：给 cmd 起唯一标题，再按标题枚举顶层窗口。
