@@ -6,8 +6,9 @@
 //
 // 线程模型：事件总线回调只在宿主分发线程（main）执行（document/EVENT_BUS.md §3），
 // stb 解码 + 剪贴板写入也在这个回调里同步完成：一次截屏的图片通常只有几 MB，
-// 解码是几十毫秒级，为此开线程不值得，而且会让"退订后还有线程在写剪贴板"的
-// 生命周期更难保证（插件无自己的线程，destroy 返回后不留任何后台任务）。
+// 解码是几十毫秒级，为此再开线程不值得。Windows 上到此为止；Linux 的 X11
+// selection 必须常驻应答，由 ClipboardX11 自己的线程承担（回调只做读图/编码），
+// 两者都在 stop() 里收干净，destroy 返回后不留后台任务。
 //
 // 多语言：配置项的 label/tooltip 在 clipboard_config.cpp 里写的是语言表 key，
 // 文案本体由本文件的 kLangTables 发布到 i18n_source_list；宿主生成 i18n_list 后，
@@ -30,6 +31,17 @@ namespace {
 
 // capture.done 的主题名：与 document/CAPTURE.md §3、tray 插件订阅的是同一个。
 const char kCaptureDoneTopic[] = "capture.done";
+
+// 日志里的 target 名按平台取：同一句中文日志在两个平台说各自真实使用的格式，
+// 不把 CF_DIB 这种 Win32 名词带到 Linux 日志里（e2e 按 Windows 文案断言，
+// Windows 的字符串必须逐字保持不变）。
+#if defined(_WIN32)
+const char kImageTarget[] = "CF_DIB";
+const char kFileListTarget[] = "CF_HDROP";
+#else
+const char kImageTarget[] = "image/png";
+const char kFileListTarget[] = "text/uri-list";
+#endif
 
 // 语言表：key 必须与 clipboard_config.cpp 里 kConfig 的 label/tooltip 完全一致
 // （设置页按 display(owner, key) 解析，拼错就显示 key 本身）。两张表的 key 集
@@ -76,7 +88,24 @@ bool ClipboardPlugin::start(const ShotHostServices* host) {
         return false;
     }
     m_subscribed = true;
+#if !defined(_WIN32)
+    // Linux/X11：selection 必须常驻应答，所以除了订阅事件还要起一个 X11 线程。
+    // 没有 X11 Display（Wayland 会话）时只 WARN：截屏与其它插件照常工作。
+    std::string error;
+    m_writerReady = m_writer.start(host, error);
+    if (m_writerReady) {
+        shot::Logger(host).info("[clipboard] X11 CLIPBOARD selection 线程已就绪");
+    } else {
+        // 纯 Wayland 且没有 XWayland 是预期情况：WARN 一次即可。之后 capture.done
+        // 直接跳过，不再每条事件都读图/编码后才发现剪贴板不可用。
+        shot::Logger(host).warn("[clipboard] X11 剪贴板不可用：" + error);
+    }
+#endif
+#if defined(_WIN32)
     shot::Logger(host).info("[clipboard] 已订阅 capture.done：截屏落盘后写进剪贴板");
+#else
+    shot::Logger(host).info("[clipboard] 已订阅 capture.done：截屏落盘后交给剪贴板后端");
+#endif
     return true;
 }
 
@@ -87,6 +116,11 @@ void ClipboardPlugin::stop() {
         bus.unsubscribe(this);
         m_subscribed = false;
     }
+#if !defined(_WIN32)
+    // 退订之后、释放语言表之前停 X11 线程：它会先放弃 selection 所有权再 join，
+    // 宿主之后 FreeLibrary 时不会再留下指向本 DLL 的事件处理代码。
+    m_writer.stop();
+#endif
     // I18n 析构会退订 lists.changed。放在退订 capture.done 之后：宿主事件分发期间
     // 不会回调一个正在销毁的状态。
     m_i18n.reset();
@@ -135,6 +169,13 @@ void ClipboardPlugin::handleCaptureDone(const std::string& payload) {
         shot::Logger(m_host).debug("[clipboard] enabled=0，跳过剪贴板写入");
         return;
     }
+#if !defined(_WIN32)
+    if (!m_writerReady) {
+        // start() 已经 WARN 过一次；这里只记 debug，避免纯 Wayland 会话每次截屏都刷警告。
+        shot::Logger(m_host).debug("[clipboard] X11 剪贴板不可用，跳过本次写入");
+        return;
+    }
+#endif
     const nlohmann::json doc = nlohmann::json::parse(payload, nullptr, /*allow_exceptions=*/false);
     if (doc.is_discarded() || !doc.is_object()) {
         shot::Logger(m_host).warn("[clipboard] capture.done 负载不是合法 JSON 对象，忽略");
@@ -165,15 +206,25 @@ void ClipboardPlugin::handleCaptureDone(const std::string& payload) {
     const bool alsoFileDrop = m_config.alsoFileDrop();
     shot::Logger(m_host).info("[clipboard] 收到 capture.done：" + path + "（" +
                               std::to_string(width) + "x" + std::to_string(height) +
-                              (alsoFileDrop ? "，含 CF_HDROP" : "") + "）");
+                              (alsoFileDrop ? std::string("，含 ") + kFileListTarget : "") +
+                              "）");
     std::string error;
     if (!m_writer.copyImageFile(path, alsoFileDrop, error)) {
         // 剪贴板写入失败不影响流水线（文件已经落盘），只记 WARN 供排障。
         shot::Logger(m_host).warn("[clipboard] 写剪贴板失败：" + error);
         return;
     }
-    shot::Logger(m_host).info(std::string("[clipboard] 图片已写入剪贴板（CF_DIB") +
-                              (alsoFileDrop ? " + CF_HDROP" : "") + "）");
+#if defined(_WIN32)
+    shot::Logger(m_host).info(std::string("[clipboard] 图片已写入剪贴板（") + kImageTarget +
+                              (alsoFileDrop ? std::string(" + ") + kFileListTarget : "") +
+                              "）");
+#else
+    // Linux 的 copyImageFile 只保证“已排进 X11 线程”：真正取得所有权与 TARGETS
+    // 自检在 selection 线程异步完成，日志不能提前宣称已经可粘贴。
+    shot::Logger(m_host).info(
+        std::string("[clipboard] 图片已交给 X11 selection 线程（") + kImageTarget +
+        (alsoFileDrop ? std::string(" + ") + kFileListTarget : "") + "），等待 SelectionNotify 确认");
+#endif
 }
 
 }  // namespace clipboard

@@ -6,7 +6,7 @@
       "id": "notify.main",
       "name": "Notify",
       "version": "0.1.0",
-      "description": "截屏结果消息提示：订阅 capture.done / capture.failed，用系统通知气泡显示保存路径或失败原因",
+      "description": "截屏结果消息提示：订阅 capture.done / capture.failed，用系统通知显示保存路径或失败原因（Windows Shell / Linux libnotify）",
       "interfaces": ["shot.configurable"],
       "requires": ["core>=0.1.0"],
       "provides": []

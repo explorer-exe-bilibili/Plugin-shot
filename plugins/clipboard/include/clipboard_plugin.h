@@ -10,8 +10,10 @@
 //   · stop()       在实例销毁前退订并销毁语言表；之后宿主不会再回调本实例
 //                  （EVENT_BUS.md §5）。
 //
-//  没有窗口、没有线程：订阅回调在宿主事件分发线程（main）执行，剪贴板写入也在
-//  这个线程完成，所以不存在跨线程的剪贴板竞争。
+//  Windows 没有窗口、没有线程：订阅回调在宿主事件分发线程（main）执行，剪贴板
+//  写入也在这个线程完成；Linux/X11 的 selection 必须常驻应答，ClipboardX11 自己
+//  维护一个 X11 线程，回调线程只负责读图/编码并把负载交给它。两个平台的配置项
+//  语义完全一致，只在“往哪里写”上分叉。
 // ============================================================================
 
 #include <cstdint>
@@ -19,8 +21,13 @@
 #include <string>
 
 #include "clipboard_config.h"
-#include "clipboard_writer.h"
 #include "plugin_api.h"
+
+#if defined(_WIN32)
+#include "clipboard_writer.h"
+#else
+#include "clipboard_x11.h"
+#endif
 
 namespace shot {
 class I18n;  // 多语言封装：定义在 shot_plugin_helpers/shot_i18n.h，只在本类 .cpp 里用完整类型
@@ -111,7 +118,12 @@ private:
     const ShotHostServices* m_host = nullptr;   /**< 宿主服务表；生命周期 = 插件包。 */
     std::unique_ptr<shot::I18n> m_i18n;         /**< 语言表：start() 里创建，stop() 里销毁。 */
     ClipboardConfig m_config;                   /**< 两个配置项。 */
-    ClipboardWriter m_writer;                   /**< 剪贴板写入器（无状态）。 */
+#if defined(_WIN32)
+    ClipboardWriter m_writer;                   /**< Win32 剪贴板写入器（无状态）。 */
+#else
+    ClipboardX11 m_writer;                      /**< X11 CLIPBOARD owner（持有专属线程）。 */
+    bool m_writerReady = false;                 /**< false = X11 后端未就绪，后续事件直接跳过。 */
+#endif
     bool m_subscribed = false;                  /**< 是否已成功订阅 capture.done。 */
 };
 

@@ -6,7 +6,7 @@
       "id": "clipboard.main",
       "name": "Clipboard",
       "version": "0.1.0",
-      "description": "截屏落盘后把图片写进系统剪贴板（CF_DIB），可选同时提供 CF_HDROP 文件列表",
+      "description": "截屏落盘后把图片写进系统剪贴板（Windows CF_DIB / Linux image/png），可选同时提供文件列表（CF_HDROP / text/uri-list）",
       "interfaces": ["shot.configurable"],
       "requires": ["core>=0.1.0"],
       "provides": []

@@ -2,7 +2,10 @@
 #  clipboard —— 截屏落盘后把图片写进系统剪贴板（"shot.configurable"）
 #
 #  插件不自己采集、不自己保存：它订阅 capture.done，拿到保存插件写好的文件路径，
-#  用 stb 把文件读回内存，再转成 Win32 剪贴板格式（CF_DIB，可选 CF_HDROP）。
+#  用 stb 把文件读回内存，再按平台写系统剪贴板：
+#    · Windows：Win32 剪贴板（CF_DIB，可选 CF_HDROP）；
+#    · Linux/X11：自己拥有 CLIPBOARD selection，按 SelectionRequest 提供
+#      image/png 与 text/uri-list（XSetSelectionOwner + 专属事件循环线程）。
 #  配置项 enabled / also_file_drop 由宿主渲染并回灌，插件只负责 get/set。
 #
 #  构建方式一（宿主仓库内）：
@@ -16,16 +19,15 @@
 
 set(SHOT_PLUGIN_NAME clipboard)
 
-# 剪贴板写入是 Win32 实现（OpenClipboard / CF_DIB / CF_HDROP）：非 Windows 平台
+# macOS 用 NSPasteboard（writeObjects:@[NSImage]）实现，尚未补齐；在补齐之前
 # 直接跳过整个插件，而不是留一份跑不起来的 stub。被宿主 add_subdirectory 时用
 # PARENT_SCOPE 告诉根工程"这个插件被跳过了"（根 CMakeLists 据此打印提示）。
-#  TODO: X11 用 XSetSelectionOwner + image/png target 实现；macOS 用 NSPasteboard
-#  （writeObjects:@[NSImage]）实现；在补齐之前非 Windows 平台一直走下面的 return()。
-if(NOT WIN32)
+#  TODO: macOS 用 NSPasteboard + NSImage 实现，并在 CMake 里加 APPLE 源。
+if(APPLE)
     if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         set(SHOT_PLUGIN_SKIPPED TRUE PARENT_SCOPE)
     endif()
-    message(STATUS "clipboard：仅 Windows（Win32 剪贴板），当前平台跳过")
+    message(STATUS "clipboard：macOS（NSPasteboard）待补，当前平台跳过")
     return()
 endif()
 
@@ -47,26 +49,52 @@ if(NOT COMMAND shot_add_plugin)
 endif()
 
 # stb 是 header-only：vcpkg 的 FindStb.cmake 只负责找到 Stb_INCLUDE_DIR，
-# 没有导入目标、也没有要链接的库。
+# 没有导入目标、也没有要链接的库。Windows 用 stb_image 解码，Linux 还要用
+# stb_image_write 把图片编码成 image/png。
 find_package(Stb REQUIRED)
 
 # nlohmann-json 解析 capture.done 的 JSON 负载（header-only，根 vcpkg 清单里已有，
 # 不会给插件目录带进额外运行库）。
 find_package(nlohmann_json CONFIG REQUIRED)
 
-# user32：剪贴板 API（OpenClipboard / SetClipboardData）；shell32：DROPFILES /
-# CF_HDROP 文件列表。
+# 平台相关源文件与系统库：Windows 的 Win32 实现保持原样；Linux 走 Xlib。
+set(_clipboard_sources
+    src/plugin_entry.cpp
+    src/clipboard_plugin.cpp
+    src/clipboard_config.cpp
+)
+set(_clipboard_libraries nlohmann_json::nlohmann_json)
+set(_clipboard_include_dirs)
+
+if(WIN32)
+    # user32：剪贴板 API（OpenClipboard / SetClipboardData）；shell32：DROPFILES /
+    # CF_HDROP 文件列表。
+    list(APPEND _clipboard_sources src/clipboard_writer.cpp)
+    list(APPEND _clipboard_libraries user32 shell32)
+elseif(UNIX AND NOT APPLE)
+    # X11：XSetSelectionOwner / XChangeProperty / SelectionRequest 事件循环；
+    # 头文件在 <X11/Xlib.h>，链接 libX11（Ubuntu 24.04 包 libx11-dev）。
+    find_package(X11 REQUIRED)
+    list(APPEND _clipboard_sources
+         src/clipboard_image.cpp
+         src/clipboard_x11.cpp
+         src/clipboard_x11_selection.cpp)
+    # CMake 3.20 的 FindX11 提供 X11::X11 导入目标（带 include 路径）；
+    # 老模块只给 X11_LIBRARIES / X11_INCLUDE_DIR，这里两条路都留着。
+    if(TARGET X11::X11)
+        list(APPEND _clipboard_libraries X11::X11)
+    else()
+        list(APPEND _clipboard_libraries ${X11_LIBRARIES})
+        list(APPEND _clipboard_include_dirs ${X11_INCLUDE_DIR})
+    endif()
+endif()
+
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
-    SOURCES      src/plugin_entry.cpp
-                 src/clipboard_plugin.cpp
-                 src/clipboard_config.cpp
-                 src/clipboard_writer.cpp
-    INCLUDE_DIRS include
+    SOURCES      ${_clipboard_sources}
+    INCLUDE_DIRS include ${_clipboard_include_dirs}
     LINK_LIBRARIES
-                 nlohmann_json::nlohmann_json
-                 user32
-                 shell32
+                 ${_clipboard_libraries}
 )
 
 # shot_add_plugin() 只认识 INCLUDE_DIRS / LINK_LIBRARIES 两种参数，所以 stb 的

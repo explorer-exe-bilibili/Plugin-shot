@@ -90,7 +90,7 @@ struct NotifyState {
     // create_instance 里拿到服务表之后。
     std::unique_ptr<shot::I18n> i18n;
     NotifyConfig config; /**< shot.configurable：enabled / show_on_success / show_on_error / sound。 */
-    NotifyToast toast;   /**< 通知线程 + 隐藏占位图标 + Shell 气泡。 */
+    NotifyToast toast;   /**< 通知后端（Windows 隐藏窗口图标线程 / Linux libnotify）。 */
 };
 
 void* create_state() {
@@ -100,8 +100,9 @@ void* create_state() {
 void destroy_state(void* self) {
     auto* state = static_cast<NotifyState*>(self);
     if (state != nullptr) {
-        // 返回前必须退订事件总线、停通知线程、删隐藏图标：宿主之后可能 FreeLibrary
-        // 本 DLL（EVENT_BUS.md §5 / SETTINGS.md §3.1 的生命周期要求）。
+        // 返回前必须退订事件总线并释放平台通知后端（Windows 停线程/删隐藏图标，
+        // Linux notify_uninit）：宿主之后可能 FreeLibrary 本 DLL（EVENT_BUS.md §5 /
+        // SETTINGS.md §3.1 的生命周期要求）。
         try {
             state->toast.stop();
         } catch (...) {
@@ -185,8 +186,8 @@ void* create_instance(std::uint32_t index, const ShotHostServices* host) {
     shot::Logger(host).info(entry->id);
 
     // 本插件没有 ui_provider 的 init/deinit 生命周期：create(index, host) 是唯一能
-    // 拿到宿主服务表的时机，所以语言表 + 事件订阅 + 通知线程都在实例创建路径里
-    // 建立；退订/停线程/释放语言表在 destroy_state（destroy 路径）里做。
+    // 拿到宿主服务表的时机，所以语言表 + 事件订阅 + 平台通知后端都在实例创建路径里
+    // 建立；退订/停后端/释放语言表在 destroy_state（destroy 路径）里做。
     if (entry == &notify::kNotify && instance->state != nullptr) {
         auto* notifyState = static_cast<notify::NotifyState*>(instance->state);
         // 语言表必须在通知线程启动前加载：气泡标题/正文是线程运行时按 key 查的。
@@ -202,7 +203,11 @@ void* create_instance(std::uint32_t index, const ShotHostServices* host) {
             notifyState->toast.start(host, &notifyState->config, notifyState->i18n.get());
         } catch (...) {
             // 初始化失败不影响插件存活：消息提示降级为不可用，宿主继续截屏。
+#if defined(_WIN32)
             shot::Logger(host).warn("[notify] 初始化通知线程时异常，消息提示不可用");
+#else
+            shot::Logger(host).warn("[notify] 初始化通知后端时异常，消息提示不可用");
+#endif
         }
     }
     return instance;

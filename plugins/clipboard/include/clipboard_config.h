@@ -4,7 +4,8 @@
 //  include/clipboard_config.h —— 剪贴板插件的两个配置项（shot.configurable）
 //
 //  · enabled       BOOL：截屏落盘后是否写进剪贴板（默认开）。
-//  · also_file_drop BOOL：是否同时放一份 CF_HDROP 文件列表（默认关）。
+//  · also_file_drop BOOL：是否同时提供文件列表（Windows CF_HDROP / Linux
+//    text/uri-list，等价于"拖一个文件"），默认关。
 //
 //  配置值必须能在任意线程被读写：宿主 init 的 apply_stored、设置页应用都会调
 //  set_config，而事件回调（capture.done）在宿主分发线程读当前值。两个开关都是
@@ -71,7 +72,7 @@ public:
     /** @brief 截屏落盘后是否写进剪贴板（`enabled`）。 */
     bool enabled() const noexcept;
 
-    /** @brief 是否同时提供 CF_HDROP 文件列表（`also_file_drop`）。 */
+    /** @brief 是否同时提供文件列表（Windows CF_HDROP / Linux text/uri-list）。 */
     bool alsoFileDrop() const noexcept;
 
 private:
