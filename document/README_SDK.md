@@ -54,8 +54,8 @@ shot_add_plugin(my_plugin
 宿主本身可以在 Linux 构建——宿主仓库根目录的 `CMakePresets.json` + `.github/workflows/cmake.yml`
 以 Linux / macOS / Windows 为目标，Linux 已在 WSL2 Ubuntu 24.04.5 / GCC 13.3.0 / x64-linux
 实测 configure + build 通过（0 warning，产物与冒烟结果见宿主仓库的 `README.md`「平台」段）；
-macOS 尚无真机构建结论。CI workflow 已就绪，但当前 GitHub 账号的 Actions 受 **billing 锁定**
-无法启动，待账号解封后验证。
+macOS 尚无真机构建结论。CI workflow 已就绪（Windows job 已跑绿），Linux / macOS job 仍待
+下一轮运行确认。
 
 插件里访问宿主服务用 `shot_plugin_helpers.h` 的封装：`shot::Logger`（写宿主日志）、
 `shot::Config`（读写宿主配置）、`shot::EventBus`（主题发布/订阅）、`shot::PluginLists`

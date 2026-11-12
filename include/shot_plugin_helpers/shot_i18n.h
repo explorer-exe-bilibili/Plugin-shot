@@ -562,9 +562,9 @@ inline bool I18n::loadTables(const char* const* tables, std::size_t count) {
         const std::size_t tab = keySets[index].find('\t');
         const std::string firstKeys =
             (firstTab == std::string::npos) ? std::string() : keySets.front().substr(firstTab + 1);
-        const std::string keys =
+        const std::string currentKeys =
             (tab == std::string::npos) ? std::string() : keySets[index].substr(tab + 1);
-        if (keys != firstKeys) {
+        if (currentKeys != firstKeys) {
             m_log.warn("[i18n] 语言表 key 集不一致：" + keySets.front() + " vs " + keySets[index]);
         }
     }
