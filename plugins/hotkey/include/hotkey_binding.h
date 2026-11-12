@@ -8,9 +8,10 @@
 //  修饰键可省略、顺序任意、重复出现按一次算；主键必须恰好一个。
 //
 //  解析结果里的 virtualKey 用 Win32 的 VK_* 数值（A-Z / 0-9 就是 ASCII，
-//  F1..F12 = 0x70..0x7B，PrintScreen = 0x2C）：本仓库只支持 Windows（CMake 里非 Windows 直接跳过），
-//  但解析逻辑本身不 include <windows.h>，方便单独测试、也方便将来移植到
-//  macOS RegisterEventHotKey / Linux XGrabKey 时在各平台做一次 VK 到本地键码映射。
+//  F1..F12 = 0x70..0x7B，PrintScreen = 0x2C），解析逻辑本身不 include <windows.h>：
+//  平台实现各自做一次"VK → 本地键码"的映射（Windows 直接当 VK 用；Linux/X11 在
+//  hotkey_window_x11_register.cpp 里换成 keysym → keycode），所以解析器与平台无关、
+//  也可以单独测试。
 // ============================================================================
 
 #include <cstdint>

@@ -1,13 +1,14 @@
-// 非 Windows 的 HotkeyWindow 降级实现：没有全局热键注册能力。
+// 没有全局热键能力平台的 HotkeyWindow 降级实现（当前只有 macOS 走这里）。
 //
-// Wayland 没有进程可用的全局热键 API（X11 的 XGrabKey 也不在默认目标里），所以
-// 这里不假装注册成功，也不让插件失败：hotkey_list 的贡献、动态配置项、i18n 都
-// 和 Windows 一样工作，只是按下组合键不会有任何反应。启动时打一条 WARN，把用户
-// 指向 session_control 插件的 D-Bus / 桌面自定义快捷键入口。
+// Linux 有独立的 X11 实现（hotkey_window_x11.cpp 用 XGrabKey）；纯 Wayland 会话
+// 里那份实现在运行期拿不到 Display，会按本文件同样的方式降级。Wayland 没有进程
+// 可用的全局热键 API，所以这里不假装注册成功，也不让插件失败：hotkey_list 的贡献、
+// 动态配置项、i18n 都和 Windows 一样工作，只是按下组合键不会有任何反应。启动时打
+// 一条 WARN，把用户指向 session_control 插件的 D-Bus / 桌面自定义快捷键入口。
 //
-// 为什么单独一个 TU：Windows 的 Impl 持有 HWND/HINSTANCE，非 Windows 连
-// <windows.h> 都没有；用同一份公共头 + 两份平台实现，插件入口与配置代码保持
-// 平台无关（CMakeLists 按平台选源文件）。
+// 为什么单独一个 TU：Windows 的 Impl 持有 HWND/HINSTANCE、X11 的 Impl 持有 Display，
+// 没有热键能力的平台连这些都不该有；用同一份公共头 + 各平台实现，插件入口与配置
+// 代码保持平台无关（CMakeLists 按平台选源文件）。
 
 #include "hotkey_window.h"
 

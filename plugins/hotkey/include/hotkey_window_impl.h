@@ -29,6 +29,7 @@
 #include <windows.h>
 
 #include "hotkey_binding.h"
+#include "hotkey_topics.h"
 #include "hotkey_window.h"
 #include "plugin_api.h"
 
@@ -38,21 +39,10 @@ class HotkeyCatalog;
 class HotkeyConfig;
 
 // ---------------------------------------------------------------------------
-//  事件主题（document/EVENT_BUS.md 的约定：全小写、点分隔、动词放最后）
-// ---------------------------------------------------------------------------
-
-/** @brief 订阅：设置页应用后宿主发布空负载的 config.applied，触发热键重注册。 */
-inline constexpr char kTopicConfigApplied[] = "config.applied";
-/** @brief 订阅：设置页开始录入组合键（空负载），请求撤掉全部全局注册。 */
-inline constexpr char kTopicHotkeySuspend[] = "hotkey.suspend";
-/** @brief 订阅：设置页结束录入（空负载），请求按当前配置恢复注册。 */
-inline constexpr char kTopicHotkeyResume[] = "hotkey.resume";
-
-/** @brief 宿主卸载 UI 插件前投递的事件（走 post_to_plugin，不走总线）。 */
-inline constexpr char kEventHostShutdown[] = "host.shutdown";
-
-// ---------------------------------------------------------------------------
 //  热键线程的窗口消息
+//
+//  订阅/投递用的主题常量在 hotkey_topics.h：Linux X11 实现订阅同一批主题，
+//  常量只能有一份来源。
 // ---------------------------------------------------------------------------
 
 /** @brief requestReapply() 请求重注册（配置变了 / 收到 config.applied）。 */

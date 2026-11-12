@@ -15,9 +15,10 @@
 //  settings.open（空）。
 //
 //  Win32 类型（HWND / HINSTANCE）全部关在 Impl 里（定义在内部头
-//  hotkey_window_impl.h），公共头不包含 <windows.h>。非 Windows 平台由
-//  hotkey_window_stub.cpp 提供同一接口的降级实现（发布列表与配置项，但不注册
-//  全局热键：Wayland 没有该能力，应改用 session_control 的 D-Bus 入口）。
+//  hotkey_window_impl.h），公共头不包含 <windows.h>。平台实现各有内部头：
+//  Linux/X11 是 hotkey_window_x11_impl.h（XGrabKey），macOS 等没有全局热键能力
+//  的平台用 hotkey_window_stub.cpp（只 WARN，不注册）。X11 实现在运行期拿不到
+//  Display（纯 Wayland 会话）时也走同样的降级行为，不让插件加载失败。
 // ============================================================================
 
 #include <cstdint>
