@@ -205,6 +205,25 @@ Wayland 下单击不拖 = 取消（没有窗口可截），所以用单独的 `r
 - 老宿主没有列表服务时 `shot::I18n` 安静降级，仍用第一张表（zh-CN）显示，`init` 不会
   因此失败；日志与窗口行为完全不变。
 
+### 3.3 选择握手（`region.select.request`）
+
+`long_capture` 这类"自带采集层"的消费者不需要宿主流水线，它只想让用户先选一块区域。
+本插件为此提供一个与普通框选**交互完全一致**的选择模式：
+
+| 主题 | 方向 | 负载 |
+| --- | --- | --- |
+| `region.select.request` | 消费者 → 本插件 | `{"purpose":"long_capture"}` |
+| `region.selected` | 本插件 → 消费者 | `{"purpose":"long_capture","region":{x,y,width,height}}` |
+| `region.selected` | 本插件 → 消费者 | `{"purpose":"long_capture","cancelled":true}` |
+
+- 有非空 `purpose` 时进入选择模式：窗口悬停吸附、单击选窗口、拖框选区、主题色折角都与
+  普通框选一致；**确认时只发 `region.selected`，不发 `capture.request`**，消费者自己采集。
+- Esc / 右键 / 选区过小 / 启动失败都会回一条 `cancelled:true`，消费者不用等到超时。
+- `purpose` 为空或负载非法时安静忽略；普通 `capture.request` 触发的框选完全不变，仍然
+  发带 `region` 的 `capture.request`（`smoke_region_window.ps1` 走的就是这条路径）。
+- 已经在框选时收到新的选择请求只记 DEBUG、不重开覆盖层（避免打断用户正在拖的选区）。
+- 非 Windows 平台没有 `long_capture` 消费者，purpose 选择按取消回执（避免发起方空等）。
+
 ## 4. 坐标语义与 DPI 实测
 
 发布出去的区域是**物理虚拟桌面像素**，原点 = 虚拟桌面左上角——与

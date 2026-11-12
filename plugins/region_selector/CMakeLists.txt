@@ -79,6 +79,7 @@ find_package(glfw3 CONFIG REQUIRED)
 set(_region_selector_sources
     src/plugin_entry.cpp
     src/region_window.cpp
+    src/region_selection.cpp
     src/region_overlay.cpp
     src/region_overlay_draw.cpp
     src/region_graphics.cpp

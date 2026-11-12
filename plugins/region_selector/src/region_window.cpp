@@ -333,7 +333,7 @@ void RegionWindow::Impl::drainEvents() {
                 if (overlayVisible) {
                     // 已经在框选中：重复触发只记一句，不重开（避免覆盖用户正在拖的选区）。
                     shot::Logger(host).debug("region_selector：正在框选，忽略重复的触发事件");
-                } else if (!startSelection()) {
+                } else if (!startSelection(std::string())) {
 #if defined(_WIN32)
                     shot::Logger(host).warn("region_selector：启动框选失败（没有可用显示器？）");
 #else
@@ -344,6 +344,9 @@ void RegionWindow::Impl::drainEvents() {
                 }
             }
             // 其它 capture.request（整屏采集 / 已带 region）安静忽略：它们不是给本插件的。
+        } else if (event.name == kTopicRegionSelectRequest) {
+            // 选择握手：负载带 purpose 时进入选择模式，确认后只回 region.selected。
+            beginPurposeSelection(event.payload);
         }
         // 其它主题同样安静忽略：事件总线是共享的，收到不认识的主题不是错误。
         local.pop();
@@ -386,7 +389,7 @@ void RegionWindow::Impl::requestQuit() {
 // ---------------------------------------------------------------------------
 // 框选会话：开始 / 取消 / 确认（提交流程）
 // ---------------------------------------------------------------------------
-bool RegionWindow::Impl::startSelection() {
+bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     // 第一次框选才初始化 GLFW/窗口/ImGui（原因见文件头），失败就安静放弃本次框选。
     if (!ensureGraphics()) {
         shot::Logger(host).error("[region_selector] 图形栈初始化失败，本次框选放弃");
@@ -509,6 +512,11 @@ bool RegionWindow::Impl::startSelection() {
     }
 #endif
 
+    // 本次选择是普通框选（purpose 为空）还是 region.select.request 发起的握手：
+    // 确认后据此决定发 capture.request 还是 region.selected。放在显示之前设置，
+    // hideOverlay() 会清空它，避免上一次会话的 purpose 泄漏到下一次。
+    selectionPurpose = purpose;
+
     // 先隐藏状态下渲染一帧再显示：否则 glfwShowWindow 后、第一帧 swap 之前，DWM 会把
     // 窗口的初始（未渲染）内容合上去，用户看到一瞬间的黑/花屏。渲染一帧后缓冲区里
     // 已经是"桌面快照 + 遮罩 + 十字线"，显示时第一次合成就是对的。
@@ -542,9 +550,14 @@ bool RegionWindow::Impl::startSelection() {
 }
 
 void RegionWindow::Impl::cancelSelection() {
-    // v1 不定义 capture.cancelled：取消就是"什么都不发"，把覆盖层收掉即可。
-    shot::Logger(host).info("region_selector：框选已取消（不发布事件）");
+    // v1 不定义 capture.cancelled：普通框选取消就是"什么都不发"，把覆盖层收掉即可；
+    // purpose 选择必须回一条 cancelled，否则发起方会一直等到超时。
+    const std::string purpose = selectionPurpose;
+    shot::Logger(host).info("region_selector：框选已取消（普通框选不发事件，purpose 选择回取消）");
     hideOverlay();
+    if (!purpose.empty()) {
+        publishPurposeCancelled(purpose);
+    }
 }
 
 void RegionWindow::Impl::hideOverlay() {
@@ -552,6 +565,7 @@ void RegionWindow::Impl::hideOverlay() {
         glfwHideWindow(window);
     }
     overlayVisible = false;
+    selectionPurpose.clear();
     drag = DragState{};
     // 取消/完成时复位吸附动画与枚举缓存：下次显示必须从"首帧直接对齐"开始，
     // 不能带着上一次会话的动画中间值飞入。
@@ -563,6 +577,8 @@ void RegionWindow::Impl::hideOverlay() {
 void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth, int localHeight,
                                          bool windowClick) {
     drag = DragState{};
+    // hideOverlay() 会清空 selectionPurpose；先拷出来，确认/取消时据此决定发哪个主题。
+    const std::string purpose = selectionPurpose;
     // 拖动时任一边小于最小尺寸 = 没选中什么（误点/手抖）：按取消处理，不发布事件。
     // 单击窗口是例外：矩形由系统给出，再小也是用户真实看到的窗口，不受 8px 阈值限制。
     if (!windowClick &&
@@ -573,6 +589,9 @@ void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth,
                       localHeight, kMinimumSelectionSize);
         shot::Logger(host).info(text);
         hideOverlay();
+        if (!purpose.empty()) {
+            publishPurposeCancelled(purpose);
+        }
         return;
     }
     if (windowClick) {
@@ -613,8 +632,22 @@ void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth,
         shot::Logger(host).info("region_selector：宿主正在退出，丢弃本次已确认的区域");
         return;
     }
-    publishRegion(region);
+    if (!purpose.empty()) {
+        // 选择握手：只回 region.selected，不发 capture.request，由发起方自己采集。
+        publishPurposeSelection(purpose, region);
+    } else {
+        publishRegion(region);
+    }
 #else
+    if (!purpose.empty()) {
+        // 长截图等 purpose 消费者目前只有 Windows 实现；其它平台按取消回执，
+        // 避免发起方一直等到超时（Wayland 也没有可用的全局屏幕坐标）。
+        hideOverlay();
+        shot::Logger(host).warn(
+            "region_selector：purpose 选择在非 Windows 平台未实现，按取消回执");
+        publishPurposeCancelled(purpose);
+        return;
+    }
     // Wayland：不需要"等遮罩消失"（不会第二次抓屏），直接从内存里的 portal 截图裁剪、
     // 写 PNG、发布 capture.done；不发布 capture.request，避免第二次采集/第二次授权。
     commitWaylandSelection(localX, localY, localWidth, localHeight);
@@ -706,9 +739,13 @@ bool RegionWindow::start(const ShotHostServices* host, const shot::I18n* i18n) {
     if (bus.available()) {
         m_impl->busSubscribed =
             bus.subscribe(kTopicCaptureRequest, &Impl::onBusEvent, m_impl.get());
+        m_impl->busSubscribed =
+            bus.subscribe(kTopicRegionSelectRequest, &Impl::onBusEvent, m_impl.get()) ||
+            m_impl->busSubscribed;
         if (!m_impl->busSubscribed) {
             shot::Logger(host).warn(
-                "region_selector：订阅 capture.request 失败，覆盖层只能靠 post_to_plugin 触发");
+                "region_selector：订阅 capture.request / region.select.request 失败，"
+                "覆盖层只能靠 post_to_plugin 触发");
         }
     } else {
         // 旧版宿主没有事件总线：安静降级，覆盖层不会自动弹出。

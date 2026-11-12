@@ -56,6 +56,19 @@ namespace region_selector {
 /** @brief 触发主题：负载 `{"mode":"region"}` 启动框选（见 document/CAPTURE.md）。 */
 inline constexpr char kTopicCaptureRequest[] = "capture.request";
 
+/**
+ * @brief 选择握手：别的插件请求"先选目标区域"（负载 `{"purpose":"..."}`）。
+ *
+ * 与 capture.request 的区别只在确认后的产出：普通框选发带 region 的
+ * capture.request（交给宿主流水线采集）；带 purpose 的选择只回
+ * region.selected {purpose, region}，**不发 capture.request**，由发起方自己采集。
+ * 这样长截图这类"自带采集层"的消费者不会触发宿主的整屏采集/落盘。
+ */
+inline constexpr char kTopicRegionSelectRequest[] = "region.select.request";
+
+/** @brief 选择握手的结果主题：`{purpose, region:{x,y,width,height}}` 或 `{purpose, cancelled:true}`。 */
+inline constexpr char kTopicRegionSelected[] = "region.selected";
+
 /** @brief 宿主卸载 UI 插件前投递的事件（走 post_to_plugin，不走总线）。 */
 inline constexpr char kEventHostShutdown[] = "host.shutdown";
 
@@ -176,6 +189,7 @@ struct RegionWindow::Impl {
     bool imguiInitialized = false;
     bool metricsLogged = false;   // 显示器几何实测日志只打一次
     bool overlayVisible = false;  // 覆盖层是否正在显示
+    std::string selectionPurpose;  // 非空 = 本次选择由 region.select.request 发起，确认后回 region.selected
     DragState drag;               // 当前框选状态
     HoverBox hover;               // 悬停窗口吸附框（目标 + 动画中的显示矩形）
     std::vector<WindowTarget> windowTargets;  // 最近一次枚举结果（绝对物理像素，Z 序）
@@ -203,11 +217,14 @@ struct RegionWindow::Impl {
     bool ensureGraphics();
     void waitForEvent();
     void shutdownWindow();
-    bool startSelection();
+    bool startSelection(const std::string& purpose);
     void cancelSelection();
     void finishSelection(int localX, int localY, int localWidth, int localHeight, bool windowClick);
     void hideOverlay();
     void publishRegion(const ScreenRect& region) const;
+    bool beginPurposeSelection(const std::string& payload);
+    void publishPurposeSelection(const std::string& purpose, const ScreenRect& region) const;
+    void publishPurposeCancelled(const std::string& purpose) const;
     static void onBusEvent(void* user, const char* topic, const void* data, std::uint32_t len);
     static void onGlfwError(int errorCode, const char* description);
 
