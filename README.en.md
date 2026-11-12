@@ -61,10 +61,12 @@ current main line.
 | Notification plugin `plugins/notify` (success/failure balloons via a hidden placeholder icon; config items `enabled` / `show_on_success` / `show_on_error` / `sound`; Windows only) | ✅ working |
 | Clipboard plugin `plugins/clipboard` (subscribes to `capture.done` → CF_DIB / optional CF_HDROP; config items `enabled` / `also_file_drop`; Windows only) | ✅ working |
 | Global hotkey plugin `plugins/hotkey` (defaults Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`; primary keys A-Z / 0-9 / F1-F12 / PrintScreen plus optional modifiers (Windows 11 routes a bare PrintScreen to Snipping Tool by default, so prefer Ctrl+PrintScreen or disable that Windows setting); the settings window records a new combo by key press (`options="hotkey"`, temporarily unregistering global hotkeys via `hotkey.suspend/resume` while recording); invalid hotkeys are warned and skipped; Windows only) | ✅ working |
+| Linux session-control plugin `plugins/session_control` (exposes `org.pluginshot.Control` on the session bus; `Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` map to existing events; Wayland has no global-hotkey API, so the desktop's custom shortcut runs `gdbus call`; config item `enabled`; Linux only) | Draft (not compiled or verified): sources and docs are in the workspace and need the system `libglib2.0-dev`; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
+| Long screenshot plugin `plugins/long_capture` (manual-scroll long capture: continuous frames + online row-fingerprint stitching + Enter to save; config items `hotkey` / `maxHeight`; Windows P1) | Draft (not compiled or verified): only part of the sources exist, so a Windows configure fails on the missing files; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | Mixed-DPI multi-monitor capture (physical virtual desktop 3584x1600; per-call thread DPI context fallback; negative origin not verified on real hardware) | ✅ working (`document/CAPTURE.md` §2.1) |
 | Settings-window DPI (dual-screen 150%+100%: live rescale while dragging across monitors, geometry clamped to the target screen's DPI, non-accumulating; other DPI mixes / 3+ screens unverified) | ✅ working (`document/SETTINGS.md` §6.1) |
 | Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--help` | ✅ working |
-| GitHub Actions cross-platform CI (Linux/macOS/Windows matrix + vcpkg cache + presets + `--help` smoke) | workflow ready; Actions blocked by the account's GitHub billing lock (Linux verified locally under WSL, see Platform) |
+| GitHub Actions cross-platform CI (Linux/macOS/Windows matrix + vcpkg cache + presets + `--help` smoke) | workflow ready; the Windows job passes, while the Linux/macOS configure failures and the real per-platform status are covered by Platform below and [`document/PLATFORMS.md`](document/PLATFORMS.md) |
 | Host settings (`core` pseudo-plugin: UI language / log level / console / file log / theme color) | ✅ working |
 | Plugin metadata appended to the DLL tail (`metadata.json`, CMake only) | ✅ working (the host reads it before loading: prefilter + dependency topological sort) |
 | Build-time metadata validation (unique ids / registered interfaces / abi matches the header / dependency syntax) | ✅ working (`cmake/ValidatePluginMeta.cmake`) |
@@ -115,11 +117,15 @@ current main line.
 │   ├── clipboard/            # clipboard: capture.done → CF_DIB / CF_HDROP (Windows only)
 │   ├── notify/               # capture result notifications: hidden placeholder icon + Shell balloons (Windows only)
 │   ├── hotkey/               # global hotkeys → events (Windows only)
+│   ├── session_control/      # Linux D-Bus control entry: stands in for global hotkeys on Wayland (Linux only, draft)
 │   ├── region_selector/      # selection overlay: hover-to-pick-window, click captures that window, theme-colored corner brackets (Windows only)
+│   ├── long_capture/         # long screenshot: continuous frames + row-fingerprint stitching (Windows P1, draft)
 │   ├── settings_ui/          # settings window: ImGui + GLFW + OpenGL3 (cross-platform, Windows verified)
+│   ├── translator/           # external language packs: scans official/user dirs, contributes i18n_source_list (cross-platform code, Windows verified)
 │   └── tray/                 # tray entry: data-driven menu + icon (Windows only)
 ├── document/
 │   ├── README_SDK.md         # SDK layout and every build constraint (written in Chinese)
+│   ├── PLATFORMS.md          # cross-platform capability matrix: per-plugin status, limits, gaps and CI state
 │   ├── ABI_POLICY.md         # append-only rules and the interface id registry (Chinese)
 │   ├── SETTINGS.md           # settings window: config_list, event-driven writes/commit, Generic, DPI, plugin enable/disable and hot unload (Chinese)
 │   ├── LISTS.md              # generic lists + event-driven design: list id registry, lists.* protocol, refresh timing (Chinese)
@@ -172,12 +178,16 @@ laid out into `bin/` by `cmake/copy_runtime_deps.cmake`, not stored in the plugi
 The generic list protocol adds no new dependency: a list snapshot is just JSON serialized with
 `nlohmann-json`. The new plugins add no new vcpkg dependency either: `clipboard` reuses `stb` /
 `nlohmann-json`, `notify` only needs `user32` / `shell32`, `hotkey` only `user32`, and
-`region_selector` reuses `imgui` / `glfw3` / `nlohmann-json`.
+`region_selector` reuses `imgui` / `glfw3` / `nlohmann-json`. The two newest plugins add no new
+vcpkg dependency either: `session_control` (Linux draft) only needs the system `gio-2.0` development
+package (Ubuntu: `libglib2.0-dev`, via `pkg-config`) and `long_capture` (Windows draft) reuses
+`stb` / `nlohmann-json`. Neither draft has been compiled yet.
 
 **CI**: `.github/workflows/cmake.yml` is ready (Linux / macOS / Windows matrix + vcpkg manifest
-cache + CMake presets + headless `--help` smoke test), but Actions cannot start because the
-current GitHub account's Actions are **billing-locked** (immediate failure) — the workflow is
-pending verification once the account is unlocked.
+cache + CMake presets + headless `--help` smoke test). In the latest visible run the Windows job
+passed while Linux / macOS failed at configure (vcpkg baseline — fixed but not re-run yet). See
+[`document/PLATFORMS.md`](document/PLATFORMS.md) §4 for the per-platform conclusion and why a green
+CI run is not platform support.
 
 **Cross-platform status**: Linux has been verified locally under WSL2 (Ubuntu 24.04.5 LTS /
 GCC 13.3.0 / x86_64 / vcpkg `x64-linux` / CMake 3.28.3 / Ninja 1.11.1 / Release): configure +
@@ -187,7 +197,9 @@ validation and output pruning passing; `--help` exits 0, and a headless `--captu
 dlopen all `.so` files, initialise the OpenCV provider, create an OpenGL context under WSLg,
 and exits cleanly after failing by design (no `screen_capture` on non-Windows).
 `SHOT_ENABLE_OPENCV=OFF` was verified too. macOS is **not verified on real hardware**
-(code audit only). Windows is the primary development and verification platform.
+(code audit only). Windows is the primary development and verification platform. **That result
+predates the `session_control` draft**: the draft's CMake needs the system `libglib2.0-dev` and it
+has not been compiled yet.
 
 ### Run
 
@@ -523,19 +535,32 @@ the root `CMakeLists.txt` and drifted away from the docs.
 
 ## Platforms
 
-Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`).
-Platform-specific plugins are **skipped by their own `CMakeLists.txt`** on non-Windows hosts
-(no fake implementations): `screen_capture` (GDI), `tray` (Win32 tray), `clipboard` (Win32
-clipboard), `hotkey` (RegisterHotKey), `region_selector` (Win32 physical coordinates +
-overlay), `notify` (Shell balloons). Cross-platform buildable: `settings_ui` (GLFW),
-`image_saver`, `example_processor`, `opencv_provider`.
+Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`). On Linux
+the **default target is Wayland** (the maintainer's environment: Ubuntu 24.04 / GNOME 46 / Wayland
+session), with X11 kept as the **second priority**; macOS has never built successfully.
+Platform-specific plugins are **skipped by their own `CMakeLists.txt`** on non-target hosts
+(`SHOT_PLUGIN_SKIPPED`, no fake implementations): `screen_capture` (GDI), `tray` (Win32 tray),
+`clipboard` (Win32 clipboard), `hotkey` (RegisterHotKey), `region_selector` (Win32 physical
+coordinates + overlay), `notify` (Shell balloons), `long_capture` (Win32 foreground window + HUD,
+draft); `session_control` is the other way round — Linux-only (draft). Cross-platform buildable:
+`settings_ui` (GLFW), `image_saver`, `example_processor`, `opencv_provider`, `translator`.
+
+**The complete capability matrix (Windows / Wayland / X11 / macOS, one status per cell, with
+reasons and porting gaps) is [`document/PLATFORMS.md`](document/PLATFORMS.md); this section keeps
+only build/verification conclusions — do not read it as "supported everywhere".**
 
 | Platform | Status |
 | --- | --- |
-| Windows (MSVC x64) | ✅ primary development and verification platform (incl. mixed-DPI dual screen, plugin enable/disable, capture/save/notify/clipboard/hotkey/region selection) |
-| Linux (WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`) | ✅ verified: configure + build (43s, 0 warnings), producing `Plugin-shot` and the `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` `.so` files; `--help` exits 0; a headless `--capture` run loads all `.so` files and exits cleanly (no `screen_capture` on non-Windows, so it fails by design with exit 1); `SHOT_ENABLE_OPENCV=OFF` also passes |
-| macOS | **not verified on real hardware** (code audit only: `base.cpp`'s `_NSGetExecutablePath` / empty-string UB / HOME fallback were fixed); no real build result |
-| GitHub Actions | workflow ready; Actions cannot start because the account is billing-locked, pending verification after unlocking |
+| Windows (MSVC x64) | ✅ primary development and verification platform (incl. mixed-DPI dual screen, plugin enable/disable, capture/save/notify/clipboard/hotkey/region selection); long capture is draft-only |
+| Linux (WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`) | 🟡 compiles, functionality unverified: configure + build (43s, 0 warnings), producing `Plugin-shot` and the `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` `.so` files; `--help` exits 0; a headless `--capture` run loads all `.so` files but fails by design with exit 1 (no `screen_capture`); no real X11 / Wayland desktop run. `SHOT_ENABLE_OPENCV=OFF` also passes. **That result predates the `session_control` draft**: the draft needs `libglib2.0-dev` and has not been compiled |
+| Linux (Wayland, default target) | ⛔ capture / region selection / global hotkeys are all unimplemented: capture must go through `xdg-desktop-portal` ScreenCast + PipeWire, hotkeys are replaced by `plugins/session_control` (draft), selection can only use the "portal snapshot + drag inside our own window" plan B, and the tray depends on StatusNotifierItem plus a desktop extension. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
+| Linux (X11, second priority) | ⛔ kept but unimplemented: no `XGetImage`/`XShmGetImage` capture, no `XGrabKey` hotkeys, no override-redirect overlay; the X11 clipboard/notify drafts are uncommitted and uncompiled. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
+| macOS | **not built and not verified on real hardware**: the CI macOS job fails at configure (vcpkg/toolchain); code audit only (`base.cpp`'s `_NSGetExecutablePath` / empty-string UB / HOME fallback); no real build or run result |
+| GitHub Actions | workflow ready; the Windows job passes while Linux/macOS have configure-stage failure records (see [`document/PLATFORMS.md`](document/PLATFORMS.md) §4); a green CI run does not mean the platform is usable |
+
+The Linux build platform uses one binary for both sessions; X11 and Wayland differ greatly at
+runtime (Wayland disallows global screen capture, global hotkeys and global overlays) — see the two
+columns in the matrix.
 
 Linux host-side system dependencies (verified on Ubuntu 24.04): `build-essential ninja-build
 pkg-config`, `autoconf autoconf-archive automake libtool libltdl-dev`, `bison flex gperf`,
@@ -545,6 +570,11 @@ pkg-config`, `autoconf autoconf-archive automake libtool libltdl-dev`, `bison fl
 libxkbcommon-dev libwayland-dev`), `libselinux1-dev libpam0g-dev`. On Linux,
 `nativefiledialog-extended` uses vcpkg's `NFD_PORTAL=ON` and does **not** need system
 GTK3/dbus development packages.
+
+Per-capability system dependencies (`session_control` needs `libglib2.0-dev` today; Wayland
+capture would add `libportal-dev` + `libpipewire-0.3-dev`; Linux notifications need
+`libnotify-dev`), together with what is already installed, are listed in
+[`document/PLATFORMS.md`](document/PLATFORMS.md) §4.1. The CI apt step has not been updated yet.
 
 ## License
 

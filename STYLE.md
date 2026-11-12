@@ -463,7 +463,7 @@ shot_add_plugin(my_plugin
   6. 结尾 **检查清单** `- [ ]`
 - 语气：**祈使、直接、给理由**。用 **加粗** 标不可违反的点（**绝不** / **必须** / **禁止**），关键数字与标识符用反引号。
 - 代码块**标语言**（`bash` `c` `cpp` `cmake` `json`）；只有目录树用裸围栏。
-- 状态只用 ✅ 标注「已可用」；**计划与未实现不进文档**——未完成项写成代码里的 `// TODO:`（§5.2）。
+- 状态只用 ✅ 标注「已可用」；**计划与未实现不进文档**——未完成项写成代码里的 `// TODO:`（§5.2）。**唯一例外是 `document/PLATFORMS.md` 的平台矩阵**：跨平台文档必须如实记录 ⛔ / 🚫 / 草稿，否则读者会把“能编译”当成“能用”（见 §9.1）。
 - 不放图片/徽章/架构图（全仓零处），需要说明就用表格或目录树。
 
 ### 9.1 改代码必须同步改文档
@@ -488,6 +488,8 @@ shot_add_plugin(my_plugin
 | 托盘图标来源 / 通知分工 | `plugins/tray/README.md`、`README.md`/`README.en.md` 的托盘说明（图标是宿主**命名资源** `IDI_ICON1`） |
 | 多显示器 / DPI 行为 | `document/CAPTURE.md` §2.1、`document/SETTINGS.md` §6.1、`plugins/screen_capture/README.md`、`plugins/settings_ui/README.md`、`README.md`/`README.en.md` 的「多显示器与 DPI」 |
 | CI / 跨平台构建 | `README.md` 的「构建」「平台」、`README.en.md` 对应段、`.github/workflows/cmake.yml` 注释、`document/README_SDK.md` 的编译说明 |
+| 新增/变更平台支持、CMake 平台跳过（`SHOT_PLUGIN_SKIPPED`）、跨平台声明 | `document/PLATFORMS.md` 的能力矩阵与缺口清单、`README.md`/`README.en.md` 的「平台」段、相关插件 `README.md` 的平台说明 |
+| `document/PLATFORMS.md` 自身（能力矩阵 / 缺口 / CI 结论 / 草稿状态） | 状态每变一次就改对应的格与缺口小节；✅ 只在真机验证后给，草稿必须写“草稿（未编译）”；新增平台相关插件时同时补矩阵行 |
 | 目录结构、文件改名、新增模块 | `README.md`/`README.en.md` 的目录树、本文 §2 |
 | 构建目标 / 产物布局 / CMake 开关 / 最低版本 | `README.md` 的「构建」「产物布局」、`CMakeLists.txt` 注释、本文 §8 |
 | SDK 导出内容 | `document/README_SDK.md`（唯一源；`export_sdk` 会复制成 `sdk/README.md`） |

@@ -55,12 +55,14 @@
 | 通知插件 `plugins/notify`（截屏成功/失败气泡，隐藏占位图标；配置 enabled / show_on_success / show_on_error / sound；仅 Windows） | ✅ 可用 |
 | 剪贴板插件 `plugins/clipboard`（订阅 `capture.done` → CF_DIB / 可选 CF_HDROP；配置 enabled / also_file_drop；仅 Windows） | ✅ 可用 |
 | 全局热键插件 `plugins/hotkey`（默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`；主键支持 A-Z / 0-9 / F1-F12 / PrintScreen（可加修饰键；Win11 默认把裸按 PrintScreen 交给系统截图工具，建议用 Ctrl+PrintScreen 或关闭该 Windows 设置）；设置页用「按组合键录入」设置（`options="hotkey"`，录入期间经 `hotkey.suspend/resume` 临时撤销全局注册）；非法热键 warn 跳过；仅 Windows） | ✅ 可用 |
+| Linux 会话控制插件 `plugins/session_control`（会话总线暴露 `org.pluginshot.Control`；`Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` → 既有事件；Wayland 没有全局热键 API，用桌面「自定义快捷键」执行 `gdbus call` 触发；配置 `enabled`；仅 Linux） | 草稿（未编译验证）：源码与文档在工作区，需系统 `libglib2.0-dev`；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | 区域框选覆盖层 `plugins/region_selector`（悬停窗口吸附 + 单击截窗口 + 拖动选区；四角主题色折角与约 100ms 平滑动画；Esc / 右键取消；仅 Windows） | ✅ 可用（`document/CAPTURE.md` §3.1） |
+| 长截图插件 `plugins/long_capture`（手动滚动长截图：连续抓帧 + 行指纹在线拼接 + Enter 保存；配置 hotkey / maxHeight；Windows P1） | 草稿（未编译验证）：只落了部分源文件，Windows 下 configure 会因缺源文件失败；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | 主题色（`core/theme_color`，6 个预设 + 任意取色；区域框选边框/折角读它） | ✅ 可用（`document/SETTINGS.md` §5/§6） |
 | 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
 | 命令行 `--capture`（工作线程 + 退出前派发一轮事件）/ `--settings` / `--help` | ✅ 可用 |
-| GitHub Actions 跨平台 CI（Linux/macOS/Windows 矩阵 + vcpkg 缓存 + preset 构建 + `--help` 冒烟） | workflow 已就绪；Actions 因账号 billing 锁定暂无法启动（Linux 本地 WSL 实测通过，见「平台」） |
+| GitHub Actions 跨平台 CI（Linux/macOS/Windows 矩阵 + vcpkg 缓存 + preset 构建 + `--help` 冒烟） | workflow 已就绪；Windows job 已通过，Linux/macOS 的 configure 失败记录与真实平台状态见「平台」与 [`document/PLATFORMS.md`](document/PLATFORMS.md) |
 | 宿主自身设置（`core` 伪插件：界面语言 / 日志级别 / 控制台 / 文件日志 / 主题色） | ✅ 可用 |
 | 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主加载前读取：预筛 + 依赖拓扑排序） |
 | 元数据构建期校验（id 唯一 / interfaces 已注册 / abi 与头一致 / 依赖语法） | ✅ 可用（`cmake/ValidatePluginMeta.cmake`） |
@@ -110,11 +112,15 @@
 │   ├── clipboard/            # 剪贴板：capture.done → CF_DIB / CF_HDROP（仅 Windows）
 │   ├── notify/               # 截屏结果通知：隐藏占位图标 + Shell 气泡（仅 Windows）
 │   ├── hotkey/               # 全局热键 → 事件（仅 Windows）
+│   ├── session_control/      # Linux D-Bus 控制入口：Wayland 下代替全局热键（仅 Linux，草稿）
 │   ├── region_selector/      # 区域框选覆盖层：悬停窗口吸附、单击截窗、四角主题色折角（仅 Windows）
+│   ├── long_capture/         # 长截图：连续抓帧 + 行指纹拼接（Windows P1，草稿）
 │   ├── settings_ui/          # 设置页：ImGui + GLFW + OpenGL3（跨平台，Windows 已验证）
+│   ├── translator/           # 外部语言包：扫描官方/用户目录，贡献 i18n_source_list（跨平台代码，Windows 已验证）
 │   └── tray/                 # 托盘入口：数据驱动菜单 + 图标（仅 Windows）
 ├── document/
 │   ├── README_SDK.md         # SDK 使用与完整编译约束
+│   ├── PLATFORMS.md          # 跨平台能力矩阵：每插件状态、平台限制、缺口与 CI 现状
 │   ├── ABI_POLICY.md         # 只追加规则、interface id 登记表
 │   ├── SETTINGS.md           # 设置页：config_list、事件驱动写值/提交、Generic、DPI、插件启停与热卸载
 │   ├── LISTS.md              # 通用列表与事件驱动：list id 登记、lists.* 协议与刷新时机
@@ -165,11 +171,14 @@ Windows 本机还把 vcvars + cmake 包成了便利脚本：`bash tools/verify/b
 插件目录不含这些 DLL。通用列表协议不引入新依赖：列表快照就是 `nlohmann-json` 序列化的 JSON。
 新增插件也没有引入新的 vcpkg 依赖：`clipboard` 复用 `stb` / `nlohmann-json`，`notify` 只用
 `user32` / `shell32`，`hotkey` 只用 `user32`，`region_selector` 复用 `imgui` / `glfw3` /
-`nlohmann-json`。
+`nlohmann-json`。另两个插件同样没有引入新的 vcpkg 依赖：`session_control`（Linux 草稿）只要系统
+`gio-2.0` 开发包（Ubuntu：`libglib2.0-dev`，走 `pkg-config`），`long_capture`（Windows 草稿）
+复用 `stb` / `nlohmann-json`。两个草稿都还没有编译验证。
 
 **CI**：`.github/workflows/cmake.yml` 已就绪（Linux / macOS / Windows 矩阵 + vcpkg 清单缓存 +
-CMake preset 构建 + `--help` 无头冒烟），但当前 GitHub 账号的 Actions 受 **billing 锁定**
-无法启动（0 秒失败）——workflow 待账号解封后验证。
+CMake preset 构建 + `--help` 无头冒烟）。最近一次可见的 run：Windows job 通过；Linux / macOS 在
+configure 阶段失败（vcpkg baseline，已改但未复跑）。逐条结论与“CI 绿 ≠ 平台可用”见
+[`document/PLATFORMS.md`](document/PLATFORMS.md) §4。
 
 **跨平台可编译性现状**：Linux 已在 WSL2 实测（Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 /
 vcpkg `x64-linux` / CMake 3.28.3 / Ninja 1.11.1 / Release）：configure + build 通过
@@ -178,7 +187,8 @@ vcpkg `x64-linux` / CMake 3.28.3 / Ninja 1.11.1 / Release）：configure + build
 剪枝通过；`--help` 退出码 0，`--capture` 无头运行能 dlopen 全部 `.so`、初始化 OpenCV
 provider、在 WSLg 下建出 OpenGL 上下文并按设计失败（非 Windows 没有 `screen_capture`）
 后干净退出。`SHOT_ENABLE_OPENCV=OFF` 也实测通过。macOS **未在真机验证**（只做过代码审计）。
-Windows 是主要开发与验证平台。
+Windows 是主要开发与验证平台。**以上结论早于 `session_control` 草稿**：草稿的 CMake 需要系统
+`libglib2.0-dev`，且还没有编译过。
 
 ### 运行
 
@@ -488,19 +498,30 @@ shot_add_plugin(acme_tools
 
 ## 平台
 
-Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。平台相关插件在非 Windows 上
-由各自 `CMakeLists.txt` **主动跳过**（不产出伪实现）：`screen_capture`（GDI 抓屏）、
-`tray`（Win32 托盘）、`clipboard`（Win32 剪贴板）、`hotkey`（RegisterHotKey）、
-`region_selector`（Win32 物理坐标 + 覆盖层）、`notify`（Shell 通知气泡）。
-跨平台可编译的是 `settings_ui`（GLFW）、`image_saver`、`example_processor`、
-`opencv_provider`。
+Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。Linux 的**默认目标是 Wayland**
+（维护者实测环境：Ubuntu 24.04 / GNOME 46 / Wayland 会话），X11 保留为**第二优先**；macOS 从未
+成功构建。平台相关插件在非目标平台上由各自 `CMakeLists.txt` **主动跳过**（`SHOT_PLUGIN_SKIPPED`，
+不产出伪实现）：`screen_capture`（GDI 抓屏）、`tray`（Win32 托盘）、`clipboard`（Win32 剪贴板）、
+`hotkey`（RegisterHotKey）、`region_selector`（Win32 物理坐标 + 覆盖层）、`notify`（Shell 通知气泡）、
+`long_capture`（Win32 前台窗口 + HUD，草稿）；`session_control` 反过来只在 Linux 构建（草稿）。
+跨平台可编译的是 `settings_ui`（GLFW）、`image_saver`、`example_processor`、`opencv_provider`、
+`translator`。
+
+**完整的跨平台能力矩阵（Windows / Wayland / X11 / macOS 每格状态、原因与补齐路径）见
+[`document/PLATFORMS.md`](document/PLATFORMS.md)；本节只保留构建与验证结论，不要读成
+“全平台支持”。**
 
 | 平台 | 状态 |
 | --- | --- |
-| Windows（MSVC x64） | ✅ 主要开发与验证平台（含双屏混合 DPI、插件启停、采集/保存/通知/剪贴板/热键/区域框选） |
-| Linux（WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`） | ✅ 已实测：configure + build（43s、0 warning），产出 `Plugin-shot` 与 `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` 四个 `.so`；`--help` 退出 0，`--capture` 无头运行可加载全部 `.so` 并干净退出（非 Windows 没有 `screen_capture`，按设计失败返回 1）；`SHOT_ENABLE_OPENCV=OFF` 也通过 |
-| macOS | **未在真机验证**（只做过代码审计：`base.cpp` 的 `_NSGetExecutablePath` / 空串 UB / HOME 兜底已修）；没有真实构建结论 |
-| GitHub Actions | workflow 已就绪；当前账号 billing 锁定导致 Actions 无法启动，待账号解封后验证 |
+| Windows（MSVC x64） | ✅ 主要开发与验证平台（含双屏混合 DPI、插件启停、采集/保存/通知/剪贴板/热键/区域框选）；长截图只有草稿 |
+| Linux（WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`） | 🟡 编译已验证、功能未验证：configure + build（43s、0 warning），产出 `Plugin-shot` 与 `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` 四个 `.so`；`--help` 退出 0，`--capture` 无头运行可加载全部 `.so` 但因没有 `screen_capture` 按设计失败返回 1；真实 X11 / Wayland 桌面未跑。`SHOT_ENABLE_OPENCV=OFF` 也通过。**该结论早于 `session_control` 草稿**：草稿需要 `libglib2.0-dev`，且没有编译过 |
+| Linux（Wayland，默认目标） | ⛔ 采集 / 区域框选 / 全局热键都未实现：抓屏要走 `xdg-desktop-portal` ScreenCast + PipeWire，热键改用 `plugins/session_control`（草稿），框选只能走“门户截图 + 自有窗口拖选”的 B 方案；托盘依赖 StatusNotifierItem 与桌面扩展。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
+| Linux（X11，第二优先） | ⛔ 保留但未实现：缺 `XGetImage`/`XShmGetImage` 采集、`XGrabKey` 热键、override-redirect 覆盖层；剪贴板/通知的 X11 草稿未提交、未编译。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
+| macOS | **未构建、未在真机验证**：CI 的 macOS job 在 configure 阶段失败（vcpkg/工具链），只有代码审计（`base.cpp` 的 `_NSGetExecutablePath` / 空串 UB / HOME 兜底）；没有真实构建/运行结论 |
+| GitHub Actions | workflow 已就绪；Windows job 已通过，Linux/macOS 有 configure 阶段失败记录（见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §4）；CI 通过也不代表平台可用 |
+
+表中的 Linux 构建平台用的是同一份二进制；X11 与 Wayland 的运行能力差别很大（Wayland 不允许全局
+抓屏、全局热键、全局覆盖层），见矩阵的两列。
 
 Linux 构建的宿主侧系统依赖（Ubuntu 24.04 实测）：`build-essential ninja-build pkg-config`、
 `autoconf autoconf-archive automake libtool libltdl-dev`、`bison flex gperf`、
@@ -509,6 +530,10 @@ Linux 构建的宿主侧系统依赖（Ubuntu 24.04 实测）：`build-essential
 （`libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
 libxkbcommon-dev libwayland-dev`）、`libselinux1-dev libpam0g-dev`。`nativefiledialog-extended`
 在 Linux 走 vcpkg 的 `NFD_PORTAL=ON`，**不需要**系统 GTK3/dbus 开发包。
+
+按能力分开的系统依赖（`session_control` 现在就要 `libglib2.0-dev`；Wayland 采集将来还要
+`libportal-dev` + `libpipewire-0.3-dev`；Linux 通知要 `libnotify-dev`）与“现在是否已装”的完整
+清单见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §4.1。CI 的 apt 步骤还没补这些包。
 
 ## 许可
 
