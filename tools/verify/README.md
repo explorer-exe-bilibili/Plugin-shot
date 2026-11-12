@@ -23,6 +23,7 @@
 | `smoke_settings.ps1` | `--settings`：设置窗口出现、可见、能截到画面、日志无 error（窗口查找语言无关） | settings_ui |
 | `smoke_settings_i18n.ps1` | 多语言冒烟：写 `core/language=en-US` → `--settings` 截图（英文标题/画面）+ 日志锚点 `界面语言 = en-US`；切回 `zh-CN` 再截图 + 锚点；结束恢复 config | settings_ui、宿主 i18n |
 | `smoke_i18n_translator.ps1` | 外部语言包：翻译插件扫描官方/用户目录，贡献 `@language/` 与 `target` 条目；断言语言目录出现、`i18n_list` 重建、托盘 label 用包内译文（用户包覆盖官方）、坏包只 WARN、关闭插件后回退内置文案 | translator、宿主 i18n |
+| `smoke_region_window.ps1` | 区域框选：悬停到目标窗口后选框吸附（截图像素抽检边框/折角是主题色 `#4C9AFF`）、单击截出的尺寸 = 目标窗口 DWM 扩展边界、拖动截出的尺寸 ≈ 拖动矩形；脚本自己开/关一个标题唯一的 cmd 窗口并恢复 config | region_selector、宿主 `core/theme_color` |
 | `e2e_hotkey_capture.ps1` | 常驻 + 配置里的截屏热键 → 采集落盘（hotkey + 流水线 + 保存 串联） | hotkey/screen_capture/image_saver |
 | `e2e_clipboard.ps1` | 截图后系统剪贴板里有一张图（CF_DIB） | clipboard |
 

@@ -260,6 +260,7 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 | `e2e_clipboard.ps1` | 截图后系统剪贴板里有一张图（CF_DIB） |
 | `smoke_settings_i18n.ps1` | 多语言：`core/language=en-US` / `zh-CN` 两次启动设置页，标题/截图/日志锚点（`界面语言 = <tag>`），备份恢复 config |
 | `smoke_i18n_translator.ps1` | 外部语言包：翻译插件扫描官方/用户目录，`@language/` 与 `target` 条目、用户包优先级、坏包只 WARN（与翻译插件同期新增） |
+| `smoke_region_window.ps1` | 区域框选：悬停窗口吸附、单击截窗口（尺寸 = DWM 扩展边界）、拖动选区尺寸、边框/折角主题色（像素抽检）；自己开关目标窗口并恢复 config |
 
 运行方式（**必须带 `-ExecutionPolicy Bypass`**，原因见 §7 第 15 条）：
 
