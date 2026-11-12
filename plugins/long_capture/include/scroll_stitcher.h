@@ -156,6 +156,12 @@ private:
     int m_height = 0;                        /**< 上一帧高度。 */
     std::vector<std::uint8_t> m_thumb;       /**< 上一帧灰度缩略图。 */
     std::vector<std::uint64_t> m_rowHashes;  /**< 上一帧逐行哈希。 */
+    /** 上一保留帧"移动区顶部"在内容坐标里的行号（内容坐标 0 = 首帧移动区第一行）。 */
+    std::int64_t m_refTop = 0;
+    /** 画布第 0 行对应的内容坐标行号；画布只存移动内容，固定条不进来。 */
+    std::int64_t m_canvasTop = 0;
+    /** 首帧里的固定条是否已经裁掉（识别出条带只做一次）。 */
+    bool m_trimmed = false;
 };
 
 }  // namespace long_capture

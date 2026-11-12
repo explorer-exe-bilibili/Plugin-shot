@@ -116,24 +116,29 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
     int thumbHeight = 0;
     buildThumb(frame, thumb, thumbWidth, thumbHeight);
 
-    // 首帧：直接铺满整张画布，作为后续匹配的基准。
+    std::vector<std::uint64_t> hashes;
+    buildRowHashes(frame, hashes);
+
+    // 首帧：整帧进画布。固定条要等第二帧才能识别（比较两帧同一行是否相同），
+    // 识别出来后会把首帧里的固定条裁掉，所以这里先不区分。
     if (m_width == 0) {
-        std::vector<std::uint64_t> hashes;
-        buildRowHashes(frame, hashes);
         if (!canvas.append(frame, 0, frame.height)) {
             match.heightLimited = true;
             return match;
         }
+        m_canvasTop = 0;
+        m_refTop = 0;
+        m_trimmed = false;
         updateReference(frame, thumb, hashes);
         match.matched = true;
-        match.delta = 0;
         return match;
     }
 
     // 客户区尺寸变了（窗口被缩放/移动、DPI 变化）：硬拼没有意义，按缺口重设基准。
     if (frame.width != m_width || frame.height != m_height) {
-        std::vector<std::uint64_t> hashes;
-        buildRowHashes(frame, hashes);
+        m_canvasTop = 0;
+        m_refTop = 0;
+        m_trimmed = false;
         updateReference(frame, thumb, hashes);
         return match;
     }
@@ -143,9 +148,17 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         return match;
     }
 
-    std::vector<std::uint64_t> hashes;
-    buildRowHashes(frame, hashes);
     const StaticBands bands = detectStaticBands(hashes, m_rowHashes);
+    if (!m_trimmed && (bands.top > 0 || bands.bottom > 0)) {
+        // 首帧里同样的固定条也一起裁掉：内容坐标从首帧移动区的第一行开始。
+        canvas.trimTop(bands.top);
+        canvas.trimBottom(bands.bottom);
+        m_canvasTop = 0;
+        m_refTop = 0;
+        m_trimmed = true;
+    }
+    const int movingHeight = frame.height - bands.top - bands.bottom;
+
     double score = 0.0;
     int informative = 0;
     const std::int32_t delta =
@@ -157,31 +170,48 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
             match.duplicate = true;  // 几乎没有新内容
         } else {
             // 位移为 0 但信息行对不上：光标闪烁/局部动画，按缺口处理并重设基准。
+            m_refTop = m_canvasTop + canvas.height();
             updateReference(frame, thumb, hashes);
         }
         return match;
     }
     if (score < kMinMatchScore || informative < kMinInformativeRows) {
-        match.duplicate = false;  // 明确是缺口：不硬拼，但基准前进到当前帧
+        // 缺口：不硬拼。基准前进到当前帧，内容坐标按"接在画布末尾"估一个值，
+        // 让下一次匹配仍能算增量（否则坐标会永远停在上一次成功的位置）。
+        m_refTop = m_canvasTop + canvas.height();
         updateReference(frame, thumb, hashes);
         return match;
     }
 
-    // 正位移（内容上移）追加帧尾新内容；负位移（内容下移）把帧头新内容前插。
-    // 追加/前插都要跳过固定条：正位移取"帧底固定条之上"的 delta 行，负位移从
-    // "帧顶固定条之下"开始取，否则标题栏/状态栏会被一行行重复贴进画布。
-    const bool stitched = (delta > 0)
-                              ? canvas.append(frame, frame.height - bands.bottom - delta, delta)
-                              : canvas.prepend(frame, bands.top, -delta);
-    if (!stitched) {
-        match.heightLimited = true;
-        return match;  // 已达高度上限：不更新基准，会话会停止继续拼接
+    // 内容坐标模型：画布只存"移动区"内容，固定条不进画布。
+    //   m_refTop   = 上一帧移动区顶部的内容坐标
+    //   m_canvasTop= 画布第 0 行的内容坐标
+    // 只有当新视口超出画布已有内容范围时，超出的那部分是真正的新内容；
+    // 向下滚回已拍过的区域（newRefTop 落在画布范围内）不追加也不前插——
+    // 否则"下滑再上滑"会把已经拼过的内容再贴一遍，表现为重复/重影。
+    const std::int64_t newRefTop = m_refTop + delta;
+    const std::int64_t canvasBottom = m_canvasTop + canvas.height();
+
+    if (newRefTop < m_canvasTop) {
+        const int rows = static_cast<int>(m_canvasTop - newRefTop);
+        if (rows > movingHeight || !canvas.prepend(frame, bands.top, rows)) {
+            match.heightLimited = true;
+            return match;
+        }
+        m_canvasTop = newRefTop;
+    } else if (newRefTop + movingHeight > canvasBottom) {
+        const int rows = static_cast<int>(newRefTop + movingHeight - canvasBottom);
+        if (rows > movingHeight ||
+            !canvas.append(frame, frame.height - bands.bottom - rows, rows)) {
+            match.heightLimited = true;
+            return match;
+        }
     }
 
+    m_refTop = newRefTop;
     updateReference(frame, thumb, hashes);
     match.matched = true;
     match.delta = delta;
-    match.score = score;
     return match;
 }
 

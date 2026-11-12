@@ -82,6 +82,20 @@ public:
     bool prepend(const CaptureFrame& frame, int srcRow, int rows);
 
     /**
+     * @brief 裁掉画布顶部 rows 行（识别出标题栏/固定条后把首帧里的它们去掉）。
+     * @param[in] rows 行数；<=0 或 >= 当前高度时返回 false，画布不变。
+     * @return true = 已裁剪。
+     */
+    bool trimTop(int rows);
+
+    /**
+     * @brief 裁掉画布底部 rows 行（识别出状态栏/固定条后把首帧里的它们去掉）。
+     * @param[in] rows 行数；<=0 或 >= 当前高度时返回 false，画布不变。
+     * @return true = 已裁剪。
+     */
+    bool trimBottom(int rows);
+
+    /**
      * @brief 生成一张等比缩小的预览（给 HUD 缩略图用）。
      *
      * 采样方式是最近邻：预览只用于"看个大概"，HUD 端还会用 HALFTONE 再缩一次，

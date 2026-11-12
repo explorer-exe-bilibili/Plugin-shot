@@ -71,6 +71,23 @@ bool StitchCanvas::prepend(const CaptureFrame& frame, int srcRow, int rows) {
     return true;
 }
 
+bool StitchCanvas::trimTop(int rows) {
+    if (rows <= 0 || rows >= m_height) {
+        return false;
+    }
+    m_top += rows;
+    m_height -= rows;
+    return true;
+}
+
+bool StitchCanvas::trimBottom(int rows) {
+    if (rows <= 0 || rows >= m_height) {
+        return false;
+    }
+    m_height -= rows;
+    return true;
+}
+
 bool StitchCanvas::ensureRoom(int above, int below) {
     const int need = m_height + above + below;
     if (need > m_limit) {
