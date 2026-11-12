@@ -194,15 +194,26 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
 
     if (newRefTop < m_canvasTop) {
         const int rows = static_cast<int>(m_canvasTop - newRefTop);
-        if (rows > movingHeight || !canvas.prepend(frame, bands.top, rows)) {
+        if (rows > movingHeight) {
+            // 视口与画布完全不重叠（用户一次跳过了整屏）：这是缺口，不是高度上限。
+            // 以前这里会误报 "已达高度上限 <当前高度>"，用户只滚一屏就以为满了。
+            m_refTop = m_canvasTop + canvas.height();
+            updateReference(frame, thumb, hashes);
+            return match;
+        }
+        if (!canvas.prepend(frame, bands.top, rows)) {
             match.heightLimited = true;
             return match;
         }
         m_canvasTop = newRefTop;
     } else if (newRefTop + movingHeight > canvasBottom) {
         const int rows = static_cast<int>(newRefTop + movingHeight - canvasBottom);
-        if (rows > movingHeight ||
-            !canvas.append(frame, frame.height - bands.bottom - rows, rows)) {
+        if (rows > movingHeight) {
+            m_refTop = m_canvasTop + canvas.height();
+            updateReference(frame, thumb, hashes);
+            return match;
+        }
+        if (!canvas.append(frame, frame.height - bands.bottom - rows, rows)) {
             match.heightLimited = true;
             return match;
         }

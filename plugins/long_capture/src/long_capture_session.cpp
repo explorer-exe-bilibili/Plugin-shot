@@ -42,6 +42,9 @@ constexpr int kFrameIntervalMs = 60;
 /** @brief HUD 缩略图刷新间隔（毫秒）：需求是 5Hz。 */
 constexpr int kHudRefreshMs = 200;
 
+/** @brief 即使画面没静止，也至少按这个间隔送一次帧（毫秒）：避免快速滚动跨出重叠区。 */
+constexpr int kMaxFeedIntervalMs = 100;
+
 /** @brief 帧签名尺寸：48×48 灰度足够判断"这一帧变没变"，成本可以忽略。 */
 constexpr int kSignatureWidth = 48;
 constexpr int kSignatureHeight = 48;
@@ -177,6 +180,7 @@ void LongCapture::runSession() {
     // 静止判据：只在"当前帧与上一帧几乎一致、且与上次送拼的帧不同"时才拼接。
     std::vector<std::uint8_t> previousSignature;
     std::vector<std::uint8_t> lastFedSignature;
+    auto lastFeedTime = std::chrono::steady_clock::now();
     bool failed = false;
     bool limitReached = false;
     auto lastHudRefresh = std::chrono::steady_clock::now() - std::chrono::milliseconds(kHudRefreshMs);
@@ -268,8 +272,15 @@ void LongCapture::runSession() {
         const bool changedSinceFed =
             lastFedSignature.empty() || !signaturesEqual(signature, lastFedSignature);
         const bool firstFrame = lastFedSignature.empty();
+        // 快速滚动时"停到停"之间可能跨过整屏（缺口就是这么来的）：画面没静止但已经
+        // 和上次送拼的帧不同，且超过 kMaxFeedIntervalMs，就按当前帧送一次。
+        // 行哈希是精确判据，中间帧只要位移能对上就仍能拼；只有完全不动才跳过。
+        const auto sinceFeed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - lastFeedTime);
+        const bool forced = changedSinceFed &&
+                            sinceFeed.count() >= static_cast<long long>(kMaxFeedIntervalMs);
         previousSignature = signature;
-        if (!firstFrame && !(settled && changedSinceFed)) {
+        if (!firstFrame && !((settled || forced) && changedSinceFed)) {
             frame.release();  // 画面还在动：这一轮不拼，等它停下来
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - frameStart);
@@ -280,6 +291,7 @@ void LongCapture::runSession() {
             continue;
         }
         lastFedSignature = signature;
+        lastFeedTime = std::chrono::steady_clock::now();
         ++feedCount;
 
         const ScrollMatch match = stitcher.addFrame(frame, *canvas);
