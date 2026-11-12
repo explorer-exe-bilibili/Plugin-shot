@@ -5,8 +5,8 @@
     {
       "id": "long_capture.main",
       "name": "Long Capture",
-      "version": "0.1.0",
-      "description": "手动滚动长截图：先点选目标窗口/区域，再用自带 GDI 采集连续抓帧 + 行指纹在线拼接，Enter 保存（Windows）",
+      "version": "0.2.1",
+      "description": "手动滚动长截图：先点选目标窗口/区域，再用自带 GDI 采集连续抓帧 + 可配置的位移估计算法（hash/correlate/phase）在线拼接，Enter 保存（Windows）",
       "interfaces": ["shot.configurable"],
       "requires": ["core>=0.1.0"],
       "provides": []

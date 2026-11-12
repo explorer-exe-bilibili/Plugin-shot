@@ -73,6 +73,10 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  src/long_capture_i18n.cpp
                  src/long_capture_output.cpp
                  src/stitch_canvas.cpp
+                 src/stitch_estimator.cpp
+                 src/stitch_hash.cpp
+                 src/stitch_correlate.cpp
+                 src/stitch_phase.cpp
                  src/scroll_stitcher.cpp
                  src/long_image_saver.cpp
                  src/capture_windows.cpp

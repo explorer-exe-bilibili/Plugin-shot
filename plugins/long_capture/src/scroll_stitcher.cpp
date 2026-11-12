@@ -1,32 +1,25 @@
-// 滚动位移估计：逐行 64 位哈希 + 高频行过滤 + 全量位移搜索。
+// 滚动拼接：画布坐标、固定条锁定、去重、缺口判定；位移估计交给可插拔函数表。
 //
-// 算法（参数都写在 scroll_stitcher.h 的 public 常量里）：
+// 三种算法（hash / correlate / phase）实现在 stitch_hash.cpp / stitch_correlate.cpp /
+// stitch_phase.cpp，共同的签名、候选范围与分派在 stitch_estimator.h。本文件只保留
+// 与算法无关的拼接语义，保证换算法不会改变坐标/固定条/缺口行为：
+//
 //   1. 去重：把两帧各缩到 1/4 灰度缩略图，平均灰度差 <= kDuplicateMeanDiff 就丢弃新帧。
-//   2. 行哈希：每行在 kRowSamples 个等距列上取 24 位颜色做 FNV-1a 哈希。
-//      会话层只在"画面静止"时送帧，所以同一个内容行在两帧里逐像素一致，哈希相等
-//      是精确判据——比原来的"32 列灰度差 <= 容差"可靠得多，后者会把差一两行的
-//      文本行也判成匹配，把位移估小，拼出来就是一串重复行。
-//   3. 高频行过滤：空白行、分隔线、大面积纯色行在任意位移下都相等。先统计两帧里
-//      出现次数超过行数 1/8 的哈希，打分时跳过这些行，否则错误位移会被刷到满分。
-//   4. 位移 d 的匹配分数 = 重叠区里"信息行"相等的比例。重叠区定义：
-//        新帧第 y 行对应上一帧第 y + d 行；
-//        d > 0（内容上移）时新帧 [0, H-d) 对上一帧 [d, H)；
-//        d < 0（内容下移）时新帧 [-d, H) 对上一帧 [0, H+d)。
-//   5. 搜索：d 的合法范围是 |d| <= H - max(8, 30% × H)（重叠不足 30% 直接不搜），
-//      逐位移全量比较；822 行视口下约 47 万次哈希比较，静止帧触发频率低，可以接受。
-//   6. 分数 < kMinMatchScore、信息行 < kMinInformativeRows，或最佳 d == 0 且分数不够
-//      -> 缺口/重复，不硬拼。
-//
-// 为什么缺口时仍然更新基准帧：连续快速滚动会让"上一保留帧"越来越旧，不重设基准
-// 就永远匹配不上新内容，缺口会无限延续。重设基准 = 从当前画面继续拼。
+//   2. 帧签名：每帧只构建一次（逐行哈希由本文件统一做，算法专属表示由 prepare 回调做），
+//      参考帧的签名缓存在 m_referenceSignature，下一帧直接复用，不重复降采样。
+//   3. 固定条：两帧"同一行号且哈希相同"的顶部/底部连续条带（标题栏、状态栏、横向
+//      滚动条）不随内容滚动，搜索与打分时必须排除。判定只在第一次出现非零位移时
+//      发生一次，之后锁死（改动会整体错位，原因见 updateReference 附近注释）。
+//   4. 缺口：位移搜索/打分由算法完成，本文件只按 score、informative 与重叠行数
+//      决定"匹配/重复/缺口"，缺口时重设基准（否则连续滚动会永远恢复不了）。
+//   5. 画布坐标：m_refTop / m_canvasTop 的内容坐标模型保持不变；向下滚回已拍过的
+//      区域不追加也不前插，避免"下滑再上滑"把内容重复贴一遍。
 
 #include "scroll_stitcher.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 #include "stitch_canvas.h"
@@ -39,20 +32,13 @@ constexpr int kRedWeight = 77;
 constexpr int kGreenWeight = 150;
 constexpr int kBlueWeight = 29;
 
-/** @brief 高频行的判定比例：出现次数超过行数的 1/8 就当作空白/重复行，不参与打分。 */
-constexpr int kFrequentRowDivisor = 8;
+/** @brief 顶部/底部固定条带的最短行数：短于此长度的"相同行"当作内容，不当固定条。 */
+constexpr int kMinStaticBand = 16;
 
 /** @brief 单像素转灰度（0..255）。 */
 int grayOf(const std::uint8_t* pixel) noexcept {
     return (pixel[0] * kRedWeight + pixel[1] * kGreenWeight + pixel[2] * kBlueWeight) >> 8;
 }
-
-/** @brief FNV-1a 64 位哈希的偏移基准与质数。 */
-constexpr std::uint64_t kFnvOffset = 1469598103934665603ull;
-constexpr std::uint64_t kFnvPrime = 1099511628211ull;
-
-/** @brief 顶部/底部固定条带的最短行数：短于此长度的"相同行"当作内容，不当固定条。 */
-constexpr int kMinStaticBand = 16;
 
 /** @brief 一帧里不随滚动移动的顶部/底部条带（标题栏、状态栏、横向滚动条）。 */
 struct StaticBands {
@@ -66,6 +52,9 @@ struct StaticBands {
  * 为什么必须识别：窗口标题栏、编辑器状态栏、浏览器地址栏这类固定条不会随内容滚动。
  * 不排除它们的话，任何非零位移都会把这些行拿去和内容行比较，分数被拉低到阈值以下，
  * 于是每一帧都被判成缺口（长图高度不再增长）；硬拼时又会把固定条一行行重复贴进画布。
+ *
+ * 用逐行哈希而不是灰度差：同一行在两帧里是逐像素一致的（会话层只在画面静止时送帧），
+ * 哈希相等是精确判据；三种算法共用同一份哈希，固定条行为因此完全一致。
  *
  * @param[in] current  新帧行哈希。
  * @param[in] previous 上一帧行哈希。
@@ -83,11 +72,9 @@ StaticBands detectStaticBands(const std::vector<std::uint64_t>& current,
     // 进度点），只要有 3 行不同就把整条固定条判成 0，后面会退化成"不上不下"的
     // 错误坐标。允许少量不匹配、但要求整段覆盖率 >= 90%。
     std::vector<std::uint8_t> same(static_cast<std::size_t>(height), 0);
-    int sameCount = 0;
     for (int i = 0; i < height; ++i) {
         if (current[static_cast<std::size_t>(i)] == previous[static_cast<std::size_t>(i)]) {
             same[static_cast<std::size_t>(i)] = 1;
-            ++sameCount;
         }
     }
 
@@ -135,13 +122,20 @@ StaticBands detectStaticBands(const std::vector<std::uint64_t>& current,
 
 }  // namespace
 
-ScrollStitcher::ScrollStitcher() = default;
+ScrollStitcher::ScrollStitcher(StitchAlgorithm algorithm)
+    : m_algorithm(algorithm), m_estimator(estimatorOps(algorithm)) {}
 
 void ScrollStitcher::reset() {
     m_width = 0;
     m_height = 0;
     m_thumb.clear();
-    m_rowHashes.clear();
+    m_referenceSignature = StitchSignature{};
+    m_currentSignature = StitchSignature{};
+    m_refTop = 0;
+    m_canvasTop = 0;
+    m_bandsLocked = false;
+    m_staticTop = 0;
+    m_staticBottom = 0;
 }
 
 ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& canvas) {
@@ -155,8 +149,11 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
     int thumbHeight = 0;
     buildThumb(frame, thumb, thumbWidth, thumbHeight);
 
-    std::vector<std::uint64_t> hashes;
-    buildRowHashes(frame, hashes);
+    // 每帧只做一次预处理：逐行哈希（固定条判定 + hash 算法共用）与当前算法专属表示。
+    // m_currentSignature 的缓冲与参考帧轮换复用，steady 状态下不会逐帧重新分配。
+    buildRowHashes(frame, m_currentSignature.rowHashes);
+    m_currentSignature.height = frame.height;
+    m_estimator.prepare(frame, m_currentSignature);
 
     // 首帧：整帧进画布。固定条要等第二帧才能识别（比较两帧同一行是否相同），
     // 识别出来后会把首帧里的固定条裁掉，所以这里先不区分。
@@ -170,7 +167,7 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         m_bandsLocked = false;
         m_staticTop = 0;
         m_staticBottom = 0;
-        updateReference(frame, thumb, hashes);
+        updateReference(frame, thumb);
         match.matched = true;
         return match;
     }
@@ -182,7 +179,7 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         m_bandsLocked = false;
         m_staticTop = 0;
         m_staticBottom = 0;
-        updateReference(frame, thumb, hashes);
+        updateReference(frame, thumb);
         return match;
     }
 
@@ -191,17 +188,17 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         return match;
     }
 
-    const StaticBands detected = detectStaticBands(hashes, m_rowHashes);
+    const StaticBands detected = detectStaticBands(m_currentSignature.rowHashes,
+                                                   m_referenceSignature.rowHashes);
 
     // 已锁定的固定条优先：一旦判定过，后续帧都按同一套条带搜索，避免"这一帧
     // 恰好能对上 30 行"之类的偶然检测改变搜索区间、把位移带偏。
     const int searchTop = m_bandsLocked ? m_staticTop : detected.top;
     const int searchBottom = m_bandsLocked ? m_staticBottom : detected.bottom;
-    double score = 0.0;
-    int informative = 0;
-    const std::int32_t delta =
-        findDelta(hashes, searchTop, searchBottom, score, informative);
-    match.score = score;
+    const StitchEstimate estimate =
+        m_estimator.estimate(m_referenceSignature, m_currentSignature, searchTop, searchBottom);
+    match.score = estimate.score;
+    const std::int32_t delta = estimate.delta;
 
     // 固定条只在"第一次出现非零位移"时判定一次，之后锁死：内容滚动之后再判定，
     // 会把恰好对上号的若干内容行误当固定条，裁掉画布 → 坐标整体错位（历史上表现为
@@ -224,20 +221,20 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
     const int movingHeight = frame.height - bandsTop - bandsBottom;
 
     if (delta == 0) {
-        if (score >= kMinMatchScore && informative >= kMinInformativeRows) {
+        if (estimate.score >= kMinMatchScore && estimate.informative >= kMinInformativeRows) {
             match.duplicate = true;  // 几乎没有新内容
         } else {
             // 位移为 0 但信息行对不上：光标闪烁/局部动画，按缺口处理并重设基准。
             m_refTop = m_canvasTop + canvas.height();
-            updateReference(frame, thumb, hashes);
+            updateReference(frame, thumb);
         }
         return match;
     }
-    if (score < kMinMatchScore || informative < kMinInformativeRows) {
+    if (estimate.score < kMinMatchScore || estimate.informative < kMinInformativeRows) {
         // 缺口：不硬拼。基准前进到当前帧，内容坐标按"接在画布末尾"估一个值，
         // 让下一次匹配仍能算增量（否则坐标会永远停在上一次成功的位置）。
         m_refTop = m_canvasTop + canvas.height();
-        updateReference(frame, thumb, hashes);
+        updateReference(frame, thumb);
         return match;
     }
 
@@ -256,7 +253,7 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
             // 视口与画布完全不重叠（用户一次跳过了整屏）：这是缺口，不是高度上限。
             // 以前这里会误报 "已达高度上限 <当前高度>"，用户只滚一屏就以为满了。
             m_refTop = m_canvasTop + canvas.height();
-            updateReference(frame, thumb, hashes);
+            updateReference(frame, thumb);
             return match;
         }
         if (!canvas.prepend(frame, bandsTop, rows)) {
@@ -268,7 +265,7 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         const int rows = static_cast<int>(newRefTop + movingHeight - canvasBottom);
         if (rows > movingHeight) {
             m_refTop = m_canvasTop + canvas.height();
-            updateReference(frame, thumb, hashes);
+            updateReference(frame, thumb);
             return match;
         }
         if (!canvas.append(frame, frame.height - bandsBottom - rows, rows)) {
@@ -278,7 +275,7 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
     }
 
     m_refTop = newRefTop;
-    updateReference(frame, thumb, hashes);
+    updateReference(frame, thumb);
     match.matched = true;
     match.delta = delta;
     return match;
@@ -311,28 +308,6 @@ void ScrollStitcher::buildThumb(const CaptureFrame& frame, std::vector<std::uint
     }
 }
 
-void ScrollStitcher::buildRowHashes(const CaptureFrame& frame,
-                                    std::vector<std::uint64_t>& out) {
-    out.resize(static_cast<std::size_t>(frame.height));
-    const int lastX = frame.width - 1;
-    for (int y = 0; y < frame.height; ++y) {
-        const std::uint8_t* srcRow = frame.row(y);
-        std::uint64_t hash = kFnvOffset;
-        for (int k = 0; k < kRowSamples; ++k) {
-            const int x = (kRowSamples == 1)
-                              ? 0
-                              : static_cast<int>(static_cast<long long>(k) * lastX /
-                                                 static_cast<long long>(kRowSamples - 1));
-            const std::uint8_t* pixel = srcRow + static_cast<std::size_t>(x) * 4;
-            hash ^= static_cast<std::uint64_t>(pixel[0]) |
-                    (static_cast<std::uint64_t>(pixel[1]) << 8) |
-                    (static_cast<std::uint64_t>(pixel[2]) << 16);
-            hash *= kFnvPrime;
-        }
-        out[static_cast<std::size_t>(y)] = hash;
-    }
-}
-
 bool ScrollStitcher::looksIdentical(const std::vector<std::uint8_t>& thumb) const {
     if (m_thumb.empty() || thumb.size() != m_thumb.size()) {
         return false;
@@ -345,107 +320,18 @@ bool ScrollStitcher::looksIdentical(const std::vector<std::uint8_t>& thumb) cons
            kDuplicateMeanDiff;
 }
 
-template <typename FrequentPredicate>
-double ScrollStitcher::scoreDelta(const std::vector<std::uint64_t>& hashes, std::int32_t delta,
-                                  int topStatic, int bottomStatic, FrequentPredicate isFrequent,
-                                  int& informative) const {
-    informative = 0;
-    // 只比较移动区 [topStatic, H - bottomStatic)，且配对行也必须落在移动区：
-    //   yNew ∈ [topStatic, movingEnd) 且 yNew + delta ∈ [topStatic, movingEnd)
-    const int movingEnd = m_height - bottomStatic;
-    const int startNew = std::max({topStatic, topStatic - delta, 0});
-    const int endNew = std::min(movingEnd, movingEnd - delta);
-    if (endNew <= startNew) {
-        return 0.0;
-    }
-    int matched = 0;
-    for (int y = startNew; y < endNew; ++y) {
-        const std::uint64_t current = hashes[static_cast<std::size_t>(y)];
-        const std::uint64_t previous = m_rowHashes[static_cast<std::size_t>(y + delta)];
-        if (isFrequent(current) || isFrequent(previous)) {
-            continue;  // 空白/重复行不携带位移信息
-        }
-        ++informative;
-        if (current == previous) {
-            ++matched;
-        }
-    }
-    if (informative == 0) {
-        return 0.0;
-    }
-    return static_cast<double>(matched) / static_cast<double>(informative);
-}
-
-std::int32_t ScrollStitcher::findDelta(const std::vector<std::uint64_t>& hashes, int topStatic,
-                                       int bottomStatic, double& score, int& informative) const {
-    score = 0.0;
-    informative = 0;
-    const int movingHeight = m_height - topStatic - bottomStatic;
-    if (m_height <= 0 || movingHeight <= 0) {
-        return 0;
-    }
-    const int minOverlap = std::max(8, movingHeight * kMinOverlapPercent / 100);
-    const int maxShift = movingHeight - minOverlap;
-    if (maxShift <= 0) {
-        return 0;  // 视口太矮，连 30% 重叠都凑不出来：不拼
-    }
-
-    // 统计两帧里的高频哈希（空白行、分隔线、大面积纯色）。两帧都要看：新帧的空白行
-    // 和旧帧的空白行未必在同一行号上，只过滤一边仍会让另一边参与凑分。
-    std::unordered_map<std::uint64_t, int> frequency;
-    frequency.reserve(static_cast<std::size_t>(hashes.size()) * 2);
-    for (const std::uint64_t hash : hashes) {
-        ++frequency[hash];
-    }
-    for (const std::uint64_t hash : m_rowHashes) {
-        ++frequency[hash];
-    }
-    const int frequentThreshold =
-        std::max(4, (m_height + static_cast<int>(hashes.size())) / kFrequentRowDivisor);
-    const auto isFrequent = [&](std::uint64_t hash) {
-        const auto it = frequency.find(hash);
-        return it != frequency.end() && it->second > frequentThreshold;
-    };
-
-    std::int32_t best = 0;
-    double bestScore = -1.0;
-    int bestInformative = 0;
-    for (int delta = -maxShift; delta <= maxShift; ++delta) {
-        int candidateInformative = 0;
-        const double candidate =
-            scoreDelta(hashes, delta, topStatic, bottomStatic, isFrequent, candidateInformative);
-        if (candidateInformative < kMinInformativeRows) {
-            continue;
-        }
-        // 分数优先；分数相同时优先更大的 |d|：位移估小会让新拼进来的行与已有内容
-        // 重复（重复行是好一点的失败模式吗？不，重复行会污染长图），所以反过来
-        // 宁可选中真正滚过的那一段。相同 |d| 时取正位移（向下滚动更常见）。
-        const bool better = (candidate > bestScore + 1e-9) ||
-                            (std::abs(candidate - bestScore) <= 1e-9 &&
-                             (std::abs(delta) > std::abs(best) ||
-                              (std::abs(delta) == std::abs(best) && delta > best)));
-        if (bestScore < 0.0 || better) {
-            best = delta;
-            bestScore = candidate;
-            bestInformative = candidateInformative;
-        }
-    }
-
-    if (bestScore < 0.0) {
-        return 0;
-    }
-    score = bestScore;
-    informative = bestInformative;
-    return best;
-}
-
 void ScrollStitcher::updateReference(const CaptureFrame& frame,
-                                     const std::vector<std::uint8_t>& thumb,
-                                     const std::vector<std::uint64_t>& hashes) {
+                                     const std::vector<std::uint8_t>& thumb) {
     m_width = frame.width;
     m_height = frame.height;
     m_thumb = thumb;
-    m_rowHashes = hashes;
+    commitSignature();
+}
+
+void ScrollStitcher::commitSignature() noexcept {
+    // 交换而不是拷贝：当前帧签名升级为参考帧，旧参考缓冲留给下一帧复用，
+    // 避免每帧为几万字节的块均值矩阵重新分配内存。
+    std::swap(m_referenceSignature, m_currentSignature);
 }
 
 }  // namespace long_capture

@@ -1,4 +1,4 @@
-// 本插件的配置项：长图高度上限。
+// 本插件的配置项：位移估计算法与长图高度上限。
 //
 // 跨边界一律用字符串（契约：只传定宽类型 + const char*），本文件负责字符串与
 // 内部类型的校验转换：非法值安静回退默认、不认识的 key 返回负值，宿主升级后
@@ -25,10 +25,12 @@
 namespace long_capture {
 namespace {
 
+const char kKeyAlgorithm[] = "algorithm";
 const char kKeyMaxHeight[] = "max_height";
 
 // 默认值只在描述符里写一遍：构造函数也从这个常量取初始值，避免"描述符默认值"
-// 与"初始值"两处漂移。
+// 与"初始值"两处漂移。默认 correlate：它最耐相似行/重复内容，见插件 README。
+const char kDefaultAlgorithm[] = "correlate";
 const char kDefaultMaxHeight[] = "30000";
 
 // 高度上限：下限保证至少能放进一屏，上限防止用户手改配置把画布撑到几百 MB。
@@ -37,10 +39,26 @@ constexpr int kMaxHeight = 60000;
 
 // 文案 key：命名规范 config.<配置 key>.label / .tooltip，写成常量是为了让 kConfig
 // 一眼能扫出"这里放的是 key 而不是中文"。
+const char kLabelAlgorithm[] = "long.config.algorithm.label";
+const char kTooltipAlgorithm[] = "long.config.algorithm.tooltip";
 const char kLabelMaxHeight[] = "long.config.max_height.label";
 const char kTooltipMaxHeight[] = "long.config.max_height.tooltip";
 
 const ShotConfigDesc kConfig[] = {
+    {
+        .struct_size   = sizeof(ShotConfigDesc),
+        .kind          = SHOT_CONFIG_KIND_ENUM,
+        .key           = kKeyAlgorithm,
+        .label         = kLabelAlgorithm,
+        .default_value = kDefaultAlgorithm,
+        // 候选值是纯技术名（hash/correlate/phase），与 stitch_estimator.h 的枚举一一
+        // 对应；"auto"（多算法融合）是预留值，只在 set 里接受，不放进候选让用户选。
+        .options       = "hash|correlate|phase",
+        .min           = 0.0,
+        .max           = 0.0,
+        .step          = 0.0,
+        .tooltip       = kTooltipAlgorithm,
+    },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_INT,
@@ -59,7 +77,9 @@ const ShotConfigDesc kConfig[] = {
 
 LongCaptureConfig::LongCaptureConfig() {
     // 构造期间没有并发，直接按默认常量填；不走 set() 是为了让"默认值"只依赖上面
-    // 那个常量，也避免构造函数里再去解析一次整数。
+    // 那些常量，也避免构造函数里再去解析一次整数。
+    m_values.algorithm = StitchAlgorithm::Correlate;
+    parseStitchAlgorithm(kDefaultAlgorithm, m_values.algorithm);
     m_values.maxHeight = std::atoi(kDefaultMaxHeight);
 }
 
@@ -79,6 +99,9 @@ std::int32_t LongCaptureConfig::get(const char* key, char* buf, std::uint32_t bu
         return -1;
     }
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (std::strcmp(key, kKeyAlgorithm) == 0) {
+        return copyValue(buf, bufSize, stitchAlgorithmName(m_values.algorithm));
+    }
     if (std::strcmp(key, kKeyMaxHeight) == 0) {
         const std::string text = std::to_string(m_values.maxHeight);
         return copyValue(buf, bufSize, text.c_str());
@@ -91,6 +114,16 @@ std::int32_t LongCaptureConfig::set(const char* key, const char* value) {
         return -1;
     }
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (std::strcmp(key, kKeyAlgorithm) == 0) {
+        // ENUM 只接受描述符里的候选值；"auto" 由 parseStitchAlgorithm 接受并回落到
+        // correlate（多算法融合留待后续，见 stitch_estimator.cpp 的 TODO）。
+        StitchAlgorithm parsed = m_values.algorithm;
+        if (!parseStitchAlgorithm(value, parsed)) {
+            return -1;  // 非法取值：拒绝，保留原值，宿主可以继续工作
+        }
+        m_values.algorithm = parsed;
+        return 0;
+    }
     if (std::strcmp(key, kKeyMaxHeight) == 0) {
         char* end = nullptr;
         const long parsed = std::strtol(value, &end, 10);

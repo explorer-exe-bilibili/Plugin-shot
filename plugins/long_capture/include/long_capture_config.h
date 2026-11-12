@@ -9,7 +9,7 @@
 //
 //  触发热键不再由本插件声明：hotkey 插件改成读取 hotkey_list 的 provider 之后，
 //  本插件在 create 时贡献一条 hotkey_list（id=start、event=long_capture.start），
-//  热键的注册/改键/停用全部由 hotkey 插件负责。这里只剩长图高度上限。
+//  热键的注册/改键/停用全部由 hotkey 插件负责。这里只剩位移估计算法与长图高度上限。
 //
 //  label / tooltip 写的是语言表 key，不是中文：设置页按
 //  display(owner, key) = i18n_list[(owner, key)] ?? key 解析，文案本体在
@@ -21,11 +21,12 @@
 #include <string>
 
 #include "plugin_api.h"
+#include "stitch_estimator.h"
 
 namespace long_capture {
 
 /**
- * @brief 长截图插件的配置：长图高度上限。
+ * @brief 长截图插件的配置：位移估计算法与长图高度上限。
  *
  * @note set_config 可能来自宿主 main 线程（设置页应用 / 启动回灌），而会话线程
  *       每帧读一次快照；两处用同一把互斥锁串起来，持锁期间只做字符串拷贝，
@@ -35,6 +36,7 @@ class LongCaptureConfig {
 public:
     /** @brief 配置快照：一次会话开始时取一次，会话中途改配置只影响下一次。 */
     struct Snapshot {
+        StitchAlgorithm algorithm = StitchAlgorithm::Correlate; /**< 位移估计算法（默认 correlate）。 */
         int maxHeight = 30000; /**< 长图高度上限（像素），画布达到后停止继续拼接。 */
     };
 
@@ -47,7 +49,7 @@ public:
     LongCaptureConfig& operator=(const LongCaptureConfig&) = delete;
 
     /**
-     * @brief 返回配置项个数；当前固定为 1。
+     * @brief 返回配置项个数；当前固定为 2（algorithm、max_height）。
      * @return 配置项个数，用于 ShotConfigurableV1::get_config_count。
      */
     static std::uint32_t itemCount() noexcept;

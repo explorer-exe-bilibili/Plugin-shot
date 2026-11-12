@@ -150,6 +150,11 @@ void LongCapture::runSession() {
     log.info("[long_capture] 开始会话：内容区 " + std::to_string(content.width) + "x" +
              std::to_string(content.height) + " @" + std::to_string(content.x) + "," +
              std::to_string(content.y));
+    // 先记下本次会话选中的算法：后续逐帧日志都带 alg=，用户贴日志即可判断是哪种
+    // 判据出的问题（算法只在会话开始时取快照，会话中途改配置不影响本次）。
+    const char* algorithmName = stitchAlgorithmName(config.algorithm);
+    log.info(std::string("[long_capture] 位移估计算法：") + algorithmName +
+             "（可选 hash|correlate|phase，见插件 README）");
 
     Hud hud;
     // targetHwnd = 0：选择结果只有区域，没有窗口句柄；HUD 的滚轮转发会自动跳过。
@@ -171,7 +176,7 @@ void LongCapture::runSession() {
     SessionKeysGuard keysGuard{m_keys.get()};
 
     std::unique_ptr<StitchCanvas> canvas;
-    ScrollStitcher stitcher;
+    ScrollStitcher stitcher(config.algorithm);
     int frameCount = 0;
     int feedCount = 0;
     int gapCount = 0;
@@ -306,13 +311,13 @@ void LongCapture::runSession() {
         // 逐帧记录位移/分数/画布高度：拼接出问题时这段日志是唯一能离线复现的证据。
         // 只在送拼时记（约 5~10 条/秒），不影响性能；用户贴日志即可定位。
         if (match.matched) {
-            log.info("[long_capture] 帧 " + std::to_string(feedCount) + "：位移 " +
-                     std::to_string(match.delta) + "，分数 " +
+            log.info("[long_capture] 帧 " + std::to_string(feedCount) + "：alg=" + algorithmName +
+                     " 位移 " + std::to_string(match.delta) + "，分数 " +
                      std::to_string(match.score) + "，画布 " +
                      std::to_string(canvas->height()));
         } else if (!match.duplicate && !match.heightLimited) {
-            log.warn("[long_capture] 帧 " + std::to_string(feedCount) + "：缺口（分数 " +
-                     std::to_string(match.score) + "），画布 " +
+            log.warn("[long_capture] 帧 " + std::to_string(feedCount) + "：alg=" + algorithmName +
+                     " 缺口（分数 " + std::to_string(match.score) + "），画布 " +
                      std::to_string(canvas->height()));
         }
 
@@ -368,7 +373,7 @@ void LongCapture::runSession() {
                          std::to_string(canvas->height()) + "，抓帧 " +
                          std::to_string(frameCount) + "，送拼 " + std::to_string(feedCount) +
                          "，重复 " + std::to_string(duplicateCount) + "，缺口 " +
-                         std::to_string(gapCount) + "）");
+                         std::to_string(gapCount) + "，算法 " + algorithmName + "）");
                 if (hudReady) {
                     hud.showSaved(path);
                     // HUD 自己 2 秒后关闭；这里等它展示完，同时 stop() 能提前打断。

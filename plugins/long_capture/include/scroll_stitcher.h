@@ -1,7 +1,7 @@
 #pragma once
 
 // ============================================================================
-//  include/scroll_stitcher.h —— 滚动位移估计（平台无关核心）
+//  include/scroll_stitcher.h —— 滚动拼接（平台无关核心，位移估计可插拔）
 //
 //  输入是"上一帧保留的截图"和"刚抓到的新截图"，输出是带符号的行位移 d：
 //    · d > 0：窗口内容整体上移（用户向下滚动），新帧底部 d 行是全新内容；
@@ -9,8 +9,12 @@
 //    · 匹配不上 / 重叠太少：记为"缺口"，不做硬拼（宁可漏一段，也不要把
 //      两段对不齐的内容糊在一起）。
 //
-//  匹配手段是灰度行指纹：每行按固定列抽样成一条灰度向量，先粗搜（少量行）
-//  再局部精搜（重叠区全部行），避免 O(H² × 全行) 的暴力比对。
+//  职责划分（这一版把"怎么估位移"抽到了 stitch_estimator.h 的函数表）：
+//    · 本类：画布坐标（m_refTop / m_canvasTop）、固定条检测与锁定、去重、
+//      缺口判定，以及按方向追加/前插；
+//    · IStitchEstimator 等价物（StitchEstimatorOps）：只看两帧签名给出 delta 与 score。
+//  这样 hash / correlate / phase 三种判据可以独立演进，而拼接语义（坐标、固定条、
+//  缺口）只有一份，不会因换算法而漂移。
 //
 //  本文件与实现只用标准库，不包含任何平台头。
 // ============================================================================
@@ -19,6 +23,7 @@
 #include <vector>
 
 #include "capture_frame.h"
+#include "stitch_estimator.h"
 
 namespace long_capture {
 
@@ -27,46 +32,38 @@ class StitchCanvas;
 /**
  * @brief 一帧的拼接结论：位移、匹配分数、以及是否被当作重复/缺口。
  *
- * 字段用 plain bool 而不是枚举：本仓库约定插件侧不定义枚举（STYLE.md §3.2），
- * 调用方按布尔语义分支就够了。
+ * 三个互斥状态用 plain bool 而不是状态枚举：调用方按布尔语义分支就够了，状态之间
+ * 本来也不会同时成立（只有"选哪种算法"才需要 StitchAlgorithm 枚举）。
  */
 struct ScrollMatch {
     std::int32_t delta = 0;        /**< 带符号位移（像素）；仅在 matched 为 true 时有拼接意义。 */
     bool matched = false;          /**< true = 已按 delta 贴进画布。 */
     bool duplicate = false;        /**< true = 与上一保留帧几乎一致，已丢弃。 */
     bool heightLimited = false;    /**< true = 还要追加但画布已达高度上限，本帧没有贴。 */
-    double score = 0.0;            /**< 最佳候选的行匹配分数 0..1，日志排障用。 */
+    double score = 0.0;            /**< 最佳候选的匹配分数 0..1，日志排障用。 */
 };
 
 /**
- * @brief 滚动位移估计器：保存"上一保留帧"的降采样缩略图与逐行指纹。
+ * @brief 滚动拼接器：保存上一保留帧的签名与缩略图，逐帧把新内容并进画布。
  *
- * 生命周期 = 一次长截图会话；reset() 后重新以第一帧为基准。
+ * 生命周期 = 一次长截图会话；第一帧到达前构造函数即可用，reset() 后重新以第一帧
+ * 为基准。位移估计由构造时选择的算法函数表负责（见 stitch_estimator.h）。
  */
 class ScrollStitcher {
 public:
-    /** @brief 重叠不足的阈值：重叠行少于视口高度的 30% 按缺口处理（document/README 同步）。 */
-    static constexpr int kMinOverlapPercent = 30;
-
-    /** @brief 最佳候选的行匹配分数低于它就不拼（0.90 = 90% 的信息行要对上）。 */
-    static constexpr double kMinMatchScore = 0.90;
-
-    /** @brief 行指纹采样列数：每行在这些列上取 24 位颜色做 64 位哈希（越密越能区分相似行）。 */
-    static constexpr int kRowSamples = 256;
-
-    /** @brief 参与打分的"信息行"下限：太少说明重叠区全是空白/重复行，位移不可信。 */
-    static constexpr int kMinInformativeRows = 64;
-
     /** @brief 去重缩略图的降采样倍数：先缩到 1/4 灰度再比，成本几乎为零。 */
     static constexpr int kThumbScale = 4;
 
     /** @brief 去重阈值：缩略图平均灰度差不超过它就算"几乎一致"，丢弃该帧。 */
     static constexpr double kDuplicateMeanDiff = 1.0;
 
-    /** @brief 构造空估计器；第一帧到来前 addFrame 会把它当作画布起点。 */
-    ScrollStitcher();
+    /**
+     * @brief 构造：绑定一种位移估计算法。
+     * @param[in] algorithm 位移估计算法（来自配置项 algorithm）。
+     */
+    explicit ScrollStitcher(StitchAlgorithm algorithm);
 
-    /** @brief 不可拷贝：内部保存上一帧的指纹与缩略图。 */
+    /** @brief 不可拷贝：内部保存上一帧签名与缩略图。 */
     ScrollStitcher(const ScrollStitcher&) = delete;
     /** @brief 不可赋值。 */
     ScrollStitcher& operator=(const ScrollStitcher&) = delete;
@@ -75,6 +72,12 @@ public:
      * @brief 丢弃上一帧基准，下一次 addFrame 重新从空画布开始。
      */
     void reset();
+
+    /** @brief 当前位移估计算法（会话日志用）。 */
+    StitchAlgorithm algorithm() const noexcept { return m_algorithm; }
+
+    /** @brief 当前算法名（"hash"/"correlate"/"phase"，日志用）。 */
+    const char* algorithmName() const noexcept { return m_estimator.name; }
 
     /**
      * @brief 把一帧并入画布：首帧直接铺满，后续帧先求位移再按方向追加/前插。
@@ -90,51 +93,13 @@ public:
 private:
     /**
      * @brief 把一帧降采样成 1/4 灰度缩略图（去重用）。
-     * @param[in] frame 待处理帧。
-     * @param[out] out  紧凑灰度缩略图（thumbHeight × thumbWidth）。
-     * @param[out] w    缩略图宽度。
-     * @param[out] h    缩略图高度。
+     * @param[in]  frame 待处理帧。
+     * @param[out] out   紧凑灰度缩略图（thumbHeight × thumbWidth）。
+     * @param[out] w     缩略图宽度。
+     * @param[out] h     缩略图高度。
      */
     static void buildThumb(const CaptureFrame& frame, std::vector<std::uint8_t>& out, int& w,
                            int& h);
-
-    /**
-     * @brief 把一帧每行算成 64 位哈希（拼接用）。
-     *
-     * 为什么用哈希而不是"灰度差 <= 阈值"：会话层只在画面静止时送帧，同一行在两帧里
-     * 是逐像素一致的，哈希相等是精确判据；原来 32 列灰度容差在文本/代码这类高频
-     * 内容上会把"差一两行"也算成匹配，导致位移估小、拼出重复行。
-     *
-     * @param[in] frame 待处理帧。
-     * @param[out] out  每行一个哈希。
-     */
-    static void buildRowHashes(const CaptureFrame& frame, std::vector<std::uint64_t>& out);
-
-    /**
-     * @brief 在新帧哈希与上一帧哈希之间搜索带符号位移。
-     * @param[in]  hashes 新帧的行哈希。
-     * @param[out] score  最佳候选的信息行匹配分数。
-     * @param[out] informative 最佳候选参与打分的信息行数。
-     * @return 最佳位移；没有可用候选时返回 0（与"完全没滚动"由 score 区分）。
-     */
-    std::int32_t findDelta(const std::vector<std::uint64_t>& hashes, int topStatic,
-                           int bottomStatic, double& score, int& informative) const;
-
-    /**
-     * @brief 统计位移 d 下重叠区里"信息行"的匹配分数。
-     *
-     * 信息行 = 两边都不是高频重复行（空白行、分隔线、大面积纯色）。不过滤的话这些
-     * 行在任意位移下都相等，会把错误位移刷到满分。
-     *
-     * @param[in]  hashes      新帧行哈希。
-     * @param[in]  delta       带符号位移。
-     * @param[in]  isFrequent  高频哈希判定（下标是哈希本身的值，用 lambda 传入）。
-     * @param[out] informative 参与打分的信息行数。
-     * @return 0..1 的匹配分数；没有信息行时返回 0。
-     */
-    template <typename FrequentPredicate>
-    double scoreDelta(const std::vector<std::uint64_t>& hashes, std::int32_t delta, int topStatic,
-                      int bottomStatic, FrequentPredicate isFrequent, int& informative) const;
 
     /**
      * @brief 判断新帧缩略图与上一保留帧是否几乎一致（去重）。
@@ -144,18 +109,24 @@ private:
     bool looksIdentical(const std::vector<std::uint8_t>& thumb) const;
 
     /**
-     * @brief 把当前帧记为新的"上一保留帧"（缩略图 + 行哈希）。
-     * @param[in] frame  刚处理完的帧。
-     * @param[in] thumb  该帧的缩略图（避免重复计算）。
-     * @param[in] hashes 该帧的行哈希。
+     * @brief 把当前帧记为新的"上一保留帧"（缩略图 + 签名）。
+     * @param[in] frame 刚处理完的帧。
+     * @param[in] thumb 该帧的缩略图（避免重复计算）。
      */
-    void updateReference(const CaptureFrame& frame, const std::vector<std::uint8_t>& thumb,
-                         const std::vector<std::uint64_t>& hashes);
+    void updateReference(const CaptureFrame& frame, const std::vector<std::uint8_t>& thumb);
 
+    /**
+     * @brief 把当前帧签名换成参考帧（交换两个缓冲，避免每帧重新分配几十 KB）。
+     */
+    void commitSignature() noexcept;
+
+    StitchAlgorithm m_algorithm;             /**< 选中的位移估计算法。 */
+    StitchEstimatorOps m_estimator;          /**< 对应函数表（早绑定，逐帧不查表分支）。 */
+    StitchSignature m_referenceSignature;    /**< 上一保留帧签名（每帧预处理一次后缓存）。 */
+    StitchSignature m_currentSignature;      /**< 当前帧签名；commit 时与参考帧交换。 */
     int m_width = 0;                         /**< 上一帧宽度；0 = 还没有基准。 */
     int m_height = 0;                        /**< 上一帧高度。 */
     std::vector<std::uint8_t> m_thumb;       /**< 上一帧灰度缩略图。 */
-    std::vector<std::uint64_t> m_rowHashes;  /**< 上一帧逐行哈希。 */
     /** 上一保留帧"移动区顶部"在内容坐标里的行号（内容坐标 0 = 首帧移动区第一行）。 */
     std::int64_t m_refTop = 0;
     /** 画布第 0 行对应的内容坐标行号；画布只存移动内容，固定条不进来。 */

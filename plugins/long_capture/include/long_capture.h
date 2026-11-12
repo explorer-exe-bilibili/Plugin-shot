@@ -8,7 +8,8 @@
 //    · long_capture_session.cpp：一次会话（等用户选目标 → HUD/气泡 → 自带采集
 //      → 拼接 → 保存或取消）；
 //    · capture_windows：Windows GDI 采集层（BitBlt 目标区域，不落盘、不发事件）；
-//    · stitch_canvas / scroll_stitcher / long_image_saver：纯算法；
+//    · stitch_canvas / scroll_stitcher / stitch_estimator + 三个 stitch_*.cpp /
+//      long_image_saver：纯算法（位移估计算法由配置项 algorithm 选择）；
 //    · hud / global_keys / tray_hint 的 *_windows.cpp：平台实现。
 //
 //  触发与目标选择（本版核心变化）：
