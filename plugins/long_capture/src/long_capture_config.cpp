@@ -1,4 +1,4 @@
-// 本插件的配置项：长图高度上限。
+// 本插件的配置项：实验开关 + 长图高度上限。
 //
 // 跨边界一律用字符串（契约：只传定宽类型 + const char*），本文件负责字符串与
 // 内部类型的校验转换：非法值安静回退默认、不认识的 key 返回负值，宿主升级后
@@ -25,10 +25,12 @@
 namespace long_capture {
 namespace {
 
+const char kKeyEnabled[] = "enabled";
 const char kKeyMaxHeight[] = "max_height";
 
 // 默认值只在描述符里写一遍：构造函数也从这个常量取初始值，避免"描述符默认值"
 // 与"初始值"两处漂移。
+const char kDefaultEnabled[] = "0";
 const char kDefaultMaxHeight[] = "30000";
 
 // 高度上限：下限保证至少能放进一屏，上限防止用户手改配置把画布撑到几百 MB。
@@ -37,10 +39,25 @@ constexpr int kMaxHeight = 60000;
 
 // 文案 key：命名规范 config.<配置 key>.label / .tooltip，写成常量是为了让 kConfig
 // 一眼能扫出"这里放的是 key 而不是中文"。
+const char kLabelEnabled[] = "long.config.enabled.label";
+const char kTooltipEnabled[] = "long.config.enabled.tooltip";
 const char kLabelMaxHeight[] = "long.config.max_height.label";
 const char kTooltipMaxHeight[] = "long.config.max_height.tooltip";
 
 const ShotConfigDesc kConfig[] = {
+    // 实验特性：默认关闭，避免装了插件就被托盘/热键打扰；用户在设置页打开后重启宿主生效。
+    {
+        .struct_size   = sizeof(ShotConfigDesc),
+        .kind          = SHOT_CONFIG_KIND_BOOL,
+        .key           = kKeyEnabled,
+        .label         = kLabelEnabled,
+        .default_value = kDefaultEnabled,
+        .options       = nullptr,
+        .min           = 0.0,
+        .max           = 1.0,
+        .step          = 1.0,
+        .tooltip       = kTooltipEnabled,
+    },
     {
         .struct_size   = sizeof(ShotConfigDesc),
         .kind          = SHOT_CONFIG_KIND_INT,
@@ -60,6 +77,7 @@ const ShotConfigDesc kConfig[] = {
 LongCaptureConfig::LongCaptureConfig() {
     // 构造期间没有并发，直接按默认常量填；不走 set() 是为了让"默认值"只依赖上面
     // 那个常量，也避免构造函数里再去解析一次整数。
+    m_values.enabled = false;
     m_values.maxHeight = std::atoi(kDefaultMaxHeight);
 }
 
@@ -79,6 +97,9 @@ std::int32_t LongCaptureConfig::get(const char* key, char* buf, std::uint32_t bu
         return -1;
     }
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (std::strcmp(key, kKeyEnabled) == 0) {
+        return copyValue(buf, bufSize, m_values.enabled ? "1" : "0");
+    }
     if (std::strcmp(key, kKeyMaxHeight) == 0) {
         const std::string text = std::to_string(m_values.maxHeight);
         return copyValue(buf, bufSize, text.c_str());
@@ -91,6 +112,12 @@ std::int32_t LongCaptureConfig::set(const char* key, const char* value) {
         return -1;
     }
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (std::strcmp(key, kKeyEnabled) == 0) {
+        // 只认明确的真值；其它字符串一律当关闭，避免手改配置写成 "yes?" 之类再猜。
+        m_values.enabled = (std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+                            std::strcmp(value, "on") == 0);
+        return 0;
+    }
     if (std::strcmp(key, kKeyMaxHeight) == 0) {
         char* end = nullptr;
         const long parsed = std::strtol(value, &end, 10);

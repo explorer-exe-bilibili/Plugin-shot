@@ -75,6 +75,13 @@ bool LongCapture::start(const ShotHostServices* host) {
     }
     m_host = host;
 
+    // 实验特性默认关闭：不注册托盘命令、hotkey_list 贡献、会话按键和订阅，避免
+    // 装了插件就被打扰；实例仍作为可配置插件存在，设置页打开 enabled 后重启生效。
+    if (!m_config.snapshot().enabled) {
+        shot::Logger(host).info("[long_capture] 实验特性未启用（long_capture.main/enabled=1 开启）");
+        return true;
+    }
+
     // 语言表：必须在 HUD/会话线程使用 tr 之前加载。失败不致命，tr 的 fallback 是中文。
     try {
         auto i18n = std::make_unique<shot::I18n>(host, kLongCapture.id);
