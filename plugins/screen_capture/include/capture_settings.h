@@ -23,7 +23,7 @@ public:
     CaptureSettings() noexcept = default;
 
     /**
-     * @brief 本次抓屏是否要把鼠标光标画进截图（仅 Windows 有可执行语义）。
+     * @brief 本次抓屏是否要把鼠标光标画进截图（Windows/X11 有可执行语义；Wayland 由合成器决定）。
      * @return true = 合成光标；false = 只要干净桌面图。
      * @note 流水线 worker 线程读；单次抓屏只读一次，取到的是调用瞬间的值。
      */
@@ -43,7 +43,7 @@ public:
     /**
      * @brief Wayland 门户要共享的类型：true = 单个窗口，false = 整个输出（monitor）。
      * @return true = 共享一个窗口；false = 共享整个输出。
-     * @note 只影响下一次建立/重建门户会话；Windows 实现忽略它。
+     * @note 只影响下一次建立/重建门户会话；Windows 与 X11 实现忽略它。
      */
     bool captureWindow() const noexcept {
         return m_captureWindow.load(std::memory_order_relaxed);

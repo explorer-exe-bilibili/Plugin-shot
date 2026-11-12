@@ -6,7 +6,7 @@
 //  **不是插件对外接口**：ScreenCapture（公共头）在非 Windows 平台持有一个本对象，
 //  把契约层的 describe/capture 转成"门户会话 + PipeWire 流 + 帧缓冲"三件事。
 //
-//  分层：screen_capture_wayland.cpp 负责契约校验与返回码；本类负责环境判断、
+//  分层：screen_capture_linux.cpp 负责契约校验与返回码；本类负责环境判断、
 //  会话生命周期与失败分类；wayland_portal_session / wayland_pipewire_stream /
 //  wayland_frame_buffer 各自只管一个协议层。
 //

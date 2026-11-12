@@ -1,57 +1,62 @@
 # screen_capture —— 屏幕采集插件（`shot.screen_capture`）
 
-把屏幕内容写进宿主已经分配好的 BGRA8 缓冲；Windows 上可选地把鼠标光标一起合成进
-截图。插件只负责"抓"：不处理、不保存、不分配图像内存。配置项有两项：
-`include_cursor`（Windows 光标合成）与 `source`（Wayland 共享输出还是窗口）。
+把屏幕内容写进宿主已经分配好的 BGRA8 缓冲；Windows 与 Linux/X11 上可选地把鼠标
+光标一起合成进截图。插件只负责"抓"：不处理、不保存、不分配图像内存。配置项有两项：
+`include_cursor`（Windows/X11 光标合成）与 `source`（Wayland 共享输出还是窗口）。
 宿主编排的"采集 → 处理 → 保存"流水线见 `document/CAPTURE.md`，能力契约见
 `document/ABI_POLICY.md` 的登记表。
 
 本插件实现两个能力：采集 `shot.screen_capture` 与配置 `shot.configurable`。
 
-平台实现由 CMake 按平台二选一（源文件互不参与对方编译）：
+平台实现由 CMake 按平台选择（源文件互不参与对方编译）；Linux 只有一份 `.so`，
+Wayland 与 X11 两条后端在运行期按会话类型二选一：
 
 | 平台 | 实现 | 状态 |
 | --- | --- | --- |
 | Windows | GDI（`GetDC` + `BitBlt` + `GetDIBits` + `DrawIconEx`），整块虚拟桌面 | ✅ 已可用 |
 | Linux/Wayland | `xdg-desktop-portal` 的 ScreenCast 门户 + PipeWire，一次一个源（输出或窗口） | 已实现，**需真机验证** |
-| X11 | 沿用 X11 的 `XGetImage`/`XShm` 方案 | 尚未实现（后续任务） |
+| Linux/X11 | `XShmGetImage`（MIT-SHM）优先、`XGetImage` 兜底，XFixes 光标合成，整个 X screen | 已实现，**需真机验证**（见 §6） |
 | macOS | ScreenCaptureKit | 尚未实现，构建时跳过（`SHOT_PLUGIN_SKIPPED`） |
 
 ## 1. 目录
 
 ```
 plugins/screen_capture/
-├── CMakeLists.txt                  # 按平台选源：WIN32=GDI；UNIX=libportal+libpipewire；APPLE 跳过
+├── CMakeLists.txt                  # WIN32=GDI；UNIX=Wayland(portal/PipeWire)+X11(x11/xext/xrandr/xfixes)；APPLE 跳过
 ├── metadata.json                   # 插件清单（id screen_capture.main，接口 shot.screen_capture + shot.configurable）
 ├── README.md
 ├── include/
 │   ├── plugin_entry.h              # PluginEntry / PluginInstance / state_of（插件样板）
 │   ├── capture_settings.h          # CaptureSettings：include_cursor/source 状态 + shot.configurable 回调声明
-│   ├── screen_capture.h            # ScreenCapture 公共接口（契约层；Windows 不含 Win32 类型，Linux 不含 GLib 类型）
+│   ├── screen_capture.h            # ScreenCapture 公共接口（契约层；不含 Win32 / Xlib / GLib 类型）
 │   ├── screen_capture_state.h      # 内部头：插件实例状态（语言表 + 配置 + 采集对象，两个 .cpp 共享）
 │   ├── screen_capture_impl.h       # 内部头：GdiDesktopCapture（仅 Windows）
 │   ├── wayland_capture.h           # 内部头：WaylandCapture（环境判断/会话编排/取帧）
 │   ├── wayland_portal_session.h    # 内部头：WaylandPortalSession（ScreenCast 门户状态机）
 │   ├── wayland_portal_session_impl.h # 内部头：门户 PIMPL 状态（生命周期与回调两个 .cpp 共享）
 │   ├── wayland_pipewire_stream.h   # 内部头：WaylandPipeWireStream（PipeWire 接收与协商）
-│   └── wayland_frame_buffer.h      # 内部头：WaylandFrameBuffer（BGRA8 双缓冲）
+│   ├── wayland_frame_buffer.h      # 内部头：WaylandFrameBuffer（BGRA8 双缓冲）
+│   └── x11_capture.h               # 内部头：X11Capture（XShm/XGetImage / BGRA8 转换 / XFixes 光标）
 └── src/
     ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + kEntries + 语言表 + ABI 胶水
     ├── screen_capture.cpp          # Windows 契约层：入参校验、返回码映射、日志
-    ├── screen_capture_wayland.cpp  # Linux 契约层：同一套校验/返回码，交给 WaylandCapture
+    ├── screen_capture_linux.cpp    # Linux 契约层：构造时按会话类型分派 Wayland/X11，共用校验与返回码
     ├── capture_settings.cpp        # 配置层：include_cursor/source 声明（label/tooltip 是文案 key）+ get/set 回调
     ├── gdi_desktop_capture.cpp     # Windows 平台层：DPI 上下文 / GetDC / BitBlt / DrawIconEx / GetDIBits
     ├── wayland_capture.cpp         # Linux 编排层：Wayland 环境检测、会话重建、取帧
     ├── wayland_portal_session.cpp  # 门户生命周期：GLib 线程、Ready/Failed 等待、清理与 join
     ├── wayland_portal_callbacks.cpp # 门户异步链：CreateSession/SelectSources/Start/OpenPipeWireRemote
     ├── wayland_pipewire_stream.cpp # 协议层：fd 连接、Bgrx/Rgbx 协商、process 回调
-    └── wayland_frame_buffer.cpp    # 帧层：BGRA8 排列转换、双缓冲、按 stride 写入
+    ├── wayland_frame_buffer.cpp    # 帧层：BGRA8 排列转换、双缓冲、按 stride 写入
+    ├── x11_capture.cpp             # X11 平台层：XOpenDisplay / XShm/XGetImage / 显示器布局日志
+    ├── x11_image_convert.cpp       # X11 像素层：XImage → BGRA8（24/32bpp、两种字节序、mask 通道）
+    └── x11_cursor.cpp              # X11 光标层：XFixesGetCursorImage + 预乘 alpha 合成
 ```
 
 公共头 `screen_capture.h` 只声明一个类，内部头是**内部头**（只被本插件的 `.cpp`
 包含，开头注明"不是插件对外接口"）；`.cpp` 按关注点拆成"契约层 / 配置层 / 平台层 /
-ABI 胶水"，Linux 的平台层再拆成"编排 / 门户 / PipeWire / 帧缓冲"（`STYLE.md`
-§6.7/§6.8）。实例状态放在 `screen_capture_state.h` 而不是 `plugin_entry.cpp`：
+ABI 胶水"，Linux 的平台层再拆成 Wayland 的"编排 / 门户 / PipeWire / 帧缓冲"与 X11 的
+"抓取 / 像素转换 / 光标"（`STYLE.md` §6.7/§6.8）。实例状态放在 `screen_capture_state.h` 而不是 `plugin_entry.cpp`：
 采集回调与配置回调分属两个 `.cpp`，必须操作同一份状态。
 
 ## 2. 构建
@@ -84,7 +89,8 @@ Windows（系统库，无需 apt/vcpkg 额外包）：
 Linux（Ubuntu 24.04 / Debian 系）：
 
 ```bash
-sudo apt install libportal-dev libpipewire-0.3-dev
+sudo apt install libportal-dev libpipewire-0.3-dev \
+                 libx11-dev libxrandr-dev libxfixes-dev libxext-dev pkg-config
 ```
 
 | 依赖 | 用途 |
@@ -92,10 +98,15 @@ sudo apt install libportal-dev libpipewire-0.3-dev
 | `libportal-1.0`（`libportal-dev`） | xdg-desktop-portal 的 ScreenCast 门户封装（异步 GMainLoop） |
 | `libpipewire-0.3`（`libpipewire-0.3-dev`） | 接收门户打开的视频流（Bgrx/Rgbx，MemFd buffer） |
 | `glib-2.0` / `gio-2.0` | libportal 的传递依赖（`libportal-dev` 会带上 `libglib2.0-dev`） |
-| `pkg-config` | CMake 用 `pkg_check_modules` 找上面两个库 |
+| `x11` / `xext`（`libx11-dev` / `libxext-dev`） | Xlib 连接与 `XGetImage`；MIT-SHM 的 `XShmGetImage`（`XShm.h` 在 `libxext-dev`） |
+| `xrandr`（`libxrandr-dev`） | 只在 debug 日志里列显示器布局（`XRRGetMonitors`，RandR 1.5+） |
+| `xfixes`（`libxfixes-dev`） | `XFixesGetCursorImage` 取光标位图 + 热点 |
+| `pkg-config` | CMake 用 `pkg_check_modules` 找上面的模块 |
 
-CMake 在 `UNIX AND NOT APPLE` 分支里强制要求 libportal 与 PipeWire：**缺一个就
-FATAL_ERROR，并打印上面两条 apt 命令**，不会产出运行期静默不可用的插件。
+CMake 在 `UNIX AND NOT APPLE` 分支里**同时强制要求** Wayland（libportal/PipeWire）与
+X11（x11/xext/xrandr/xfixes）依赖：**缺一个就 FATAL_ERROR，并打印上面的 apt 命令**，
+不会产出运行期静默不可用的插件。`libxext-dev` 通常随 `libxrandr-dev` 一起装，但
+`-lXext` 是 XShm 的硬需求，CMake 也单独检查 `xext`。
 
 两个平台都需要 header-only 的 `nlohmann-json`（根 vcpkg 清单已有；只用于 i18n）。
 插件不链接 spdlog（日志走宿主服务）。
@@ -125,11 +136,11 @@ FATAL_ERROR，并打印上面两条 apt 命令**，不会产出运行期静默�
 
 `describe` 填的几何字段：
 
-| 字段 | Windows（GDI） | Linux（Wayland） |
-| --- | --- | --- |
-| `width` / `height` | 多显示器合成后的虚拟桌面**物理像素**总尺寸 | **一个源**（输出或窗口）经 PipeWire 实际协商出的帧尺寸（不是门户报的 compositor 尺寸） |
-| `origin_x` / `origin_y` | 内容左上角在系统坐标里的位置；主屏左上角不一定是 `(0,0)`，左侧/上方的副屏会让它变成负数 | 恒为 `(0,0)`：Wayland 门户一次只共享一个源，没有虚拟桌面合成坐标系 |
-| `pixel_format` | 目前只有 `SHOT_PIXEL_FORMAT_BGRA8`（4 字节/像素） | 同左 |
+| 字段 | Windows（GDI） | Linux（Wayland） | Linux（X11） |
+| --- | --- | --- | --- |
+| `width` / `height` | 多显示器合成后的虚拟桌面**物理像素**总尺寸 | **一个源**（输出或窗口）经 PipeWire 实际协商出的帧尺寸（不是门户报的 compositor 尺寸） | 默认 X screen 的 `DisplayWidth` × `DisplayHeight`（XRandR/Xinerama 把多显示器合并成一个 screen） |
+| `origin_x` / `origin_y` | 内容左上角在系统坐标里的位置；主屏左上角不一定是 `(0,0)`，左侧/上方的副屏会让它变成负数 | 恒为 `(0,0)`：Wayland 门户一次只共享一个源，没有虚拟桌面合成坐标系 | 恒为 `(0,0)`：root window 的坐标原点就是 `(0,0)` |
+| `pixel_format` | 目前只有 `SHOT_PIXEL_FORMAT_BGRA8`（4 字节/像素） | 同左 | 同左 |
 
 **DPI 保证（Windows）**：几何与像素都是**物理像素**，不随 DPI 缩放。插件在每次
 `describe` / `capture` 进入平台层时，都显式把调用线程的 DPI 感知上下文临时提升到
@@ -142,14 +153,17 @@ FATAL_ERROR，并打印上面两条 apt 命令**，不会产出运行期静默�
 buffer 的真实像素尺寸；门户的 stream `size` 属性属于 compositor 坐标（HiDPI/分数
 缩放下可能小于像素尺寸），只作为协商默认值，不能直接当 `describe` 的尺寸。
 
+**DPI 保证（X11）**：root window 的像素就是物理像素。X11 没有 Windows 的 DPI
+虚拟化，插件不调用任何缩放 API，也不提升线程 DPI 感知上下文。
+
 返回码（两个函数共用，`document/CAPTURE.md` §2.1 有同样的表）：
 
 | 返回码 | 含义 |
 | --- | --- |
 | `0` | 成功 |
-| `1` | 当前没有可采集的屏幕（无显示器 / 远程会话断开） |
+| `1` | 当前没有可采集的屏幕（无显示器 / 远程会话断开 / X11 screen 尺寸非法） |
 | `2` | 参数不合法：`out`/`dst` 为空、`struct_size` 装不下、不是 BGRA8、`stride` 装不下一行、尺寸与当前屏幕/流不一致 |
-| `3` | 采集通道不可用（系统调用失败 / 门户不可用 / 用户取消 / 超时 / PipeWire 失败；已通过宿主日志写明原因） |
+| `3` | 采集通道不可用（系统调用失败 / 门户不可用 / 用户取消 / 超时 / PipeWire 失败 / X11 连不上 X server；已通过宿主日志写明原因） |
 
 宿主对任何非 0 都发布 `capture.failed`，并且不会使用 `dst` 的内容。
 
@@ -161,8 +175,8 @@ buffer 的真实像素尺寸；门户的 stream `size` 属性属于 compositor �
 
 | key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `include_cursor` | BOOL | `"1"` | Windows：抓屏时是否把当前鼠标光标一起合成进截图。Wayland 下没有可执行语义（光标由门户/合成器决定），见 §5.4 |
-| `source` | ENUM | `"monitor"` | Wayland：共享整个输出（`monitor`）还是单个窗口（`window`）；改变后下一次建立/重建会话生效。Windows 忽略 |
+| `include_cursor` | BOOL | `"1"` | Windows/X11：抓屏时是否把当前鼠标光标一起合成进截图。Wayland 下没有可执行语义（光标由门户/合成器决定），见 §5.4 与 §6.4 |
+| `source` | ENUM | `"monitor"` | Wayland：共享整个输出（`monitor`）还是单个窗口（`window`）；改变后下一次建立/重建会话生效。Windows 与 X11 忽略 |
 
 `ShotConfigDesc::label/tooltip` 存的是**文案 key**，不是最终显示文本；设置页按
 `display(owner, key)` 到 `i18n_list` 里取当前语言（owner 是 `screen_capture.main`）：
@@ -255,7 +269,7 @@ display(owner, key) = i18n_list[(owner, key)] ?? key
 - **负 origin 全程有符号**：`origin_x/origin_y` 来自 `GetSystemMetrics` 的有符号返回值，
   原样存进契约的 `int32_t`，再原样作为 `BitBlt` 的 `int` 源坐标；行寻址用 `int64` 算
   `y * stride`。所以副屏在主屏左侧/上方时这条链不会把负号丢掉或当成无符号大数。
-  **这套路径未实机验证**（本机两块屏都在主屏右侧，见 §6.1）。
+  **这套路径未实机验证**（本机两块屏都在主屏右侧，见 §7.1）。
 - **句柄生命周期**：任何一步失败都走同一条逆序释放路径，不靠 GC、也不把句柄挂到
   实例上——每次 `capture` 都是完整的一次生命周期。
 
@@ -268,9 +282,10 @@ Wayland 不允许应用直接读屏幕：唯一通用路径是 `xdg-desktop-port
 
 ### 5.1 会话建立流程（首次截屏会弹系统授权框）
 
-1. **不是 Wayland 就明确失败**：`WAYLAND_DISPLAY` 或 `XDG_SESSION_TYPE=wayland`
-   任一命中才继续；否则日志写"当前不是 Wayland 会话；X11 支持见后续任务"，
-   `describe`/`capture` 返回 3。X11 分支是后续任务，当前**不假装支持**。
+1. **会话类型在契约层已分流**：`ScreenCapture` 构造函数按 `WAYLAND_DISPLAY` /
+   `XDG_SESSION_TYPE` 选择后端（规则见 §6.2）；只有 Wayland 会话才会创建本后端的
+   对象。`WaylandCapture::ensureReady` 仍保留一次环境自检（防御构造后环境被改），
+   不通过时返回 3 —— 这是防御路径，正常 X11 会话不会走到这里。
 2. **懒建立**：插件加载时不建会话、不弹框；第一次 `describe` 才建立。
 3. **门户线程**：插件创建自己的 GLib 线程，推入线程默认 `GMainContext` 后调用
    `xdp_portal_new()`——libportal 的异步回调投递到发起调用时的 thread-default 上下文，
@@ -340,7 +355,7 @@ Wayland 不允许应用读光标位图，也没有跨合成器的"把光标画�
 - `include_cursor = 1`（默认）只表示"按 embedded 模式请求"，不保证画面里有光标；
 - `include_cursor = 0` 在 Wayland 上**无法生效**（会话建立后改不了光标模式，插件也
   不能从帧里移除光标）；第一次 `capture` 会 WARN 一次，如实说明，不假装支持；
-- 需要确定的光标行为时，请使用 Windows 版。
+- 需要确定的光标行为时，请使用 Windows 或 X11 版。
 
 ### 5.5 失败分类
 
@@ -350,7 +365,7 @@ Wayland 不允许应用读光标位图，也没有跨合成器的"把光标画�
 
 | 类别 | 典型日志 | 处理建议 |
 | --- | --- | --- |
-| 不是 Wayland 会话 | `当前不是 Wayland 会话；X11 支持见后续任务` | 等 X11 分支，或换 Wayland 会话 |
+| Wayland 环境自检失败（防御路径） | `当前不是 Wayland 会话…` | 正常 X11 会话已在构造时分派到 §6 的 X11 后端，不会走到这里；只有构造后环境被改才会出现 |
 | 门户不可用 | `xdg-desktop-portal 服务不可用（没有运行，或桌面没有门户后端）` / `无法连接 xdg-desktop-portal` | 装/启动 `xdg-desktop-portal` 与 `xdg-desktop-portal-gnome` |
 | 未授权 | `未授权（门户拒绝共享屏幕）` | 在系统弹框里允许共享 |
 | 用户取消 | `用户取消了共享（门户返回取消）` | 重新发起截屏，再次弹框 |
@@ -365,14 +380,120 @@ Wayland 不允许应用读光标位图，也没有跨合成器的"把光标画�
 | **需真机验证** | 本实现只做代码级审查，**尚未在真实 Ubuntu 24.04 Wayland 桌面跑过**；首屏授权、点击选择、落盘尺寸、光标表现都需要维护者真机确认后再标"已验证" |
 | 一次只共享一个源 | 门户默认 `multiple=false`，用户选一个输出或一个窗口；本插件不做跨输出拼接，`origin` 恒为 `(0,0)` |
 | `source` 改动会重弹框 | 会话已建立后改 `source` 不能热切换：下一次截屏先结束旧会话、重新建立（`persist_mode = NONE`，必然重新弹框） |
-| X11 暂未实现 | 非 Wayland 会话直接返回 3 + 明确日志；X11 的 `XGetImage`/`XShm` 方案是后续任务 |
 | 光标不可控 | 见 §5.4；能否把光标画进画面取决于合成器 |
 | 每次重建都会弹框 | `persist_mode = NONE`，不持久化授权；用户取消/超时后下一次截屏会重新弹 |
 | 没有父窗口句柄 | 门户 `Start` 的 parent 传 `NULL`（跨平台 ABI 不带窗口），GNOME 的选择框可能不置顶到某个窗口前面 |
 | 分辨率/输出切换 | 会话建立后不重新协商；帧尺寸变化时 `capture` 返回 2，下一次截屏请求会重建会话 |
 | 合成器兼容性 | GNOME（mutter）与 wlroots 系是主要目标；其它门户后端的格式/尺寸行为未验证 |
 
-## 6. 降级与边界情况
+## 6. Linux（X11）实现
+
+X11 允许客户端直接读 root window：非 Wayland 会话（`WAYLAND_DISPLAY` 为空且
+`XDG_SESSION_TYPE` 不是 `wayland`）由契约层在构造时分派到本后端。X11 与 Wayland
+共用同一份 `libscreen_capture.so`、同一套 `ShotScreenCaptureV1` 校验与返回码；
+Wayland 的门户/PipeWire 实现原样保留，两条后端只在 `ScreenCapture` 里分派。
+
+### 6.1 依赖
+
+```bash
+sudo apt install libx11-dev libxrandr-dev libxfixes-dev libxext-dev pkg-config
+```
+
+| 依赖 | 用途 |
+| --- | --- |
+| `x11`（`libx11-dev`） | `XOpenDisplay` / `DisplayWidth` / `DisplayHeight` / `XGetImage` / `XDestroyImage` |
+| `xext`（`libxext-dev`） | MIT-SHM 的 `XShmQueryExtension` / `XShmAttach` / `XShmGetImage`；`XShm.h` 也由它提供 |
+| `xrandr`（`libxrandr-dev`） | 只在 debug 日志里用 `XRRGetMonitors` 列显示器布局（RandR 1.5+，老 server 跳过）；采集尺寸仍来自 `DisplayWidth/Height` |
+| `xfixes`（`libxfixes-dev`） | `XFixesGetCursorImage` 取光标位图 + 热点，用于光标合成 |
+| `pkg-config` | CMake 用 `pkg_check_modules` 找上面四个模块 |
+
+Wayland 与 X11 的依赖都在 `UNIX AND NOT APPLE` 分支里**强制要求**：Linux 只出一份
+`.so`，两种会话都要能跑；缺任何一个都在 configure 阶段 FATAL_ERROR 并打印 apt 包名。
+`libxext-dev` 通常随 `libxrandr-dev` 的依赖链一起安装，但链接 `-lXext` 是 XShm 的
+硬需求，所以 CMake 也单独检查 `xext`。
+
+### 6.2 运行期选择
+
+| 条件（任一命中） | 后端 |
+| --- | --- |
+| `WAYLAND_DISPLAY` 非空 | Wayland（门户 + PipeWire，见 §5） |
+| `XDG_SESSION_TYPE` 大小写不敏感等于 `wayland` | Wayland |
+| 其余（包括两个变量都没设置的无头环境） | X11；连不上 X server 时 `describe`/`capture` 返回 3 |
+
+- 选择在 `ScreenCapture` 构造时做一次：会话类型在进程生命周期内不会变，之后不再
+  看环境变量。
+- 判定规则与 `WaylandCapture::isWaylandSession` 保持一致，改一处必须同步另一处。
+- `source` 配置（Wayland 专用）在 X11 分支是空操作；`include_cursor` 在 X11 下生效。
+
+### 6.3 describe / capture
+
+- **describe**：`DisplayWidth(display, DefaultScreen(display))` × `DisplayHeight(...)`，
+  `origin` 恒为 `(0,0)`，`pixel_format = BGRA8`。XRandR/Xinerama 把多显示器合并成
+  一个 X screen，所以描述的是整个 screen；插件不做单屏/区域描述（取景由宿主裁剪）。
+- **capture**：`XOpenDisplay` → `XShmGetImage`（MIT-SHM 可用且 `DISPLAY` 是本机时）
+  → 失败回退 `XGetImage` → 转 BGRA8 → 可选 XFixes 光标合成 → `XDestroyImage` /
+  `XCloseDisplay`。每次调用独立开/关连接，见 §6.5。
+- **XShm 的异步错误**：`XShmAttach` 的错误要 `XSync` 才知道；远程 `DISPLAY`、容器
+  禁用 SysV shm、权限不足都可能失败。插件在 attach + `XSync` 的短窗口里临时接管
+  Xlib 错误处理器，失败后清理共享内存并回退 `XGetImage`；处理器只拦截本连接的错误，
+  其它连接的错误交给上一个处理器。
+- **共享内存清理**：`XShmAttach` 成功后立刻 `IPC_RMID`（attach 失败时在清理路径
+  标记），`XShmDetach` + `shmdt` 后把 `XImage::data` 置空再 `XDestroyImage`
+  （避免 `free()` 共享内存 / double free）。
+- **像素转换**（`x11_image_convert.cpp`）：只认 `ZPixmap`；支持 24/32bpp 的
+  LSBFirst/MSBFirst，按 XImage 的 red/green/blue mask 做通道映射（16bpp 与 30-bit
+  深色也能覆盖）。常见 32/24bpp LSB 走整行快路径。alpha 一律置 255。每行按 XImage
+  的 `bytes_per_line` 走，目标按 `dst->stride` 行寻址；8 位伪彩色没有 TrueColor
+  mask，写 error 后返回 3。
+- **失败语义**：与 Windows 一致 —— X11 通道失败返回 3；`describe`/`capture` 之间
+  分辨率变化导致尺寸不一致返回 2；X screen 尺寸 <= 0 返回 1。
+- **DPI**：X11 的 root window 像素就是物理像素，插件不调用任何缩放 API，也不像
+  Windows 那样提升线程 DPI 感知上下文。
+
+### 6.4 光标合成
+
+`include_cursor` 默认开。`XFixesGetCursorImage` 一次拿回位图、热点与光标位置：
+
+- 左上角 = `(cursor->x - xhot, cursor->y - yhot)`；`x/y` 是热点在 root window 上的
+  位置，`xhot/yhot` 是热点在位图内的偏移（箭头光标热点是 `(0,0)`，I 型/手型不是，
+  不减会整体画偏）。
+- 位图是**预乘 alpha** 的 ARGB：合成公式 `out = src + dst * (1 - alpha)`；全透明
+  像素跳过，全不透明像素直接覆盖；越界像素按像素裁剪。
+- XFixes 扩展不可用（Xvfb、精简 server）或 `XFixesGetCursorImage` 失败时只写一条
+  WARN 并跳过，抓屏仍然成功（与 Windows 取不到光标信息时一致）。
+
+已知限制：
+
+- X11 没有可靠的“光标当前是否可见”查询：应用或合成器隐藏了光标（`XFixesHideCursor`、
+  全屏视频、屏保），XFixes 仍然返回图像，截图里可能多出一个光标。Windows 用
+  `CURSOR_SHOWING` 能判断，X11 不能。
+- 合成的是 `capture` 那一刻的位置；抓屏期间光标移动/变形不会追帧。
+
+### 6.5 线程模型
+
+`X11Capture` 没有成员状态，所有函数都是静态的；`queryGeometry` / `captureTo` 各自
+`XOpenDisplay`、`XCloseDisplay`，`Display*` 绝不跨函数或跨线程保存。原因：Xlib 的
+`Display` 不是线程安全的，而宿主进程里 settings_ui（GLFW）与 clipboard（X11
+selection）也可能各开自己的连接；插件不共享连接，就不需要插件内的锁，也不会在插件
+卸载时留下后台线程或悬挂连接。宿主采集流水线本身就串行调用同一个采集实例。Xlib 的
+进程级错误处理器只在 `XShmAttach` 的短窗口内临时接管（见 §6.3），与其它 Xlib 调用
+无关。插件也不调用 `XInitThreads`：它必须是进程里第一个 Xlib 调用，而 settings_ui /
+clipboard 可能已经先用过 Xlib；本插件用“一次调用一个连接”规避自身并发，进程级的
+Xlib 线程安全由各组件各自负责。
+
+### 6.6 未验证与限制
+
+| 项 | 说明 |
+| --- | --- |
+| **真机未验证** | 本实现只做代码级审查与语法检查，**没有在真实 X11 桌面跑过**；首次真机要确认 XShm/XGetImage 两条路径、光标位置、落盘尺寸与多帧稳定性 |
+| 多屏 / 负坐标 | `DisplayWidth/Height` 是合并后的整个 X screen；多显示器布局与“负坐标”没有实测。X11 root 坐标通常从 `(0,0)` 起，负 origin 是 Windows 虚拟桌面的概念，X11 不应出现 |
+| XWayland | Wayland 会话里本插件走 Wayland 后端；若环境被强制成 X11 而 `DISPLAY` 指向 XWayland，XShm/XGetImage 只能看到 **X 客户端**的窗口，Wayland 原生窗口不会进入 root pixmap（画面可能缺块/黑块） |
+| 光标可见性 | 见 §6.4；X11 没有可靠的“光标当前是否显示”查询 |
+| 硬件光标 | 部分驱动/全屏应用用硬件光标，XFixes 仍返回图像但屏幕上可能不显示；插件按 XFixes 图像合成 |
+| 分辨率/输出热插拔 | 不监听 XRandR 事件；`describe`/`capture` 之间变化会让尺寸校验返回 2，下一次请求重新 describe |
+| 多 X screen | 只抓 `DefaultScreen`；`DISPLAY=:0.1` 这类非默认 screen 未处理 |
+
+## 7. 降级与边界情况
 
 | 情况 | 行为 |
 | --- | --- |
@@ -382,31 +503,36 @@ Wayland 不允许应用读光标位图，也没有跨合成器的"把光标画�
 | 宿主给的 `ShotCaptureInfo` 太短 | `describe` 返回 2，不越界写 |
 | 宿主给的 `ShotImage` 没有 `pixel_format` 字段 | 按当年的约定当 BGRA8 处理（`STYLE.md` §6.5） |
 | `pixel_format` 不是 BGRA8、`channels != 4` | `capture` 返回 2 |
-| `stride` 为负 / 大于 `width*4` | 按行寻址，正确写入（Windows GDI 与 Wayland 帧缓冲都是） |
+| `stride` 为负 / 大于 `width*4` | 按行寻址，正确写入（Windows GDI、Wayland 帧缓冲与 X11 转换都是） |
 | `describe` 与 `capture` 之间换分辨率 / 拔显示器 | 尺寸对不上 → `capture` 返回 2，绝不按错的尺寸写 |
 | 没有显示器 / 远程会话断开（Windows） | 返回 1（"没有可采集的屏幕"，不是失败） |
 | 宿主线程原本不是 `PER_MONITOR_AWARE_V2`（Windows） | 插件在入口临时提升，返回前恢复 |
 | 系统没有 `SetThreadDpiAwarenessContext`（Windows） | 只写一条 `warn`，按线程原上下文采集 |
 | 光标此刻不可见（Windows） | 不合成光标，照常返回 0 |
 | `GetCursorInfo` / `GetIconInfo` / `DrawIconEx` 失败（Windows） | 只写 `warn`，抓屏照常成功 |
-| 非 Wayland 会话（Linux） | `describe`/`capture` 返回 3 + "当前不是 Wayland 会话；X11 支持见后续任务" |
-| 用户取消 / 授权超时（Linux） | 返回 3，日志区分两种原因；下一次截屏重建会话 |
-| 门户会话被撤销（Linux） | 下一次调用返回 3 并记录原因；下一次截屏重建会话 |
-| PipeWire 断流 / 协商失败（Linux） | 返回 3，原因见日志；下一次截屏重建会话 |
-| 200ms 内没有新帧（Linux） | 用上一帧 + 一条 WARN，返回 0 |
-| 还没有任何帧（Linux） | 返回 3（"PipeWire 流还没有产出首帧"） |
+| X11 会话（Linux） | 走 §6 的 X11 后端；X screen 正常时采集成功 |
+| 无法连接 X server / `DISPLAY` 未设置（Linux X11） | `describe`/`capture` 返回 3 + "无法打开 X11 Display…" |
+| XShm 不可用 / `XShmAttach` 失败（Linux X11） | WARN 后回退 `XGetImage`，抓屏照常成功 |
+| XFixes 不可用 / 取不到光标（Linux X11） | WARN 后跳过光标合成，抓屏照常成功（返回 0） |
+| 用户取消 / 授权超时（Linux Wayland） | 返回 3，日志区分两种原因；下一次截屏重建会话 |
+| 门户会话被撤销（Linux Wayland） | 下一次调用返回 3 并记录原因；下一次截屏重建会话 |
+| PipeWire 断流 / 协商失败（Linux Wayland） | 返回 3，原因见日志；下一次截屏重建会话 |
+| 200ms 内没有新帧（Linux Wayland） | 用上一帧 + 一条 WARN，返回 0 |
+| 还没有任何帧（Linux Wayland） | 返回 3（"PipeWire 流还没有产出首帧"） |
 | 宿主没声明 `shot.configurable`（老宿主） | 忽略该能力，`include_cursor` 按插件初值（`true`）、`source` 按 `monitor` 工作 |
 
-### 6.1 已知限制
+### 7.1 已知限制
 
 | 限制 | 说明 |
 | --- | --- |
 | **负 origin 未实机验证（Windows）** | 本机两块屏都在主屏右侧，虚拟桌面 origin 是 `(0,0)`；把副屏摆到主屏左侧/上方要改显示设置，验证时刻意不动。 |
 | 虚拟桌面矩形里没有显示器覆盖的区域是黑色 | 副屏比主屏矮时它下方那块矩形没有像素来源（本机 x 2560..3584、y 768..1600）。 |
-| 区域 / 单显示器采集不在本插件 | 插件永远描述并抓"整个画面"（Windows 是虚拟桌面，Wayland 是一个输出或窗口）；取景由宿主负责（先整屏采集、再按 region 裁剪）。 |
-| 光标只在抓屏瞬间合成（Windows） | 合成的是 `capture` 调用那一刻 `GetCursorInfo` 报告的光标；抓屏期间光标移动/变形不会被追帧。 |
+| 区域 / 单显示器采集不在本插件 | 插件永远描述并抓"整个画面"（Windows 是虚拟桌面，Wayland 是一个输出/窗口，X11 是整个 X screen）；取景由宿主负责（先整屏采集、再按 region 裁剪）。 |
+| 光标只在抓屏瞬间合成（Windows/X11） | 合成的是 `capture` 调用那一刻 `GetCursorInfo` / `XFixesGetCursorImage` 报告的光标；抓屏期间光标移动/变形不会被追帧。 |
 | 光标按系统默认图标尺寸绘制（Windows） | `DrawIconEx` 的宽高传 0 = 系统默认图标尺寸；用户改过超大的光标尺寸时可能略有差异。 |
 | 硬件光标 / 自绘光标不能合成（Windows） | 这两类光标的形状不在系统光标位图里（`GetIconInfo` 拿不到或内容为空），只能退化为不含光标。 |
+| 光标可见性（X11） | 见 §6.4：X11 没有"光标当前是否显示"的查询，被隐藏的光标仍可能被合成进截图。 |
+| X11 未真机验证 | 见 §6.6；先按"需真机验证"对待，不要据此宣称 X11 的 XShm 路径、光标位置或落盘尺寸已验证。 |
 | Wayland 未真机验证 | 见 §5.6；先按"需真机验证"对待，不要据此宣称 Wayland 光标/尺寸行为已验证。 |
 
 负 origin 的复核结论（Windows）：`origin_x/origin_y` 从 `GetSystemMetrics` 到契约
@@ -415,22 +541,21 @@ Wayland 不允许应用读光标位图，也没有跨合成器的"把光标画�
 覆盖。负坐标本身用桩测试跑过（临时验证脚本，不提交进仓库），**但没有在真实负坐标
 显示器上跑过**——所以这里按未实机验证处理。
 
-## 7. 刻意不做的事
+## 8. 刻意不做的事
 
 | 不做 | 原因 |
 | --- | --- |
 | 分配图像内存 | 契约规定宿主按 `describe` 的尺寸分配，插件只往里写：没有跨 DLL 的所有权问题 |
 | 处理 / 保存像素 | 那是 `shot.image_processor` / `shot.image_saver` 插件的职责，换算法或换格式不需要改本插件 |
-| 强制光标入画 | 光标是可选叠加：Windows 上可关、光标隐藏或取不到图标信息时安静退化；Wayland 上由合成器决定，插件不越权假装能控制 |
+| 强制光标入画 | 光标是可选叠加：Windows/X11 上可关、光标隐藏或取不到图像时安静退化；Wayland 上由合成器决定，插件不越权假装能控制 |
 | 区域 / 单显示器采集 | v1 契约只描述"整块画面"；取景由宿主抓整屏后裁剪，插件不感知 |
-| 跨输出拼接（Linux） | Wayland 门户一次只共享一个源（输出或窗口），没有虚拟桌面坐标系 |
+| 跨输出拼接（Linux） | Wayland 门户一次只共享一个源（输出或窗口）；X11 的 root window 本身就是多屏合并后的坐标系，不需要按输出拼接 |
 | 录制 / 多路流 | v1 只需要"截一张图"；门户每次会话只开一条流，多次截屏复用同一会话 |
-| 后台线程 / 异步采集（契约层） | 契约规定两个函数在宿主调用线程同步执行；Linux 的两个后台线程只服务门户/PipeWire 自己的事件循环，不改变契约的同步语义 |
-| X11 实现 | 需要 X11 开发头与 XShm 路径，属于后续独立任务；非 Wayland 会话明确报错 |
+| 后台线程 / 异步采集（契约层） | 契约规定两个函数在宿主调用线程同步执行；Wayland 的两个后台线程只服务门户/PipeWire 自己的事件循环，X11 分支不创建线程，都不改变契约的同步语义 |
 | macOS 实现 | 无真机与验证环境；CMake 在 macOS 直接跳过整个工程 |
 | 链接 spdlog | 插件只能通过 `host->log`（`shot::Logger`）写日志（`STYLE.md` §6.4） |
 
-## 8. 检查清单
+## 9. 检查清单
 
 - [ ] 采集入口显式 `SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 了、`GetSystemMetrics` 在它之后？（Windows）
 - [ ] DPI 上下文提升失败只 `warn`、没有阻止采集？返回前恢复成调用前的值了？（Windows）
@@ -440,13 +565,20 @@ Wayland 不允许应用读光标位图，也没有跨合成器的"把光标画�
 - [ ] `describe` 与 `capture` 的尺寸不一致时返回 2、没有硬写？
 - [ ] 返回码只用契约规定的 0 / 1 / 2 / 3，没有发明新码值？
 - [ ] Windows：每条失败路径都逆序释放了 GDI 句柄？`GetIconInfo` 的 `hbmMask`/`hbmColor` 都 `DeleteObject` 了？
-- [ ] Linux：非 Wayland 会话返回 3 + "当前不是 Wayland 会话；X11 支持见后续任务"？
-- [ ] Linux：门户会话失败/撤销后下一次 `describe` 会重建会话、不会无限等？
-- [ ] Linux：`describe` 用的是 PipeWire 协商尺寸而不是门户 compositor 尺寸？
-- [ ] Linux：`destroy` 路径先停 PipeWire 流、再结束门户会话、最后 join 两个线程？
-- [ ] Linux：process 回调里的异常都就地吞掉（不越过 C 回调边界）、坏 buffer 有 stride/offset 防护？
-- [ ] Linux：光标限制只 WARN 一次、没有假装 `include_cursor` 生效？
-- [ ] Linux：`source` 只接受 `monitor` / `window`，改变后下一次截屏会重建会话？
+- [ ] Linux：非 Wayland 会话走 X11 后端（不是返回 3）？`DISPLAY` 打不开时返回 3 + "无法打开 X11 Display"？
+- [ ] Linux/X11：`describe` 用 `DisplayWidth/DisplayHeight`、origin 恒为 `(0,0)`？
+- [ ] Linux/X11：`XShmAttach` 的异步错误被 `XSync` + 临时错误处理器收住，没有让默认处理器 `exit`？
+- [ ] Linux/X11：SHM 路径 `shmdt` / `XDestroyImage` 顺序正确，`image->data` 置空后才销毁？
+- [ ] Linux/X11：XShm 失败或扩展不可用时回退 `XGetImage`，两条路径都能成功？
+- [ ] Linux/X11：XImage 按 `bits_per_pixel` / `byte_order` / mask 转换，alpha 置 255？
+- [ ] Linux/X11：光标左上角减了 `xhot/yhot`、按预乘 alpha 合成、越界裁剪？
+- [ ] Linux/X11：每次 `XOpenDisplay` 都在同一次调用内 `XCloseDisplay`，Display 没有跨线程共享？
+- [ ] Linux/Wayland：门户会话失败/撤销后下一次 `describe` 会重建会话、不会无限等？
+- [ ] Linux/Wayland：`describe` 用的是 PipeWire 协商尺寸而不是门户 compositor 尺寸？
+- [ ] Linux/Wayland：`destroy` 路径先停 PipeWire 流、再结束门户会话、最后 join 两个线程？
+- [ ] Linux/Wayland：process 回调里的异常都就地吞掉（不越过 C 回调边界）、坏 buffer 有 stride/offset 防护？
+- [ ] Linux/Wayland：光标限制只 WARN 一次、没有假装 `include_cursor` 生效？
+- [ ] Linux/Wayland：`source` 只接受 `monitor` / `window`，改变后下一次截屏会重建会话？
 - [ ] `metadata.json` 的 `interfaces` 与 `kIfaces[]` 一致（`shot.screen_capture` + `shot.configurable`）？
 - [ ] 新增用户可见文案已进 `kLangTables`（`config.*` / `ui.*`），key 与 `capture_settings.cpp` 一致？
 - [ ] macOS 平台是"CMake 跳过"，没有未验证的实现分支？

@@ -1,8 +1,8 @@
 // include_cursor 配置项：声明 + shot.configurable 的 get/set 回调。
 //
 // 这里只放"配置"这一个关注点：配置描述符、值的串/布尔转换与线程安全状态都在
-// CaptureSettings（capture_settings.h）；抓屏本身在 gdi_desktop_capture.cpp，
-// ABI 函数表在 plugin_entry.cpp 里组装。
+// CaptureSettings（capture_settings.h）；抓屏本身在平台层（gdi_desktop_capture.cpp /
+// wayland_capture.cpp / x11_capture.cpp），ABI 函数表在 plugin_entry.cpp 里组装。
 //
 // label / tooltip 写的是语言表 key，不是中文：设置页按
 // display(owner, key) = i18n_list[(owner, key)] ?? key 解析，文案本体在

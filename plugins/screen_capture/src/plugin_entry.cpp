@@ -53,13 +53,13 @@ const ShotHostServices* g_hostServices = nullptr;
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
     R"json("config.include_cursor.label":"合成鼠标光标",)json"
-    R"json("config.include_cursor.tooltip":"Windows：抓屏后把当前鼠标光标画进截图，关闭后不含光标；Wayland 下光标由合成器决定",)json"
+    R"json("config.include_cursor.tooltip":"Windows/X11：抓屏后把当前鼠标光标画进截图，关闭后不含光标；Wayland 下光标由合成器决定",)json"
     R"json("config.source.label":"共享类型",)json"
     R"json("config.source.tooltip":"Wayland：共享整个输出（monitor）或单个窗口（window）；默认整个输出"})json",
     R"json({"@meta":"en-US",)json"
     R"json("config.include_cursor.label":"Include mouse cursor",)json"
     R"json("config.include_cursor.tooltip":)json"
-    R"json("Windows: draws the cursor into the screenshot; off omits it. On Wayland the compositor decides",)json"
+    R"json("Windows/X11: draws the cursor into the screenshot; off omits it. On Wayland the compositor decides",)json"
     R"json("config.source.label":"Share source",)json"
     R"json("config.source.tooltip":)json"
     R"json("Wayland: share the whole output (monitor) or a single window (window); default is the whole output"})json",
@@ -265,7 +265,7 @@ const ShotIfaceEntry kIfaces[] = {
 }  // namespace
 
 const PluginEntry kScreenCapture = {
-    "screen_capture.main", "Screen Capture", "0.2.0", &create_state, &destroy_state, kIfaces,
+    "screen_capture.main", "Screen Capture", "0.3.0", &create_state, &destroy_state, kIfaces,
 };
 
 }  // namespace screen_capture

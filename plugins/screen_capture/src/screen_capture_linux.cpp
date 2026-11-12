@@ -1,34 +1,78 @@
-// Linux/Wayland 契约层：校验宿主入参、把 Wayland 采集结果映射成契约返回码、写日志。
+// Linux 契约层：校验宿主入参、按会话类型分派到 Wayland 或 X11 后端、映射返回码、写日志。
 //
-// 与 Windows 的 screen_capture.cpp 是同一职责的平台版本：CMake 按平台只编译其中
-// 一个，所以两个 .cpp 各自定义同一个 ScreenCapture 类，公共头与 ABI 胶水完全不变；
-// GDI 实现一行未动。
+// 为什么运行期分派：宿主在 Linux 只有一份二进制，用户的桌面可能是 Wayland
+// （Ubuntu 24.04 默认）也可能是 X11；插件的 .so 不能按会话类型分别编译，只能看
+// 环境变量。会话类型在进程生命周期内不会变，所以只在构造 ScreenCapture 时判定一次。
 //
-// 尺寸语义与 Windows 不同：Wayland 门户一次只共享一个源（整个输出或单个窗口），
-// 没有"虚拟桌面"坐标系，所以 origin 恒为 (0,0)，describe 的 width/height 是
-// PipeWire 实际协商的帧尺寸。
+// 判定规则（与 wayland_capture.cpp 的 WaylandCapture::isWaylandSession 保持一致）：
+//   WAYLAND_DISPLAY 非空，或 XDG_SESSION_TYPE=wayland（大小写不敏感）→ Wayland；
+//   其余（包括两个变量都没设置的无头环境）→ X11。两个变量都看，是因为精简环境/
+//   登录管理器可能只设置其中一个；无头环境走 X11 分支后由 X11 层报"无法连接
+//   X server"，返回码同样是 3，不在契约层伪造成功。
+//
+// 两条后端的尺寸语义不同：
+//   Wayland：门户一次只共享一个源（输出或窗口），origin 恒为 (0,0)，尺寸取
+//            PipeWire 实际协商的帧尺寸；
+//   X11：整个默认 X screen（DisplayWidth / DisplayHeight），origin 恒为 (0,0)。
+// 共同点：describe 报的尺寸与 capture 写的必须是同一套；中间变了就返回 2。
 
 #include "screen_capture.h"
 
+#include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <new>
 #include <string>
 
 #include "shot_plugin_helpers.h"
 #include "wayland_capture.h"
+#include "x11_capture.h"
 
 namespace screen_capture {
 namespace {
 
-// capture 最多等新帧的时间。门户的 PipeWire 流通常 1 帧内就有数据；200ms 是"允许
-// 一次短抖动"与"不让宿主 worker 线程卡太久"之间的折中（需求给的上限）。
+// Wayland 的 capture 最多等新帧的时间。200ms 是"允许一次短抖动"与"不让宿主 worker
+// 线程卡太久"之间的折中；X11 路径不使用它。
 constexpr std::int32_t kFrameWaitMs = 200;
+
+/**
+ * @brief 判断当前桌面会话是不是 Wayland。
+ *
+ * 契约层用它在两个后端之间分派；Wayland 后端自己会再校验一次（防御环境在构造后
+ * 被改）。两处规则必须保持同步，否则"选择的后端"和"后端自己的判断"会打架。
+ *
+ * @return true = Wayland 会话；false = X11 或无显示会话。
+ */
+bool isWaylandSession() {
+    const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
+    if (waylandDisplay != nullptr && waylandDisplay[0] != '\0') {
+        return true;
+    }
+    const char* sessionType = std::getenv("XDG_SESSION_TYPE");
+    if (sessionType == nullptr) {
+        return false;
+    }
+    std::string type(sessionType);
+    for (char& character : type) {
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    }
+    return type == "wayland";
+}
 
 }  // namespace
 
-ScreenCapture::ScreenCapture(const ShotHostServices* host) noexcept
-    : m_host(host), m_wayland(new (std::nothrow) WaylandCapture(host)) {}
+ScreenCapture::ScreenCapture(const ShotHostServices* host) noexcept : m_host(host) {
+    m_waylandSession = isWaylandSession();
+    const shot::Logger log(m_host);
+    if (m_waylandSession) {
+        // 门户对象与两个后台线程只在 Wayland 会话创建；X11 会话完全不碰 libportal。
+        m_wayland.reset(new (std::nothrow) WaylandCapture(host));
+        log.info("screen_capture: 检测到 Wayland 会话，使用 xdg-desktop-portal ScreenCast + PipeWire");
+    } else {
+        log.info("screen_capture: 当前不是 Wayland 会话，使用 X11（XShmGetImage / XGetImage）");
+    }
+}
 
 ScreenCapture::~ScreenCapture() = default;
 
@@ -44,6 +88,20 @@ std::int32_t ScreenCapture::describe(ShotCaptureInfo* out) const {
         log.error("screen_capture: 宿主给的 ShotCaptureInfo 太短，拒绝写入");
         return 2;
     }
+    return m_waylandSession ? describeWayland(out) : describeX11(out);
+}
+
+std::int32_t ScreenCapture::capture(ShotImage* dst, bool includeCursor) const {
+    const shot::Logger log(m_host);
+    if (dst == nullptr || !isValidTarget(*dst)) {
+        log.error("screen_capture: capture 的目标图不合法（空指针 / 格式 / 尺寸 / stride）");
+        return 2;
+    }
+    return m_waylandSession ? captureWayland(dst, includeCursor) : captureX11(dst, includeCursor);
+}
+
+std::int32_t ScreenCapture::describeWayland(ShotCaptureInfo* out) const {
+    const shot::Logger log(m_host);
     if (m_wayland == nullptr) {
         log.error("screen_capture: Wayland 采集对象未创建（内存不足）");
         return 3;
@@ -68,12 +126,8 @@ std::int32_t ScreenCapture::describe(ShotCaptureInfo* out) const {
     return 0;
 }
 
-std::int32_t ScreenCapture::capture(ShotImage* dst, bool includeCursor) const {
+std::int32_t ScreenCapture::captureWayland(ShotImage* dst, bool includeCursor) const {
     const shot::Logger log(m_host);
-    if (dst == nullptr || !isValidTarget(*dst)) {
-        log.error("screen_capture: capture 的目标图不合法（空指针 / 格式 / 尺寸 / stride）");
-        return 2;
-    }
     if (m_wayland == nullptr) {
         log.error("screen_capture: Wayland 采集对象未创建（内存不足）");
         return 3;
@@ -81,7 +135,7 @@ std::int32_t ScreenCapture::capture(ShotImage* dst, bool includeCursor) const {
 
     // include_cursor 在 Wayland 上没有可执行语义：光标由门户/合成器决定，应用既
     // 不能读光标也不能把光标画进别人的帧。第一次 capture 如实 WARN 一次，不假装
-    // 支持；配置值仍然保留，切回 Windows 时照常生效。
+    // 支持；配置值仍然保留，切回 Windows/X11 时照常生效。
     (void)includeCursor;
     m_wayland->warnCursorLimitation();
 
@@ -94,7 +148,7 @@ std::int32_t ScreenCapture::capture(ShotImage* dst, bool includeCursor) const {
         return code;
     }
     // describe 与 capture 是两次独立调用，中间可能改分辨率/换输出：尺寸对不上
-    // 返回 2，绝不按错的尺寸写像素（与 Windows 版同一语义）。
+    // 返回 2，绝不按错的尺寸写像素（与 Windows/X11 版同一语义）。
     if (width != dst->width || height != dst->height) {
         log.error("screen_capture: 目标尺寸与当前 Wayland 流不一致，拒绝写入");
         return 2;
@@ -108,7 +162,45 @@ std::int32_t ScreenCapture::capture(ShotImage* dst, bool includeCursor) const {
     return 0;
 }
 
+std::int32_t ScreenCapture::describeX11(ShotCaptureInfo* out) const {
+    const shot::Logger log(m_host);
+    ShotCaptureInfo geometry = {};
+    const std::int32_t code = X11Capture::queryGeometry(geometry, log);
+    if (code != 0) {
+        return code;
+    }
+
+    // 区域/单显示器采集：与 Windows 版一样，v1 只描述整个 X screen。DisplayWidth/
+    // DisplayHeight 已经包含 XRandR/Xinerama 合并后的多显示器，取景由宿主抓整屏后裁剪。
+    out->width = geometry.width;
+    out->height = geometry.height;
+    out->origin_x = geometry.origin_x;
+    out->origin_y = geometry.origin_y;
+    out->pixel_format = SHOT_PIXEL_FORMAT_BGRA8;
+    return 0;
+}
+
+std::int32_t ScreenCapture::captureX11(ShotImage* dst, bool includeCursor) const {
+    const shot::Logger log(m_host);
+    // 每次 capture 重新读一次几何：describe 与 capture 是两次独立调用，中间可能
+    // 改分辨率/拔显示器/旋转屏幕；尺寸对不上返回 2，绝不按错的尺寸写像素。
+    ShotCaptureInfo geometry = {};
+    const std::int32_t code = X11Capture::queryGeometry(geometry, log);
+    if (code != 0) {
+        return code;
+    }
+    if (geometry.width != dst->width || geometry.height != dst->height) {
+        log.error("screen_capture: 目标尺寸与当前 X11 screen 不一致，拒绝写入");
+        return 2;
+    }
+    if (!X11Capture::captureTo(*dst, geometry, includeCursor, log)) {
+        return 3;
+    }
+    return 0;
+}
+
 void ScreenCapture::setCaptureWindow(bool window) {
+    // X11 分支没有创建 Wayland 对象，source 配置对它是空操作；Windows 版本没有这个函数。
     if (m_wayland != nullptr) {
         m_wayland->setCaptureWindow(window);
     }

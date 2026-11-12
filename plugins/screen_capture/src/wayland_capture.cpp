@@ -1,7 +1,7 @@
 // Linux/Wayland 采集编排：环境判断 → 门户会话 → PipeWire 流 → 帧缓冲。
 //
 // 这一层只负责"把一个可用的采集通道准备好"并给出错误原因，契约返回码与入参校验在
-// screen_capture_wayland.cpp。两段式契约要求 describe 与 capture 用同一块尺寸：
+// screen_capture_linux.cpp。两段式契约要求 describe 与 capture 用同一块尺寸：
 // 这里的宽高一律取 PipeWire 实际协商结果（门户报的是 compositor 坐标，HiDPI 下
 // 可能不是像素尺寸）。
 //
