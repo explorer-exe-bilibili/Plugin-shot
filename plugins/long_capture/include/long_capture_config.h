@@ -35,7 +35,6 @@ class LongCaptureConfig {
 public:
     /** @brief 配置快照：一次会话开始时取一次，会话中途改配置只影响下一次。 */
     struct Snapshot {
-        bool enabled = false;  /**< 实验特性总开关：默认关闭，设置页打开后重启宿主生效。 */
         int maxHeight = 30000; /**< 长图高度上限（像素），画布达到后停止继续拼接。 */
     };
 

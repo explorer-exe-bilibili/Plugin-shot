@@ -23,11 +23,12 @@
 
 - 项目品牌统一为 **Plugin-shot**；配置与日志目录改为 `%LOCALAPPDATA%\plugin-shot`。
 - 示例处理器（反色 / 灰度）默认禁用，避免首次运行截图被示例改写。
+- 长截图（`long_capture`，Windows）作为实验特性随包分发，默认在插件列表里禁用（`plugins.disabled`），在设置页勾选启用后重启生效；已有配置在启动时自动迁移到 `config.schema=2`。
 - 许可证确定为 **Apache-2.0**。
 
 ### 已知限制
 
 - 仅提供 Windows x64 构建；Linux / macOS 未在本版本提供可运行构建。
-- 长截图（`long_capture`，Windows）作为**实验特性**随包分发，默认不启用（设置页 `enabled=1` 并重启宿主后出现托盘命令与热键）。
+- 长截图（`long_capture`，Windows）为实验特性，真机交互待验证；默认禁用，启用方式见上。
 - 录屏、标注、OCR、上传尚未实现。
 - 设置页文件名模板等少量文案仅提供中文/英文，其它语言回退到英文。

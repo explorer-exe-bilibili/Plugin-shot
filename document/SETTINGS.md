@@ -76,6 +76,12 @@ UI 线程里发生（见 `document/EVENT_BUS.md` 的线程模型）。
   互等会卡死宿主。只读的 `list_json` 可以在任意线程调用，不受这条限制。
 - `plugins.disabled` 是宿主内部键（JSON 字符串数组，如 `["example.invert"]`），由宿主读写，
   插件不感知；它的值在插件扫描之前读取，所以"禁用 → 重启"仍然生效。
+- `config.schema` 是宿主内部键（INT，当前 `2`）：记录**配置内容的结构版本**，只用于
+  启动期一次性迁移，不出现在设置页。`setDefaultConfig()` 在插件扫描之前执行：schema
+  缺失或 `< 2` 时把 `long_capture.main` 追加进现有 `plugins.disabled`（已存在不重复；
+  值不是合法 JSON 数组时只 WARN、保持原值），然后写 `config.schema=2` 并立即落盘。
+  为什么不用顶层 `version`：那个跟宿主版本走，补丁版升级也会变，不能表达"配置内容
+  需要迁移到第几代"。
 
 ### 2.1 运行期动态配置项（以 `hotkey.main` 为例）
 

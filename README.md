@@ -89,7 +89,7 @@
 | 全局热键插件 `plugins/hotkey`（**列表驱动**：功能插件向贡献型列表 `hotkey_list` 添加条目，`hotkey.main` 只读快照并注册；内置 `capture` / `region` / `settings` → `capture.request` / `settings.open`，默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O；设置页用 `options="hotkey"` 录入，值存 `hotkey.main/<id>`；冲突按列表顺序先到者生效、后者 WARN；Windows 用 `RegisterHotKey`，Wayland/非 Windows 仍提供列表与配置项但不注册、WARN 指向 `session_control`） | ✅ 可用（Windows） |
 | Linux 会话控制插件 `plugins/session_control`（会话总线暴露 `org.pluginshot.Control`；`Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` → 既有事件；Wayland 没有全局热键 API，用桌面「自定义快捷键」执行 `gdbus call` 触发；配置 `enabled`；仅 Linux） | 已实现，Linux 编译通过，真机交互待验证：随 Linux 构建产出 `.so`，宿主 `--help` 通过；D-Bus 名称与方法已实现，但还没在 GNOME 自定义快捷键上做端到端；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | 区域框选覆盖层 `plugins/region_selector`（悬停窗口吸附 + 单击截窗口 + 拖动选区；四角主题色折角与约 100ms 平滑动画；Esc / 右键取消；Wayland 为门户定格图 + 拖选，已编译、真机未验证） | ✅ 可用（Windows；`document/CAPTURE.md` §3.1） |
-| 长截图插件 `plugins/long_capture`（手动滚动长截图：先经 `region_selector` 选目标窗口，自带 GDI 采集层连续抓帧 + 行指纹在线拼接 + Enter 保存；配置 enabled / max_height；Windows P1） | 0.1.0 作为**实验特性**随包分发、**默认关闭**（设置页 `enabled=1` 后重启宿主出现托盘命令与热键）；Windows 编译通过，真机交互待验证：只在保存时发一条 `capture.done`；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
+| 长截图插件 `plugins/long_capture`（手动滚动长截图：先经 `region_selector` 选目标窗口，自带 GDI 采集层连续抓帧 + 行指纹在线拼接 + Enter 保存；配置 `max_height`；Windows P1） | 0.1.0 作为**实验特性**随包分发、默认在插件列表里禁用（`plugins.disabled`），在设置页勾选启用后重启生效；Windows 编译通过，真机交互待验证：只在保存时发一条 `capture.done`；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | 主题色（`core/theme_color`，6 个预设 + 任意取色；区域框选边框/折角读它） | ✅ 可用（`document/SETTINGS.md` §5/§6） |
 | 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
@@ -556,7 +556,7 @@ HUD，已编译、真机交互待验证）只在 Windows 构建；`session_contr
 
 | 平台 | 状态 |
 | --- | --- |
-| Windows（MSVC x64） | ✅ 主要开发与验证平台（含双屏混合 DPI、插件启停、采集/保存/通知/剪贴板/热键/区域框选；本轮 8 个 e2e/冒烟脚本全绿）；长截图已编译，真机交互待验证；0.1.0 不分发长截图 |
+| Windows（MSVC x64） | ✅ 主要开发与验证平台（含双屏混合 DPI、插件启停、采集/保存/通知/剪贴板/热键/区域框选；本轮 8 个 e2e/冒烟脚本全绿）；长截图随包分发但默认在插件列表里禁用（实验特性，真机交互待验证） |
 | Linux（WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`） | 🟡 编译已验证、功能未验证：configure + build 通过（0 warning），产出 `Plugin-shot` 与全部 Linux 可构建插件的 `.so`（`screen_capture` / `region_selector` / `session_control` / `clipboard` / `notify` / `hotkey`（stub）/ `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` / `translator`）；`--help` 退出 0；真实 X11 / Wayland 桌面未跑。`SHOT_ENABLE_OPENCV=OFF` 也通过 |
 | Linux（Wayland，默认目标） | 🟡 已实现、编译通过，真机未验证：ScreenCast + PipeWire 抓屏（含系统授权弹窗）、门户定格图 + 自有窗口拖选的 B 方案框选、`session_control` 的 D-Bus 触发入口、X11 selection 剪贴板（经 XWayland 桥接）与 libnotify 通知都已编译进 `.so`；`hotkey` 编 stub（提供列表与配置项，不注册）。尚无一条链路在真实 GNOME Wayland 会话跑过；托盘仍依赖 StatusNotifierItem 与桌面扩展。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
 | Linux（X11，第二优先） | ⛔ 采集 / 框选仍未实现：缺 `XGetImage`/`XShmGetImage` 采集与 override-redirect 覆盖层；`hotkey` 只编 stub，`XGrabKey` 未实现；剪贴板/通知的 Linux 实现已编译，但 X11 真机未验证。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |

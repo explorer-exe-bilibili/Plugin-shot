@@ -54,7 +54,7 @@ Linux X11（**第二优先**）、macOS。
 | 通知 `plugins/notify` | ✅ 隐藏占位图标 + `Shell_NotifyIconW(NIF_INFO)`，Windows 11 真机显示成功 | 🟡 Linux 实现（libnotify → `org.freedesktop.Notifications`）已编译；Wayland 真机未验证 | 🟡 同一份 libnotify 实现，编译通过；X11 真机未验证 | ⛔ 没有 `UNUserNotificationCenter` 实现，CMake 跳过 |
 | 区域框选 `plugins/region_selector` | ✅ GLFW 覆盖层 + Win32 物理坐标；悬停窗口吸附、单击截窗、DWM 扩展边界、主题色折角已实测 | 🟡 B 方案已实现、编译通过：门户抓一张定格图 → 自有窗口里拖选；真机未验证，且没有窗口悬停吸附（§3.1） | ⛔ 没有 override-redirect 覆盖层 + `_NET_CLIENT_LIST`/`_NET_FRAME_EXTENTS` 枚举实现（§3.2） | ⛔ 没有 `NSScreen`/`CGWindowList` 覆盖层实现，CMake 跳过 |
 | 外部语言包 / 翻译 `plugins/translator` | ✅ 扫描官方/用户目录、用户包覆盖官方包、坏包只 WARN，`smoke_i18n_translator.ps1` 已跑 | 🟡 能编译未验证：CMake 不跳过，POSIX 分支编译过；未在 Wayland 会话跑过 | 🟡 能编译未验证：同一份 POSIX 路径 | 🟡 `pack_dirs.cpp` 有 `_NSGetExecutablePath` + `$HOME` 分支，但 macOS 未构建 |
-| 长截图 `plugins/long_capture` | 🟡 已实现、编译通过：`region.select.request` / `region.selected` 选目标窗口 → 自带 GDI 采集层连续抓帧 → 只在保存时发一条 `capture.done`；作为实验特性随 0.1.0 分发、默认关闭（`enabled=1` 并重启后启用）；真机交互未验证（§3.3） | ⛔ 未实现；计划走 ScreenCast 的**窗口流**持续取帧 + 复用 `long_capture` 的拼接核心（该核心已随 Windows 构建通过，§3.1） | ⛔ 未实现；计划 `XGetImage` 逐帧 + `XTest`/手动滚动 + 行指纹拼接（§3.2） | ⛔ 未实现；需要 `AXUIElement` 读滚动位置并模拟滚动 |
+| 长截图 `plugins/long_capture` | 🟡 已实现、编译通过：`region.select.request` / `region.selected` 选目标窗口 → 自带 GDI 采集层连续抓帧 → 只在保存时发一条 `capture.done`；作为实验特性随 0.1.0 分发、默认在插件列表里禁用（`plugins.disabled`），在设置页勾选启用后重启生效；真机交互未验证（§3.3） | ⛔ 未实现；计划走 ScreenCast 的**窗口流**持续取帧 + 复用 `long_capture` 的拼接核心（该核心已随 Windows 构建通过，§3.1） | ⛔ 未实现；计划 `XGetImage` 逐帧 + `XTest`/手动滚动 + 行指纹拼接（§3.2） | ⛔ 未实现；需要 `AXUIElement` 读滚动位置并模拟滚动 |
 
 **结论**：唯一跑通过完整“采集 → 处理 → 保存 → 消费”链路的仍是 Windows，本轮全量构建 exit 0、
 8 个 e2e/冒烟脚本全绿。Linux 已能 configure/build，产出宿主与全部可构建插件的 `.so`（含 Linux
