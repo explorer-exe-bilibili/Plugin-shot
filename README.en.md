@@ -77,7 +77,7 @@ current main line.
 | Single entry point `shot_module_entry` + self-describing module table | ✅ working |
 | Multiple plugins per DLL (`plugin_count` + `create(index)` + `get_info`) | ✅ working |
 | Capability query `query_interface("shot.image_processor", 1)` | ✅ working |
-| Screen capture `shot.screen_capture` (`plugins/screen_capture`, GDI over the virtual desktop in **physical pixels**; optional mouse-cursor compositing via the `include_cursor` config item, on by default; mixed-DPI dual-screen 3584x1600 verified; Windows only) | ✅ working (`document/CAPTURE.md`) |
+| Screen capture `shot.screen_capture` (`plugins/screen_capture`, GDI over the virtual desktop in **physical pixels**; optional mouse-cursor compositing via the `include_cursor` config item, on by default; mixed-DPI dual-screen 3584x1600 verified; Wayland uses portal ScreenCast + PipeWire, compiled but not verified on real hardware) | ✅ working (`document/CAPTURE.md`) |
 | Image saving `shot.image_saver` (`plugins/image_saver`, PNG/JPEG plus four config items) | ✅ working (`document/CAPTURE.md`) |
 | Capture → process → save pipeline (**worker thread + bounded queue of 4 + lifecycle lock for the whole run**; `capture.request` / `capture.done` / `capture.failed`) | ✅ working (`document/CAPTURE.md`) |
 | Host main loop (event-driven **blocking wait**, no 16 ms polling; `publish` / `post_to_host` / plugin enable-disable requests wake it) | ✅ working (`document/EVENT_BUS.md` §3) |
@@ -92,8 +92,8 @@ current main line.
 | Plugin configuration `shot.configurable` (plugin declares; the host aggregates into `config_list`, event-driven writes / persistence / feed-back) | ✅ working (`document/SETTINGS.md`) |
 | Settings window plugin `plugins/settings_ui` (reads `config_list`; ImGui + GLFW + OpenGL3, descriptor-driven; dual-screen 150%+100% DPI verified) | ✅ working (cross-platform; verified on Windows) |
 | Tray entry `plugins/tray` (menu driven by `tray_command_list`: four core items + plugin contributions; icon defaults to the host's named resource `IDI_ICON1`, `icon` accepts a `.ico`; Windows only) | ✅ working |
-| Notification plugin `plugins/notify` (success/failure balloons via a hidden placeholder icon; config items `enabled` / `show_on_success` / `show_on_error` / `sound`; Windows only) | ✅ working |
-| Clipboard plugin `plugins/clipboard` (subscribes to `capture.done` → CF_DIB / optional CF_HDROP; config items `enabled` / `also_file_drop`; Windows only) | ✅ working |
+| Notification plugin `plugins/notify` (success/failure balloons via a hidden placeholder icon; config items `enabled` / `show_on_success` / `show_on_error` / `sound`; Linux uses libnotify, compiled but not verified on real hardware) | ✅ working (Windows) |
+| Clipboard plugin `plugins/clipboard` (subscribes to `capture.done` → CF_DIB / optional CF_HDROP; config items `enabled` / `also_file_drop`; Linux uses an X11 selection, compiled but not verified on real hardware) | ✅ working (Windows) |
 | Global hotkey plugin `plugins/hotkey` (**list-driven**: feature plugins add entries to the contributory `hotkey_list`, and `hotkey.main` only reads the snapshot and registers them; built-in `capture` / `region` / `settings` → `capture.request` / `settings.open`, defaults Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O; the settings window records a combo with the `options="hotkey"` control and stores it as `hotkey.main/<id>`; conflicts are first-wins in list order and later ones WARN; Windows uses `RegisterHotKey`, while Wayland/non-Windows still exposes the list and config items but does not register and points at `session_control` with a WARN) | ✅ working (Windows) |
 | Linux session-control plugin `plugins/session_control` (exposes `org.pluginshot.Control` on the session bus; `Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` map to existing events; Wayland has no global-hotkey API, so the desktop's custom shortcut runs `gdbus call`; config item `enabled`; Linux only) | Implemented; compiles on Linux, on-device interaction pending verification: the Linux build emits the `.so` and the host `--help` passes; the D-Bus name and methods are implemented, but the end-to-end path with a GNOME custom shortcut has not been run; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | Long screenshot plugin `plugins/long_capture` (manual-scroll long capture: asks `region_selector` to pick a target window, then its own GDI capture layer grabs continuous frames and stitches them online, Enter to save; config items `hotkey` / `maxHeight`; Windows P1) | Implemented; compiles on Windows, on-device interaction pending verification: it publishes a single `capture.done` only on save; the full session (pick window → capture frames → save) has not been run on real hardware; not shipped in 0.1.0; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
@@ -227,7 +227,8 @@ CI run is not platform support.
 **Cross-platform status**: Linux has been verified locally under WSL2 (Ubuntu 24.04.5 LTS /
 GCC 13.3.0 / x86_64 / vcpkg `x64-linux` / CMake 3.28.3 / Ninja 1.11.1 / Release): configure +
 build passed (**0 warnings**), producing `build/Linux/bin/Plugin-shot` and 11 `.so` files
-(including the Linux implementations of `screen_capture` / `region_selector` / `session_control` /
+(13 plugin projects minus the Windows-only `tray` / `long_capture`; including the Linux
+implementations of `screen_capture` / `region_selector` / `session_control` /
 `clipboard` / `notify`, plus `hotkey` as a stub); `--help` exits 0. **The Wayland path is not
 verified on real hardware yet**: ScreenCast + PipeWire capture and the portal-snapshot + drag-
 selection plan B only count once they have run in a real desktop session.
@@ -583,15 +584,16 @@ the root `CMakeLists.txt` and drifted away from the docs.
 Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`). On Linux
 the **default target is Wayland** (the maintainer's environment: Ubuntu 24.04 / GNOME 46 / Wayland
 session), with X11 kept as the **second priority**; macOS has never built successfully. Each
-plugin's `CMakeLists.txt` selects its platform implementation instead of shipping fake behaviour:
-`screen_capture` (Windows GDI / Wayland portal + PipeWire), `region_selector` (Windows overlay /
-Wayland portal snapshot + drag selection), `clipboard` (Windows CF_DIB / Linux X11 selection) and
-`notify` (Windows Shell balloons / Linux libnotify) all have real platform implementations, but
-**the Linux side only reaches "compiles"; nothing has been verified on real hardware**. `tray`
-(Win32 tray) and `long_capture` (Win32 foreground window + HUD; compiled, on-device interaction
-pending) build on Windows only; `session_control` is the other way round — Linux only. **`hotkey` is
-the exception**: Windows compiles the `RegisterHotKey` implementation, while other platforms compile
-a stub (`hotkey_window_stub.cpp`) that still contributes/reads `hotkey_list` and exposes the dynamic
+plugin's `CMakeLists.txt` selects its platform implementation: `screen_capture` (Windows GDI /
+Wayland portal + PipeWire), `region_selector` (Windows overlay / Wayland portal snapshot + drag
+selection), `clipboard` (Windows CF_DIB / Linux X11 selection) and `notify` (Windows Shell
+balloons / Linux libnotify) all have real platform implementations, but **the Linux side only
+reaches "compiles"; nothing has been verified on real hardware**, and capture/selection support
+Wayland only (X11 is unimplemented). `tray` (Win32 tray) and `long_capture` (Win32 foreground
+window + HUD; compiled, on-device interaction pending) build on Windows only; `session_control` is
+the other way round — Linux only. **`hotkey` is the exception**: Windows compiles the
+`RegisterHotKey` implementation, while other platforms compile a stub
+(`hotkey_window_stub.cpp`) that still contributes/reads `hotkey_list` and exposes the dynamic
 config items but registers no global hotkeys, warning users to use `session_control`. Also
 cross-platform buildable: `settings_ui` (GLFW), `image_saver`, `example_processor`,
 `opencv_provider`, `translator`.
@@ -626,7 +628,8 @@ Per-capability system dependencies (`session_control` needs `libglib2.0-dev`; Wa
 selection need `libportal-dev` + `libpipewire-0.3-dev` + `libspa-0.2-dev`; Linux notifications need
 `libnotify-dev`; the X11 clipboard needs `libx11-dev`), together with what is already installed, are
 listed in [`document/PLATFORMS.md`](document/PLATFORMS.md) §4.1. The local WSL install has all of
-these and the Linux build passes; the CI apt step has not been updated yet.
+these and the Linux build passes; the CI apt step was updated in `fc2d69e`, while the last visible
+run still failed on the vcpkg baseline (fixed but not re-run).
 
 ## License
 

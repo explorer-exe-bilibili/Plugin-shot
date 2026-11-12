@@ -212,6 +212,8 @@ shot::EventBus(host).publish("lists.add", R"json({
   i18n 译文，要么直接写中文字面量；
 - provider 在 `lists.changed` 后重读快照并**整批重注册**，注册顺序 = 列表顺序；插件卸载时
   宿主自动清掉它的 `hotkey_list` 条目；
+- `hotkey_list` 增删时宿主会在同一轮重建 `config_list`，设置页立刻出现/消失对应热键条目，
+  不需要重启宿主或手动刷新；
 - **不要**在功能插件里自己调用 `RegisterHotKey`，也不要为热键新增 ABI 结构体/宿主服务；
   完整 schema 与运行时语义见 `document/LISTS.md` §5.5。
 
