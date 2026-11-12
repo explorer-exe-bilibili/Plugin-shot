@@ -65,6 +65,7 @@ const char kConfigListId[] = "config_list";             /**< 宿主生成：配�
 const char kTrayCommandListId[] = "tray_command_list";  /**< 插件可贡献：托盘命令 */
 const char kI18nSourceListId[] = "i18n_source_list";    /**< 插件可贡献：语言表 */
 const char kI18nListId[] = "i18n_list";                 /**< 宿主生成：当前语言快照 */
+const char kHotkeyListId[] = "hotkey_list";             /**< 插件可贡献：全局热键目录 */
 
 // "core" 是宿主自己的 owner：core 的托盘命令是预置项，插件既不能添加、也不能删除，
 // 否则用户可能把「退出」菜单从托盘里弄丢。
@@ -650,6 +651,11 @@ void HostListCatalog::handleAdd(const std::string& payload) {
             if (list == kI18nSourceListId) {
                 m_i18nDirty = true;  // 新文案要先投影进 i18n_list 才对消费方可见
             }
+            if (list == kHotkeyListId) {
+                // hotkey.main 会按 hotkey_list 动态暴露配置项；目录变了必须同一轮重建
+                // config_list，否则新贡献的热键在设置页里看不到（tick 在 flush 前处理）。
+                m_configListStale = true;
+            }
         }
         spdlog::info("lists.add: list={} owner={} 接受 {} 条", list, owner, accepted);
     }
@@ -724,6 +730,10 @@ void HostListCatalog::handleRemove(const std::string& payload) {
             m_pendingChanged.insert(list);
             if (list == kI18nSourceListId) {
                 m_i18nDirty = true;
+            }
+            if (list == kHotkeyListId) {
+                // 条目被撤回（插件卸载/改贡献）后，provider 暴露的配置项也要跟着消失。
+                m_configListStale = true;
             }
         }
     }
