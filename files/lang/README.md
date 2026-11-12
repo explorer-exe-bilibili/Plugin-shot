@@ -10,7 +10,7 @@
 
 | 来源 | 路径 | priority |
 | --- | --- | --- |
-| 用户语言包 | `%LOCALAPPDATA%\screen-shot\langs\<tag>.json`（升级不覆盖） | 300 |
+| 用户语言包 | `%LOCALAPPDATA%\plugin-shot\langs\<tag>.json`（升级不覆盖） | 300 |
 | `pack_dirs` 指定目录 | 用户显式指定；非空时**只用它**（分号分隔多个目录，按书写顺序扫描） | 300 |
 | 官方语言包 | 本目录（运行时 `<exe 目录>/files/lang/`） | 200 |
 | 内置表 | 编译进宿主与各插件 DLL 的 `kLangTables[]` / 宿主文案表 | 100 |

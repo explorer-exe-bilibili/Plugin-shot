@@ -30,7 +30,7 @@
 统一约定：
 
 - 所有脚本都会 **先 `Stop-Host`**（杀掉已有的 `Plugin-shot.exe`）并**备份/恢复**
-  `%LOCALAPPDATA%\screen-shot\config.json`；异常中断时手动跑一次 `Restore-Config`
+  `%LOCALAPPDATA%\plugin-shot\config.json`；异常中断时手动跑一次 `Restore-Config`
   或把 `build\verify\config.backup.json` 拷回去。备份时原本没有 `config.json` 会写
   `config.backup.absent` 标记，恢复时**删掉本次运行生成的那份**——否则默认值会被下一次
   脚本当成"已存在"，旧的测试值又被恢复回来。

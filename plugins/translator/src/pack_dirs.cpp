@@ -2,8 +2,8 @@
 //
 // 为什么不问宿主数据目录：ABI 里没有"宿主目录"能力（数据格式不进 ABI 的原则），
 // 所以 exe 目录只能自己取；用户目录按宿主同一套约定推导：
-//   Windows：%LOCALAPPDATA%\screen-shot\langs
-//   POSIX  ：$HOME/.screen-shot/langs
+//   Windows：%LOCALAPPDATA%\plugin-shot\langs
+//   POSIX  ：$HOME/.plugin-shot/langs
 // 两者都在本文件收敛，其余 TU 只用 std::filesystem，Linux/macOS 也能编译。
 
 #include "pack_dirs.h"
@@ -169,18 +169,18 @@ std::filesystem::path PackDirs::defaultUserDirectory() {
     if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw))) {
         const std::filesystem::path base(raw);
         ::CoTaskMemFree(raw);
-        return base / "screen-shot" / "langs";
+        return base / "plugin-shot" / "langs";
     }
     // 精简容器/服务账号里 KnownFolder 可能失败：退回环境变量，至少不丢用户包。
     const char* localAppData = std::getenv("LOCALAPPDATA");
     if (localAppData != nullptr && localAppData[0] != '\0') {
-        return fromUtf8(localAppData) / "screen-shot" / "langs";
+        return fromUtf8(localAppData) / "plugin-shot" / "langs";
     }
     return {};
 #else
     const char* home = std::getenv("HOME");
     if (home != nullptr && home[0] != '\0') {
-        return std::filesystem::path(home) / ".screen-shot" / "langs";
+        return std::filesystem::path(home) / ".plugin-shot" / "langs";
     }
     return {};
 #endif

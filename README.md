@@ -1,9 +1,41 @@
-# plugin-shot
+# Plugin-shot
 
 **中文** | [English](README.en.md)
 
-> 万物皆插件的截图工具。宿主只做「宿主」该做的事——加载、校验、调度；
-> 截图、图像处理、录屏……所有能力都由插件提供。
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/explorer-exe-bilibili/Plugin-shot?label=release)](https://github.com/explorer-exe-bilibili/Plugin-shot/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4.svg)](#平台)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C.svg)](#构建)
+
+![Plugin-shot](document/assets/banner.png)
+
+> **万物皆插件的截图工具。** 宿主只做「宿主」该做的事——加载、校验、调度；
+> 截图、图像处理、长截图、录屏……所有能力都由插件提供。
+
+**Plugin-shot** 是一个 Windows-first 的 C++23 截图工具，也是一次「把桌面工具做成插件宿主」的实验：
+宿主很小，插件可以独立编译、独立分发、运行期热插拔；ABI 只追加，数据形状不进契约。
+
+## 30 秒了解
+
+- **下载即用**：Windows 10/11 x64 便携版，解压运行 `Plugin-shot.exe`，无需安装。
+- **三种入口**：`Ctrl+Alt+S` 整屏截图、`Ctrl+Alt+A` 区域框选（悬停窗口吸附、单击截窗）、`Ctrl+Alt+O` 打开设置。
+- **截图之后**：自动保存 PNG/JPEG、写入剪贴板、弹系统通知；目录、格式、质量、文件名模板都可改。
+- **能力即插件**：托盘、热键、设置页、保存、通知、剪贴板本身都是插件，可在设置页一键禁用/启用。
+- **可扩展**：用离线 SDK 写一个 DLL，就能把自己的处理或入口接进来，不用改宿主。
+
+### 下载
+
+[**Plugin-shot 0.1.0 · Windows x64 便携版**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
+[更新日志](CHANGELOG.md)
+
+解压后双击 `Plugin-shot.exe` 即可。0.1.0 只提供 Windows 构建；Linux / macOS 的代码路径尚未真机验证，
+详见 [平台](#平台)。
+
+### 界面
+
+![Plugin-shot 设置页](document/assets/settings.png)
+
+> 设置页本身也是插件：宿主把插件声明的配置项聚成 `config_list`，表单、主题色、插件启停都在这里。
 
 > **接手开发 / 让 AI 接手**：先读 [`AGENTS.md`](AGENTS.md)（构建、验证、本机环境、已踩过的坑），
 > 再读 [`STYLE.md`](STYLE.md)（代码风格与工程约定）。
@@ -57,7 +89,7 @@
 | 全局热键插件 `plugins/hotkey`（**列表驱动**：功能插件向贡献型列表 `hotkey_list` 添加条目，`hotkey.main` 只读快照并注册；内置 `capture` / `region` / `settings` → `capture.request` / `settings.open`，默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O；设置页用 `options="hotkey"` 录入，值存 `hotkey.main/<id>`；冲突按列表顺序先到者生效、后者 WARN；Windows 用 `RegisterHotKey`，Wayland/非 Windows 仍提供列表与配置项但不注册、WARN 指向 `session_control`） | ✅ 可用（Windows） |
 | Linux 会话控制插件 `plugins/session_control`（会话总线暴露 `org.pluginshot.Control`；`Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` → 既有事件；Wayland 没有全局热键 API，用桌面「自定义快捷键」执行 `gdbus call` 触发；配置 `enabled`；仅 Linux） | 已实现，Linux 编译通过，真机交互待验证：随 Linux 构建产出 `.so`，宿主 `--help` 通过；D-Bus 名称与方法已实现，但还没在 GNOME 自定义快捷键上做端到端；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | 区域框选覆盖层 `plugins/region_selector`（悬停窗口吸附 + 单击截窗口 + 拖动选区；四角主题色折角与约 100ms 平滑动画；Esc / 右键取消；仅 Windows） | ✅ 可用（`document/CAPTURE.md` §3.1） |
-| 长截图插件 `plugins/long_capture`（手动滚动长截图：先经 `region_selector` 选目标窗口，自带 GDI 采集层连续抓帧 + 行指纹在线拼接 + Enter 保存；配置 hotkey / maxHeight；Windows P1） | 已实现，Windows 编译通过，真机交互待验证：只在保存时发一条 `capture.done`；完整会话（选窗口 → 连续抓帧 → 保存）还没在真机跑过；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
+| 长截图插件 `plugins/long_capture`（手动滚动长截图：先经 `region_selector` 选目标窗口，自带 GDI 采集层连续抓帧 + 行指纹在线拼接 + Enter 保存；配置 hotkey / maxHeight；Windows P1） | 已实现，Windows 编译通过，真机交互待验证：只在保存时发一条 `capture.done`；完整会话（选窗口 → 连续抓帧 → 保存）还没在真机跑过；0.1.0 不分发；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | 主题色（`core/theme_color`，6 个预设 + 任意取色；区域框选边框/折角读它） | ✅ 可用（`document/SETTINGS.md` §5/§6） |
 | 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
@@ -69,7 +101,7 @@
 | 插件级依赖声明（`requires` / `provides`，带版本区间，`core` 为宿主） | ✅ 可用（`document/METADATA.md`） |
 | 依赖驱动加载顺序（拓扑排序，不满足只跳过该插件） | ✅ 可用 |
 | 插件工程公共构建规则（`shot_add_plugin()`） | ✅ 可用（宿主与离线 SDK 共用） |
-| 多语言 i18n（`core/language` = `auto` 或语言目录 tag；`i18n_source_list` 插件贡献 + 宿主合并生成只读 `i18n_list`；外部语言包 `files/lang/` 与 `%LOCALAPPDATA%\screen-shot\langs\`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；内置 27 个标签，仓库内置译文仅 zh-CN / en-US；外部语言包协议已就绪、翻译插件 `plugins/translator` 已加入（默认关）；字体动态图集 + Segoe UI/Arial 补字，RTL 与韩/泰/阿拉伯字形未做） |
+| 多语言 i18n（`core/language` = `auto` 或语言目录 tag；`i18n_source_list` 插件贡献 + 宿主合并生成只读 `i18n_list`；外部语言包 `files/lang/` 与 `%LOCALAPPDATA%\plugin-shot\langs\`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；内置 27 个标签，仓库内置译文仅 zh-CN / en-US；外部语言包协议已就绪、翻译插件 `plugins/translator` 已加入（默认关）；字体动态图集 + Segoe UI/Arial 补字，RTL 与韩/泰/阿拉伯字形未做） |
 | 离线插件 SDK 导出（`export_sdk` 目标） | ✅ 可用 |
 
 > 产物名取自 `CMakeLists.txt` 的 `PROJECT_NAME`（当前 `Plugin-shot`）：宿主叫 `Plugin-shot.exe`，
@@ -223,8 +255,8 @@ cd build/Windows/bin && ./Plugin-shot.exe --help     # 打印用法
 通知这类订阅者同样能收到本次 `capture.done`（详见 `document/CAPTURE.md` §6）。
 
 日志用 spdlog：控制台 +
-`%LOCALAPPDATA%\screen-shot\logs\host.log`（追加写）；配置写在
-`%LOCALAPPDATA%\screen-shot\config.json`（宿主设置与插件配置项都在这里，键是 `<owner>/<id>`，
+`%LOCALAPPDATA%\plugin-shot\logs\host.log`（追加写）；配置写在
+`%LOCALAPPDATA%\plugin-shot\config.json`（宿主设置与插件配置项都在这里，键是 `<owner>/<id>`，
 与 `config_list` 条目的 `owner` / `id` 一一对应）。
 
 ### 多显示器与 DPI
@@ -355,7 +387,7 @@ typedef struct ShotConfigurableV1 {
 控制台/文件日志开关），宿主把所有可配置实例聚成 `config_list` JSON 快照，设置页只写一套
 渲染逻辑。
 
-- 存盘键是 `<owner>/<id>`，值由**宿主**落盘到 `%LOCALAPPDATA%\screen-shot\config.json`；
+- 存盘键是 `<owner>/<id>`，值由**宿主**落盘到 `%LOCALAPPDATA%\plugin-shot\config.json`；
   插件只负责 get/set，不需要自己写配置文件。
 - 启动时宿主把已存值灌回插件（没有已存值就用 `default_value`），插件不需要"读配置"这一步。
 - 写值走 `lists.update`（事件驱动、逐项回结果），落盘走 `lists.commit`；成功后宿主发布既有
@@ -501,6 +533,9 @@ shot_add_plugin(acme_tools
 
 ## 平台
 
+> **0.1.0 发布口径**：只提供 **Windows 10/11 x64** 构建。下面记录的是仓库代码与真机验证状态，
+> 不是 0.1.0 的发布承诺；未真机验证的能力不随本版本分发。
+
 Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。Linux 的**默认目标是 Wayland**
 （维护者实测环境：Ubuntu 24.04 / GNOME 46 / Wayland 会话），X11 保留为**第二优先**；macOS 从未
 成功构建。平台实现按目标平台在各自 `CMakeLists.txt` 里选择，不产出伪实现：`screen_capture`
@@ -519,7 +554,7 @@ Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。Linux �
 
 | 平台 | 状态 |
 | --- | --- |
-| Windows（MSVC x64） | ✅ 主要开发与验证平台（含双屏混合 DPI、插件启停、采集/保存/通知/剪贴板/热键/区域框选；本轮 8 个 e2e/冒烟脚本全绿）；长截图已编译，真机交互待验证 |
+| Windows（MSVC x64） | ✅ 主要开发与验证平台（含双屏混合 DPI、插件启停、采集/保存/通知/剪贴板/热键/区域框选；本轮 8 个 e2e/冒烟脚本全绿）；长截图已编译，真机交互待验证；0.1.0 不分发长截图 |
 | Linux（WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`） | 🟡 编译已验证、功能未验证：configure + build 通过（0 warning），产出 `Plugin-shot` 与全部 Linux 可构建插件的 `.so`（`screen_capture` / `region_selector` / `session_control` / `clipboard` / `notify` / `hotkey`（stub）/ `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` / `translator`）；`--help` 退出 0；真实 X11 / Wayland 桌面未跑。`SHOT_ENABLE_OPENCV=OFF` 也通过 |
 | Linux（Wayland，默认目标） | 🟡 已实现、编译通过，真机未验证：ScreenCast + PipeWire 抓屏（含系统授权弹窗）、门户定格图 + 自有窗口拖选的 B 方案框选、`session_control` 的 D-Bus 触发入口、X11 selection 剪贴板（经 XWayland 桥接）与 libnotify 通知都已编译进 `.so`；`hotkey` 编 stub（提供列表与配置项，不注册）。尚无一条链路在真实 GNOME Wayland 会话跑过；托盘仍依赖 StatusNotifierItem 与桌面扩展。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
 | Linux（X11，第二优先） | ⛔ 采集 / 框选仍未实现：缺 `XGetImage`/`XShmGetImage` 采集与 override-redirect 覆盖层；`hotkey` 只编 stub，`XGrabKey` 未实现；剪贴板/通知的 Linux 实现已编译，但 X11 真机未验证。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
@@ -544,4 +579,14 @@ libxkbcommon-dev libwayland-dev`）、`libselinux1-dev libpam0g-dev`。`nativefi
 
 ## 许可
 
-尚未指定。
+Plugin-shot 以 [Apache License 2.0](LICENSE) 发布，Copyright 2026 Plugin-shot contributors。
+
+发行包内还包含第三方组件的许可证：见 [NOTICE](NOTICE) 与包内的 `THIRD_PARTY_LICENSES/`。
+
+## 参与
+
+- 构建、验证、本机环境与已经踩过的坑：[AGENTS.md](AGENTS.md)
+- 代码风格与工程约定：[STYLE.md](STYLE.md)
+- 插件契约与设计文档：[document/](document/)
+- 问题与建议：[Issues](https://github.com/explorer-exe-bilibili/Plugin-shot/issues)
+- 更新日志：[CHANGELOG.md](CHANGELOG.md)

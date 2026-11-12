@@ -5,7 +5,7 @@
 #  这些脚本是**真机（交互桌面）验证**，不是 CI 单元测试：它们会启动宿主、模拟键鼠、
 #  读剪贴板、接管前台窗口。运行纪律：
 #    · 同一时间只跑一个脚本（多开宿主会互相抢 config.json 与前台焦点）；
-#    · 脚本会备份/恢复 %LOCALAPPDATA%\screen-shot\config.json，异常中断时手动跑
+#    · 脚本会备份/恢复 %LOCALAPPDATA%\plugin-shot\config.json，异常中断时手动跑
 #      Restore-Config 或从 build\verify\config.backup.json 拷回；
 #    · 截图/日志等产物统一落 build\verify\（gitignored），不入库。
 #
@@ -19,7 +19,7 @@ $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $script:HostExe = Join-Path $script:RepoRoot "build\Windows\bin\Plugin-shot.exe"
 $script:PluginDir = Join-Path $script:RepoRoot "build\Windows\bin\plugins"
 $script:OutDir = Join-Path $script:RepoRoot "build\verify"
-$script:DataDir = Join-Path $env:LOCALAPPDATA "screen-shot"
+$script:DataDir = Join-Path $env:LOCALAPPDATA "plugin-shot"
 $script:ConfigPath = Join-Path $script:DataDir "config.json"
 $script:LogPath = Join-Path $script:DataDir "logs\host.log"
 $script:ConfigBackup = Join-Path $script:OutDir "config.backup.json"
