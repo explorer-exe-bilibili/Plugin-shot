@@ -13,9 +13,17 @@
 //    region_overlay.cpp  —— 框选交互状态机 + 悬停吸附动画
 //    region_overlay_draw.cpp —— ImGui 遮罩 / 选区 / 折角 / 标签绘制
 //    region_graphics.cpp —— ImGui 后端、字体与 DPI 缩放、每帧渲染
-//    region_background.cpp —— 触发瞬间的桌面快照（Win32 GDI）+ 上传成 GL 纹理
-//    region_geometry.cpp —— 显示器矩形 / 光标 / 物理虚拟桌面坐标换算（Win32 平台层）
-//    window_target.cpp   —— 顶层窗口枚举 / Z 序 / DWM 边界 / 命中测试（纯 Win32 查询）
+//    region_background.cpp —— Windows：触发瞬间的桌面快照（Win32 GDI）+ 上传成 GL 纹理
+//    region_geometry.cpp —— Windows：显示器矩形 / 光标 / 物理虚拟桌面坐标换算
+//    window_target.cpp   —— Windows：顶层窗口枚举 / Z 序 / DWM 边界 / 命中测试
+//
+//  Linux / Wayland 分支（只在 UNIX AND NOT APPLE 构建，文件以 _wayland 结尾）：
+//    region_portal.cpp / region_image.cpp / region_output_linux.cpp
+//                        —— portal 截图、PNG 解码裁剪、输出目录与文件名
+//    region_geometry_wayland.cpp / region_background_wayland.cpp
+//                        —— 显示器几何、portal 截图转纹理（与 Windows 同名成员函数的另一实现）
+//    region_overlay_wayland.cpp —— 等比适配映射 + 内存裁剪写盘 + 发布 capture.done
+//    window_target_wayland.cpp  —— 空实现（Wayland 不允许全局窗口枚举，悬停吸附关闭）
 // ============================================================================
 
 #include <chrono>
@@ -30,6 +38,10 @@
 #include "plugin_api.h"
 #include "region_window.h"
 #include "window_target.h"
+
+#if defined(__linux__)
+#include "region_image.h"  // ImageRect：Wayland 分支的裁剪矩形类型（见 Impl 末尾的 Linux 段）
+#endif
 
 struct GLFWwindow;   // 前置声明：内部头不拖 GLFW/GL 头文件
 struct GLFWmonitor;
@@ -220,12 +232,47 @@ struct RegionWindow::Impl {
     bool captureBackground();
     void releaseBackgroundTexture();
 
-    // ---- 平台几何：显示器与物理坐标（region_geometry.cpp） ----
+    // ---- 平台几何：显示器与物理坐标（Windows: region_geometry.cpp） ----
     bool monitorUnderCursor(ScreenRect& out, float& contentScale) const;
     void virtualDesktopOrigin(int& x, int& y) const;
     std::uintptr_t nativeWindowHandle() const;
     void logMonitorMetrics() const;
     static ScreenRect monitorRectOf(GLFWmonitor* monitor);
+
+#if defined(__linux__)
+    // ---- Linux / Wayland 分支（只由 *_wayland.cpp / region_output_linux.cpp 实现） ----
+    /**
+     * @brief 截图在覆盖层窗口里的显示区域：等比缩放适配 + 居中（全部是窗口内容坐标）。
+     *
+     * 绘制背景、坐标反算、尺寸标签共用这一份布局，避免三处各算一套后互相漂移。
+     * 每帧/每次确认都按当前窗口尺寸重算——Wayland 的窗口大小由合成器决定，
+     * 不能假设"窗口 == 显示器"。
+     */
+    struct WaylandLayout {
+        float scale = 1.0f;   /**< 窗口像素 / 图像像素。 */
+        float offsetX = 0.0f; /**< 显示区左边缘（窗口内容坐标）。 */
+        float offsetY = 0.0f; /**< 显示区上边缘（窗口内容坐标）。 */
+        float width = 0.0f;   /**< 显示区宽度（窗口内容坐标）。 */
+        float height = 0.0f;  /**< 显示区高度（窗口内容坐标）。 */
+    };
+    /** @brief 计算当前的显示布局；没有截图或窗口未就绪时返回零布局（scale 仍为 1）。 */
+    WaylandLayout overlayLayout() const;
+    /** @brief 覆盖层窗口坐标里的选区 → 截图图像像素矩形（夹进图像范围）。 */
+    ImageRect selectionToImagePixels(int x, int y, int width, int height) const;
+    /** @brief 显示前把覆盖层尺寸对齐输出（Wayland 不能定位窗口）。 */
+    void prepareWaylandOverlay(const ScreenRect& monitor);
+    /** @brief 窗口显示后请求全屏（是否生效由合成器决定）。 */
+    void requestWaylandFullscreen();
+    /** @brief 确认框选：内存裁剪 → 写 PNG → 发布 capture.done → 收掉覆盖层。 */
+    void commitWaylandSelection(int x, int y, int width, int height);
+    /** @brief 发布 capture.done {path,width,height,processors:0}（与宿主流水线同格式）。 */
+    void publishCaptureDone(const std::string& path, int width, int height) const;
+
+    // portal 截图的整屏像素：既是覆盖层背景，也是确认时的裁剪源（不再第二次采集）。
+    std::vector<std::uint8_t> sourcePixels;
+    int sourceWidth = 0;
+    int sourceHeight = 0;
+#endif
 };
 
 }  // namespace region_selector

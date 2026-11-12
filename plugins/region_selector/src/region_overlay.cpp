@@ -121,6 +121,8 @@ void RegionWindow::Impl::updateHover() {
     if (window == nullptr || overlayHwnd == 0) {
         // 拿不到自己的 HWND 时宁可关掉吸附：否则枚举结果里可能包含覆盖层自己，
         // 选框会永远吸附在一块全屏矩形上。拖动框选不受影响。
+        // Wayland 分支恒为这种情况（nativeWindowHandle() 返回 0，且协议不允许全局
+        // 窗口枚举）：悬停吸附关闭，单击不拖 = 取消。
         return;
     }
     const auto now = std::chrono::steady_clock::now();

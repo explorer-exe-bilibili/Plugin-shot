@@ -4,7 +4,13 @@
 鼠标停在某个顶层窗口上时，选框会**吸附到该窗口**并带 100ms 指数平滑地平移/缩放过去；
 **单击**（位移 ≤4px、按住 ≤400ms）直接把当前悬停窗口的矩形作为采集区域；**拖动**则退化成
 原来的手绘选区（拖动期间严格跟手，不做吸附和动画）。确认后先隐藏覆盖层、等遮罩从屏幕上
-消失，再发布带 `region` 的 `capture.request`。
+消失，再发布带 `region` 的 `capture.request`（**Windows 实现**；Linux/Wayland 是同一套
+窗口与交互，但背景来自 xdg-desktop-portal 截图、确认后直接裁剪落盘，见 §8）。
+
+**平台**：Windows 是完整实现（Win32 物理坐标 + GDI 快照 + 窗口枚举）；Linux 只支持
+**Wayland 会话**（`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE` 运行时探测），走 xdg-desktop-portal
+的 Screenshot 门户 + 自己的覆盖层窗口，非 Wayland（X11）会话下插件加载但不动作（X11 分支
+由后续任务补）；macOS 等其它平台由 CMake 直接跳过（`SHOT_PLUGIN_SKIPPED`）。详见 §8。
 
 覆盖层是**不透明窗口 + 触发瞬间的桌面快照**（`region_background.cpp`）：先 GDI 截一张该
 显示器的快照、上传成 GL 纹理，窗口用这张纹理铺满当背景，遮罩/挖空/十字线/主题色折角都画在
@@ -26,31 +32,43 @@
 宿主只调 `init / deinit / post_to_plugin`，从不接触窗口句柄。触发与结果都走事件总线
 （主题与负载见 `document/CAPTURE.md`、`document/EVENT_BUS.md`）。
 
-**仅 Windows**：覆盖层几何、光标位置与"物理虚拟桌面像素"依赖 Win32 坐标语义
-（`GetCursorPos` / `GetSystemMetrics(SM_*VIRTUALSCREEN)`），非 Windows 平台本工程直接
-跳过（`SHOT_PLUGIN_SKIPPED`），不产出伪实现。
+**平台边界**：Windows 分支的覆盖层几何、光标位置与"物理虚拟桌面像素"依赖 Win32 坐标语义
+（`GetCursorPos` / `GetSystemMetrics(SM_*VIRTUALSCREEN)` / `EnumWindows`），代码在
+`region_geometry.cpp` / `region_background.cpp` / `window_target.cpp`；Linux/Wayland 分支的
+平台层在 `*_wayland.cpp` + `region_portal.cpp` / `region_image.cpp` / `region_output_linux.cpp`。
+macOS 与其它平台由 CMake 跳过，不产出伪实现。
 
 ## 1. 目录
 
 ```
 plugins/region_selector/
-├── CMakeLists.txt                  # shot_add_plugin + imgui / nlohmann-json / glfw3 / dwmapi
+├── CMakeLists.txt                  # 平台源文件 + imgui / nlohmann-json / glfw3（Linux 另加 libportal / stb）
 ├── metadata.json                   # 插件清单（id region_selector.main，接口 shot.ui_provider）
 ├── README.md
 ├── include/
 │   ├── plugin_entry.h              # PluginEntry / PluginInstance / state_of（插件样板）
 │   ├── region_window.h             # RegionWindow 公共接口（契约层，不含任何图形库类型）
-│   ├── region_window_impl.h        # 内部头：Impl 声明 / 事件队列 / 拖拽与悬停吸附状态
-│   └── window_target.h             # 内部头：窗口目标结构 + 枚举/命中接口（纯 Win32 查询）
+│   ├── region_window_impl.h        # 内部头：Impl 声明 / 事件队列 / 拖拽与悬停吸附状态 / Wayland 段
+│   ├── window_target.h             # 内部头：窗口目标结构 + 枚举/命中接口
+│   ├── region_portal.h             # Linux：xdg-desktop-portal Screenshot 门户 + 会话探测
+│   ├── region_image.h              # Linux：截图解码 / 裁剪 / PNG 编码（stb）
+│   └── region_output.h             # Linux：输出目录（image_saver 配置 / Pictures）+ 文件名
 └── src/
     ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + kEntries + ABI 胶水 + 语言表
-    ├── region_window.cpp           # 生命周期 / 窗口线程 / 事件循环 / 触发解析 / 隐藏后发布
+    ├── region_window.cpp           # 生命周期 / 窗口线程 / 事件循环 / 触发解析 / 提交（平台分支）
     ├── region_overlay.cpp          # 交互状态机 + 悬停吸附动画 + 主题色读取
     ├── region_overlay_draw.cpp     # ImGui 遮罩 / 选区 / 折角 / 十字线 / 标签绘制
     ├── region_graphics.cpp         # ImGui 后端 / 中文字体 / DPI 字号缩放 / 每帧渲染
-    ├── region_background.cpp       # 触发瞬间的桌面快照（GDI）+ 上传 GL 纹理
-    ├── region_geometry.cpp         # 显示器矩形 / 光标 / 覆盖层 HWND / 物理坐标换算（Win32 层）
-    └── window_target.cpp           # 顶层窗口枚举 / Z 序 / DWM 边界 / 命中测试（纯 Win32 查询）
+    ├── region_background.cpp       # Windows：触发瞬间的桌面快照（GDI）+ 上传 GL 纹理
+    ├── region_geometry.cpp         # Windows：显示器矩形 / 光标 / 物理坐标换算 + 实测日志
+    ├── window_target.cpp           # Windows：顶层窗口枚举 / Z 序 / DWM 边界 / 命中测试
+    ├── region_portal.cpp           # Linux：libportal 异步截图 + GMainLoop + URI→路径 + 超时
+    ├── region_image.cpp            # Linux：stb PNG 解码 / 裁剪 / 编码（唯一定义 stb 实现的 TU）
+    ├── region_output_linux.cpp     # Linux：读 config_list 的 image_saver 目录 + shot_时间戳.png
+    ├── region_geometry_wayland.cpp # Linux：显示器几何（Wayland 无位置/无全局光标）+ 会话日志
+    ├── region_background_wayland.cpp # Linux：portal 截图 → stb 解码 → 删临时文件 → GL 纹理
+    ├── region_overlay_wayland.cpp  # Linux：等比适配映射 + 内存裁剪写盘 + 发布 capture.done
+    └── window_target_wayland.cpp   # Linux：空实现（Wayland 不允许全局窗口枚举，吸附关闭）
 ```
 
 公共头 `region_window.h` 只声明一个类；内部头 `region_window_impl.h` 与 `window_target.h`
@@ -78,17 +96,22 @@ cmake -S plugins/region_selector -B build -DCMAKE_MODULE_PATH=<SDK>/cmake
 cmake --build build
 ```
 
-依赖与 `settings_ui` 同一套，vcpkg 清单里已启用对应特性：
+依赖与 `settings_ui` 同一套，vcpkg 清单里已启用对应特性；Linux 额外依赖系统包
+`libportal-dev`（见 §8）：
 
-| 依赖 | 用途 |
-| --- | --- |
-| `imgui`（glfw-binding + opengl3-binding） | 覆盖层绘制；后端源码已编进 `imgui.lib`，不抄进本工程 |
-| `glfw3` | 窗口、事件循环、显示器几何、光标 |
-| `nlohmann-json` | 触发负载解析 + 区域结果组包 + 多语言表解析（header-only） |
-| `opengl32` / `user32` / `dwmapi` | ImGui OpenGL3 后端 / `GetCursorPos`、`EnumWindows` / 窗口扩展帧边界与 cloaked 检测 |
+| 依赖 | 平台 | 用途 |
+| --- | --- | --- |
+| `imgui`（glfw-binding + opengl3-binding） | 全部 | 覆盖层绘制；后端源码已编进 `imgui.lib`，不抄进本工程 |
+| `glfw3` | 全部 | 窗口、事件循环、显示器几何、光标（Linux 需要 GLFW 带 Wayland 后端，见 §8） |
+| `nlohmann-json` | 全部 | 触发负载解析 + 区域结果组包 + config_list 解析 + 多语言表解析（header-only） |
+| `opengl32` / `user32` / `dwmapi` | Windows | ImGui OpenGL3 后端 / `GetCursorPos`、`EnumWindows` / 窗口扩展帧边界与 cloaked 检测 |
+| `libportal-1.0`（`libportal-dev`） | Linux | xdg-desktop-portal 的 Screenshot 门户（Wayland 唯一的通用整屏截图途径） |
+| `stb`（vcpkg，header-only） | Linux | 截图像素解码、裁剪与 PNG 编码 |
+| `OpenGL::GL` | Linux | ImGui OpenGL3 后端的 GL 1.x 入口 |
 
-产物：`<构建树>/bin/plugins/region_selector.dll`；`metadata.json` 由 `shot_add_plugin()`
-在链接后贴到 DLL 尾部。插件不链接 spdlog：日志统一走 `shot::Logger`（宿主 `log` 服务）。
+产物：`<构建树>/bin/plugins/region_selector.dll`（Linux 为 `.so`）；`metadata.json` 由
+`shot_add_plugin()` 在链接后贴到产物尾部。插件不链接 spdlog：日志统一走
+`shot::Logger`（宿主 `log` 服务）。
 
 ## 3. 能力与调用时序
 
@@ -163,9 +186,13 @@ settings_ui 的 deinit**（实测：本插件 deinit 14ms 返回，宿主 30s+ �
 
 | key | zh-CN | en-US |
 | --- | --- | --- |
-| `region.hint` | 单击截取窗口 · 拖拽选择区域 · Esc / 右键取消 | Click a window to capture · Drag to select · Esc / right-click to cancel |
+| `region.hint`（Windows） | 单击截取窗口 · 拖拽选择区域 · Esc / 右键取消 | Click a window to capture · Drag to select · Esc / right-click to cancel |
+| `region.hint.wayland`（Linux） | 拖拽选择区域 · Esc / 右键取消 | Drag to select · Esc / right-click to cancel |
 | `overlay.size.unit` | 像素 | px |
 | `overlay.window_title` | Plugin-shot 区域选择 | Plugin-shot Region Select |
+
+Wayland 下单击不拖 = 取消（没有窗口可截），所以用单独的 `region.hint.wayland` 文案，
+避免提示里出现"单击截取窗口"这种做不到的说明。
 
 - `ui_init(host)` 里 `std::make_unique<shot::I18n>(host, "region_selector.main")` 并
   `loadTables()`。语言表对象由插件状态持有；`start(host, i18n)` 只把只读指针交给
@@ -244,6 +271,10 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
 | 右键 / Esc | 取消 |
 | 鼠标移动 | 全屏十字线 + 选区尺寸标签（`宽 x 高` + 单位，物理像素） |
 
+Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表）：上表的单击一行退化为
+**取消**，拖动与 Esc/右键完全相同；尺寸标签显示的是换算后的**输出像素**，与落盘文件一致
+（见 §8.3）。
+
 视觉：整屏 51% 黑色遮罩 + 十字线 + 选区边框 + **四角主题色折角** + 顶部提示
 （`region.hint`，中文为「单击截取窗口 · 拖拽选择区域 · Esc / 右键取消」，英文为
 "Click a window to capture · Drag to select · Esc / right-click to cancel"）。背景是触发瞬间
@@ -314,8 +345,106 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
 | 触发请求也会被流水线看到 | `{"mode":"region"}`（无 region）是"开始框选"约定；宿主流水线会**忽略**这条请求（不抓屏、不落盘、不发 `capture.*` 事件），只有本插件消费它来弹覆盖层。"框选触发顺带存一张全屏图"是旧行为，已由宿主改掉 |
 | 与其它插件共用 GLFW 全局运行时 | 见 §3.1：本插件延迟初始化、**不调用 `glfwTerminate`**。若 `settings_ui` 启动时被禁用、本插件先初始化过 GLFW 后它才被启用，它的退出唤醒可能失效（GLFW 单 helper window 的固有限制） |
 | 不提供 `shot.configurable` | 本插件没有自己的配置项：最小选区、遮罩透明度是内部常量；主题色来自**宿主**配置 `core/theme_color`（不是插件配置项）。要加插件自己的配置时再声明 `shot.configurable` |
+| Linux 只支持 Wayland 会话 | X11 会话下 `init` 记一条 WARN 后不启动覆盖层（等价于改造前"Linux 不构建"的行为）；X11 分支由后续任务补（`region_window.cpp` 里有 `// TODO:`） |
+| Wayland 无法悬停吸附 / 单击截窗 | 协议不允许枚举全局窗口、也拿不到别的窗口矩形，所以只有"拖框"一种选择方式；单击不拖 = 取消（见 §8） |
+| Wayland 多屏是一张缩放图 | portal 的 Screenshot 门户一次返回**整个桌面合成图**，覆盖层把它等比缩放显示，不能按输出分开选；坐标换算基于图像像素，因此选中的内容仍然准确 |
+| Wayland 覆盖层位置/全屏由合成器决定 | 客户端不能定位窗口；代码请求全屏并记录实际尺寸，带标题栏/未全屏时框选仍可用（坐标按实际窗口尺寸算），观感需要真机确认 |
 
-## 8. 检查清单
+## 8. Linux / Wayland
+
+Linux 默认目标是 Wayland（Ubuntu 24.04 GNOME）。Wayland 下应用**不能**读屏幕、不能覆盖
+所有输出、不能枚举窗口，所以采用"**门户截一次图 + 自己的窗口在上面框选**"的方案：
+
+1. 收到 `capture.request`（`{"mode":"region"}`）后，调 `xdg-desktop-portal` 的
+   **Screenshot** 门户做一次整屏截图（`xdp_portal_take_screenshot()` +
+   `XDP_SCREENSHOT_FLAG_NONE`，非交互模式）。首次会弹**系统授权框**；取消/拒绝/超时都按
+   取消处理：不弹窗、不发布事件。
+2. 门户返回临时 PNG：`stb_image` 解码成 RGBA8 → **立刻删除临时文件** → 上传 GL 纹理，
+   用自己的 GLFW/ImGui 覆盖层把整张图**等比缩放、居中**显示。
+3. 用户拖框（或 Esc / 右键取消；单击不拖 = 取消）。确认后直接在内存里的截图像素上裁剪
+   → `stb_image_write` 写 PNG → 发布 `capture.done {path,width,height,processors:0}`。
+   **不发布 `capture.request`**：不再第二次采集、不再弹第二次授权。
+
+与 Windows 分支的对应关系：窗口/交互/绘制/主题色/语言表**完全复用**；只有平台层不同
+（`*_wayland.cpp` 代替 `region_geometry.cpp` / `region_background.cpp` / `window_target.cpp`）。
+
+### 8.1 依赖与构建
+
+```bash
+sudo apt-get install -y libportal-dev libgl1-mesa-dev
+cmake -S . -B build/Linux -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/Linux --target region_selector
+```
+
+- `pkg_check_modules(LIBPORTAL REQUIRED libportal-1.0)`：缺 `libportal-dev` 时**配置阶段
+  直接失败**（不是运行期静默降级）。头文件是 `<libportal/portal.h>`（`xdp_portal_new()`
+  在 `<libportal/portal-helpers.h>`，两个都包含），pkg-config 会带出 GLib/GIO 的包含目录。
+  Ubuntu 24.04 的 `libportal-dev` 是 **0.7.1**；代码用的 `xdp_portal_take_screenshot_finish`
+  从 0.6 起就是"返回 `file://` URI"，0.7.1 与 0.9.x 签名一致。
+- GLFW 必须带 **Wayland 后端**（vcpkg 的 glfw3 端口在 Linux 会按系统依赖构建；系统包
+  可装 `libwayland-dev libxkbcommon-dev`）。只带 X11 后端的 GLFW 在 Wayland 会话里建不出
+  窗口：本插件记 WARN、放弃本次框选，不会崩溃。
+- 运行期依赖：`xdg-desktop-portal` 与桌面后端（GNOME 是 `xdg-desktop-portal-gnome`）。
+  没装/没运行 → 门户不可用，记 WARN，不弹窗、不发布事件。
+- stb 来自 vcpkg 清单（已是依赖），不需要额外系统包。
+
+### 8.2 触发方式
+
+和其它平台一样由事件总线主题 `capture.request` 触发（负载 `{"mode":"region"}`）。Linux 上
+没有托盘/全局热键插件，入口来自其它通用插件（例如工作区里的 `session_control` 草稿把
+D-Bus `CaptureRegion()` 翻译成这条事件）或桌面自定义快捷键调用对应入口。本插件不自己
+注册全局快捷键。
+
+### 8.3 窗口、坐标与产出
+
+- **窗口**：复用同一套 GLFW/ImGui 窗口（隐藏态延迟创建）。Wayland 客户端不能定位窗口，
+  所以选"当前/主显示器"作为初始尺寸，窗口 map 后再请求全屏；是否真的全屏、是否带标题栏
+  由合成器决定，日志会打印实际窗口尺寸。
+- **坐标换算**（`region_overlay_wayland.cpp`）：
+
+  ```
+  scale   = min(窗口内容宽 / 图像宽, 窗口内容高 / 图像高)     // 等比适配
+  offsetX = (窗口内容宽 - 图像宽 * scale) / 2                  // 居中
+  图像 x  = round((窗口 x - offsetX) / scale)                  // 再夹进 [0, 图像宽]
+  图像 y  = round((窗口 y - offsetY) / scale)                  // 再夹进 [0, 图像高]
+  ```
+
+  窗口坐标 ↔ 图像像素**每帧按实际窗口尺寸重算**，不假设"窗口 == 显示器"；落在黑边上的
+  选区会被裁剪时夹掉。尺寸标签显示的是换算后的**输出像素**，与落盘文件一致。
+- **输出目录**：读 `config_list` 里 `image_saver.main/directory`（与宿主流水线保存同一套
+  配置）；为空/读不到 → 系统图片目录（`$XDG_PICTURES_DIR`，缺省 `$HOME/Pictures`）。
+  目录不存在会尝试创建。
+- **文件名**：固定 `shot_YYYYMMDD_HHMMSS.png`（本地时间）。同一秒内连续保存会覆盖同名文件。
+- **事件**：只发 `capture.done`，负载与宿主流水线完全同格式；`processors` 恒为 0（没有经过
+  `image_processor` 链）。不发 `capture.failed`（框选取消/保存失败只记日志）。
+- **退出**：等授权框期间每 100ms 检查一次宿主是否要求退出；宿主退出/热卸载时立即取消门户
+  请求（`stop()` 的 join 不会被授权框卡住）。已落盘但宿主正在退出时不再发事件。
+
+### 8.4 与 Windows 的行为差异
+
+| 行为 | Windows | Linux / Wayland |
+| --- | --- | --- |
+| 悬停吸附 / 单击截窗口 | 有 | **没有**（Wayland 不允许全局窗口枚举）；单击不拖 = 取消 |
+| 背景 | 触发瞬间的当前显示器 GDI 快照 | 门户返回的**整个桌面**合成图，等比缩放居中 |
+| 确认后 | 隐藏 → 等 100ms → 发带 region 的 `capture.request` | 隐藏 → 内存裁剪 → 写 PNG → 发 `capture.done` |
+| 图片经过 `image_processor` | 是 | 否（`processors:0`） |
+| 多显示器 | 只覆盖一块屏；悬停窗口可跨屏 | 一张缩放图，整张桌面都能选 |
+| 主题色 / 语言 / 选择框样式 | 相同 | 相同 |
+
+### 8.5 需要真机验证（本机没有 Linux 桌面）
+
+- 覆盖层是否真的全屏、是否被合成器加上标题栏（GNOME 不支持 `xdg-decoration` 时无边框请求
+  会被忽略）；以及带标题栏时坐标是否仍然正确（按实际窗口尺寸算，理论上不受影响）。
+- 多屏 + 分数缩放（125% / 150% / 200%）下的窗口尺寸、`content_scale` 与坐标换算：映射用的是
+  窗口内容坐标与图像像素，理论上与缩放无关，但没有实机结论。
+- 首次授权框的观感与超时（当前等待 120s）；授权框出现时是否抢焦点/是否遮住覆盖层
+  （覆盖层是在拿到截图**之后**才显示的，设计上不会挡授权框）。
+- portal 后端差异（GNOME / KDE / wlroots）：`CaptureRegion` 的触发入口、授权拒绝时门户
+  返回的错误文本（取消/拒绝靠错误码 + 文本识别，不同版本可能不同）。
+- 图像编码：超大整屏图（8K+）时 GL 纹理上传可能超过 GPU 上限（有 WARN，裁剪与落盘不受影响）。
+- X11 会话：`init` 记 WARN 后不动作，宿主其它功能不受影响。
+
+## 9. 检查清单
 
 - [ ] `region` 的 x/y/width/height 都是**物理虚拟桌面像素**，且减过虚拟桌面原点？
 - [ ] content scale 只用于字号/折角/边框，没有乘进区域坐标？
@@ -335,4 +464,10 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
 - [ ] `metadata.json` 的 `interfaces` 与 `kIfaces[]` 一致（只有 `shot.ui_provider`）？
 - [ ] 用户可见文案都走 `i18n.tr()`、两种语言齐全，且 fallback 是中文原文？
 - [ ] 日志仍是中文（e2e 断言依赖它），没有被误加进语言表？
-- [ ] 非 Windows 平台是"CMake 跳过"，没有未验证的实现分支？
+- [ ] macOS 等无实现平台仍是"CMake 跳过"，没有未验证的实现分支？
+- [ ] Wayland：确认后只发 `capture.done`（不发 `capture.request`，不第二次采集/授权）？
+- [ ] Wayland：裁剪用的是内存里的 portal 截图，临时文件读完后已删除？
+- [ ] Wayland：窗口坐标 → 图像像素用的是"实际窗口尺寸 + 等比缩放 + 居中偏移"，并夹进图像范围？
+- [ ] Wayland：没有调用任何全局窗口枚举（悬停吸附关闭、单击=取消、Wayland 的错误只 WARN/静默）？
+- [ ] Wayland：门户不可用 WARN 且不弹窗不发事件；用户取消/拒绝/超时安静放弃？
+- [ ] Wayland：输出目录读的是 `image_saver.main/directory`，为空回退 Pictures，文件名 `shot_YYYYMMDD_HHMMSS.png`？

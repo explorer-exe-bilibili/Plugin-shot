@@ -29,6 +29,15 @@ namespace region_selector {
  *     `capture.request`；Esc / 右键 / 拖动选区任一边小于 8 像素 = 取消，不发布事件；
  *   - stop() 退订事件总线、停线程、销毁自己的窗口，返回前线程已 join。
  *
+ * 平台分支（窗口/线程/绘制/交互共用，平台层不同）：
+ *   - Windows：背景是 GDI 桌面快照，确认后发布带 `region` 的 `capture.request`，
+ *     由宿主流水线裁剪落盘（上面的默认描述）；
+ *   - Linux / Wayland：背景来自 xdg-desktop-portal 的一次整屏截图（首次弹系统授权，
+ *     见 README「Linux / Wayland」），整张图等比缩放居中显示；Wayland 不允许全局
+ *     窗口枚举，所以没有悬停吸附、单击不拖 = 取消；确认后直接从内存裁剪、写 PNG、
+ *     发布 `capture.done`，**不发布 `capture.request`**（不第二次采集/授权）。
+ *   - 其它平台由 CMake 跳过；X11 会话下插件加载但不启动覆盖层（X11 分支待补）。
+ *
  * GLFW / OpenGL / ImGui 类型全部关在 Impl 里（内部头 region_window_impl.h），
  * 公共头不包含任何图形库或平台头文件。
  *

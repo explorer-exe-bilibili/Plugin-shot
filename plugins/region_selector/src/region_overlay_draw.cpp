@@ -12,6 +12,10 @@
 // Windows PMv2 下相等（实测 2560x1600 == 2560x1600）；这里仍按 ActualScale 换算一次，
 // 万一将来窗口被系统缩放也不会画歪。content scale 只放大字号与折角/边框这类装饰，
 // 绝不乘进区域坐标。
+//
+// Linux / Wayland：背景是一张等比缩放居中显示的 portal 截图，ImGui 坐标就是窗口内容
+// 坐标（framebuffer 比例由后端在投影里处理），换算系数因此恒为 1；尺寸标签显示的是
+// 换算后的**截图图像像素**，与落盘文件一致。Windows 分支的绘制代码保持不变。
 
 #include <algorithm>
 #include <cfloat>
@@ -112,6 +116,7 @@ void RegionWindow::Impl::drawOverlay() const {
 
     // 窗口坐标 → ImGui 绘制坐标的换算系数。PMv2 下窗口物理像素 == framebuffer 像素，
     // 系数恒为 1；保留换算是为了不把"坐标空间相同"当成硬编码假设写死。
+#if defined(_WIN32)
     int windowWidth = 0;
     int windowHeight = 0;
     int framebufferWidth = 0;
@@ -125,6 +130,12 @@ void RegionWindow::Impl::drawOverlay() const {
                              ? static_cast<float>(framebufferHeight) /
                                    static_cast<float>(windowHeight)
                              : 1.0f;
+#else
+    // Wayland：ImGui 的坐标空间就是窗口内容坐标，framebuffer 与窗口的比例由后端在投影
+    // 里处理一次；这里再乘一次会让分数缩放下的选区与背景错位，所以恒为 1。
+    const float scaleX = 1.0f;
+    const float scaleY = 1.0f;
+#endif
     const auto toOverlay = [&](float localX, float localY) {
         return ImVec2(origin.x + localX * scaleX, origin.y + localY * scaleY);
     };
@@ -141,11 +152,24 @@ void RegionWindow::Impl::drawOverlay() const {
     // 0. 背景：触发瞬间的桌面快照。窗口是不透明的，这张图就是用户看到的"桌面"，
     //    遮罩与挖空都画在它上面（等价于透明覆盖层，但不依赖 DWM 合成）。
     if (backgroundTexture != 0) {
+#if defined(_WIN32)
         // 按纹理原始尺寸画（= 显示器尺寸），不要拉满整个窗口：窗口比显示器大 1px，
         // 拉满会把快照整体拉伸 1px。多出来的那条边在屏幕外，看不见。
         const ImVec2 backgroundMax(origin.x + static_cast<float>(backgroundWidth),
                                    origin.y + static_cast<float>(backgroundHeight));
         draw->AddImage(static_cast<ImTextureID>(backgroundTexture), origin, backgroundMax);
+#else
+        // Wayland：整张 portal 截图（可能是多显示器合成图）等比缩放后居中显示，
+        // 留出的黑边也在窗口内；布局每帧按实际窗口尺寸重算（合成器可能改变窗口大小）。
+        const WaylandLayout layout = overlayLayout();
+        if (layout.width > 0.0f && layout.height > 0.0f) {
+            const ImVec2 backgroundMin(origin.x + layout.offsetX, origin.y + layout.offsetY);
+            const ImVec2 backgroundMax(backgroundMin.x + layout.width,
+                                       backgroundMin.y + layout.height);
+            draw->AddImage(static_cast<ImTextureID>(backgroundTexture), backgroundMin,
+                           backgroundMax);
+        }
+#endif
     }
 
     // 1. 选框：拖动时严格跟手；否则用悬停吸附框（可能正处在平滑动画中间）。
@@ -167,8 +191,17 @@ void RegionWindow::Impl::drawOverlay() const {
             selectionMax =
                 toOverlay(static_cast<float>(localX + localWidth),
                           static_cast<float>(localY + localHeight));
+#if defined(_WIN32)
             sizeWidth = localWidth;
             sizeHeight = localHeight;
+#else
+            // 标签显示换算到截图图像像素的尺寸：等比缩放后窗口像素 ≠ 最终输出像素，
+            // 用户看到的数字必须和落盘文件一致（落在黑边上的部分不计）。
+            const ImageRect imageRect =
+                selectionToImagePixels(localX, localY, localWidth, localHeight);
+            sizeWidth = imageRect.width;
+            sizeHeight = imageRect.height;
+#endif
         }
     } else if (hover.active && hover.width > 0.5f && hover.height > 0.5f) {
         hasSelection = true;
@@ -249,9 +282,14 @@ void RegionWindow::Impl::drawOverlay() const {
     }
 
     // 5. 顶部提示：说明怎么用、怎么取消。始终画在最上层。
-    //    文案来自语言表（region.hint）；日志才是固定中文，别把这里改回写死的中文。
+    //    文案来自语言表（region.hint；Wayland 用 region.hint.wayland，因为单击不再截窗口）。
+    //    日志才是固定中文，别把这里改回写死的中文。
+#if defined(_WIN32)
     const char* hint =
         overlayText(i18n, "region.hint", "单击截取窗口 · 拖拽选择区域 · Esc / 右键取消");
+#else
+    const char* hint = overlayText(i18n, "region.hint.wayland", "拖拽选择区域 · Esc / 右键取消");
+#endif
     const ImVec2 hintSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, hint);
     const ImVec2 hintPos(origin.x + (size.x - hintSize.x) * 0.5f, origin.y + 24.0f);
     draw->AddRectFilled(ImVec2(hintPos.x - 8.0f, hintPos.y - 5.0f),

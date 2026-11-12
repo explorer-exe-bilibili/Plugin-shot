@@ -6,7 +6,7 @@
       "id": "region_selector.main",
       "name": "Region Selector",
       "version": "0.1.0",
-      "description": "屏幕区域选择覆盖层：在鼠标所在显示器上框选，确认后发布带 region 的 capture.request（GLFW + ImGui + OpenGL3）",
+      "description": "屏幕区域选择覆盖层：Windows 用 Win32 物理坐标与 GDI 快照；Linux Wayland 用 xdg-desktop-portal 截图后自绘覆盖层（GLFW + ImGui + OpenGL3）",
       "interfaces": ["shot.ui_provider"],
       "requires": ["core>=0.1.0"],
       "provides": []

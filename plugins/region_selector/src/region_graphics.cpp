@@ -31,10 +31,20 @@ constexpr float kFontSizePixels = 18.0f;
 // 中文字体按"显示效果从好到差"回退。覆盖层只有提示/尺寸两类短文本，缺字体时
 // 退回 ImGui 内置字体（中文会显示成方块），但框选功能不受影响。
 const char* const kFontCandidates[] = {
+#if defined(_WIN32)
     "C:\\Windows\\Fonts\\msyh.ttc",
     "C:\\Windows\\Fonts\\msyhbd.ttc",
     "C:\\Windows\\Fonts\\simhei.ttf",
     "C:\\Windows\\Fonts\\simsun.ttc",
+#else
+    // Linux（Wayland）：Noto CJK 是 Ubuntu / GNOME 默认中文字体；文泉驿是精简安装
+    // 常见的回退。都没有时退回内置字体，只是中文显示成方块。
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+#endif
 };
 
 /**

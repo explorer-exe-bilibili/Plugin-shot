@@ -29,13 +29,22 @@
 //   · 拖动：跟手选区，松开后发布。
 // 窗口枚举必须排除覆盖层自己的 HWND（它是全屏置顶窗口，否则永远命中自己）。
 //
-// 提交时序（需求硬约束）：先 glfwHideWindow + glfwPollEvents，再 sleep
+// 提交时序（需求硬约束，Windows 分支）：先 glfwHideWindow + glfwPollEvents，再 sleep
 // kHideSettleDelayMs（100ms），最后才 publish capture.request。DWM 合成是异步的，
 // 隐藏函数返回不代表遮罩已经消失；宿主 worker 收到事件就抓屏，中间没有同步点。
+//
+// Linux / Wayland（#if !defined(_WIN32) 的分支，实现见 region_*_wayland.cpp）：
+//   覆盖层窗口与绘制复用同一套 GLFW/ImGui 代码，但背景不是 GDI 快照，而是
+//   xdg-desktop-portal 的一次整屏截图（首次会弹系统授权框）。确认后直接从内存里的
+//   整屏像素裁剪、写 PNG、发布 capture.done，**不发布 capture.request**——不再第二次
+//   采集、也不再弹第二次授权（需求"方案 B"）。Wayland 不允许全局窗口枚举，所以没有
+//   悬停吸附，单击（不拖）= 取消。
 //
 // TODO: 跨显示器选择：现在只覆盖"鼠标所在显示器"，拖到另一块屏的选区会被夹在
 // 当前屏内。要做跨屏需要在虚拟桌面矩形上开一个覆盖所有显示器的窗口，窗口尺寸/定位
 // 仍用物理像素；等宿主把混合 DPI 下的跨屏截图验证过再一起做。
+// TODO: X11 分支：Linux 目前只支持 Wayland 会话（isWaylandSession() 为假时插件不动作），
+// 后续任务用 XGetImage + override-redirect 覆盖层补齐。
 
 #include "region_window.h"
 
@@ -325,7 +334,13 @@ void RegionWindow::Impl::drainEvents() {
                     // 已经在框选中：重复触发只记一句，不重开（避免覆盖用户正在拖的选区）。
                     shot::Logger(host).debug("region_selector：正在框选，忽略重复的触发事件");
                 } else if (!startSelection()) {
+#if defined(_WIN32)
                     shot::Logger(host).warn("region_selector：启动框选失败（没有可用显示器？）");
+#else
+                    // Wayland：失败原因（门户不可用 / 用户取消 / 超时 / 没有截图）已经在
+                    // 启动流程里按级别记录，这里不再重复 WARN——用户取消必须安静。
+                    shot::Logger(host).debug("region_selector：本次框选没有启动");
+#endif
                 }
             }
             // 其它 capture.request（整屏采集 / 已带 region）安静忽略：它们不是给本插件的。
@@ -408,10 +423,16 @@ bool RegionWindow::Impl::startSelection() {
     // 的代码路径，Windows 上会触发窗口样式重建 + DWM 重新合成，用户看到的是类似切换
     // 全屏（分辨率变化）的黑屏闪烁。这里窗口本来就是无边框置顶窗口，隐藏状态下直接
     // setSize + setPos 即可，显示时不会再有模式切换。
+#if defined(_WIN32)
     // 宽高各 +kOverlayOversize（1px）：避开 Windows 的"全屏窗口"判定（见上面常量注释）。
     glfwSetWindowSize(window, monitor.width + kOverlayOversize,
                       monitor.height + kOverlayOversize);
     glfwSetWindowPos(window, monitor.x, monitor.y);
+#else
+    // Wayland 不允许客户端定位窗口：位置由合成器决定。这里先把尺寸对齐输出，
+    // 真正的全屏请求放到窗口显示之后（region_overlay_wayland.cpp）。
+    prepareWaylandOverlay(monitor);
+#endif
     // content scale 只用来放大字号/折角：坐标已经是物理像素，不能再乘它。
     applyMonitorScale(contentScale);
     uiScale = contentScale;
@@ -467,11 +488,26 @@ bool RegionWindow::Impl::startSelection() {
     if (crosshairCursor != nullptr) {
         glfwSetCursor(window, crosshairCursor);
     }
+#if defined(_WIN32)
     // 截一张当前桌面的快照当覆盖层背景（窗口不透明，靠这张纹理"假装透明"）。
     // 失败只 warn：退化成纯遮罩背景，框选功能不受影响。
     if (!captureBackground()) {
         shot::Logger(host).warn("region_selector：没有桌面快照背景，覆盖层只显示遮罩");
     }
+#else
+    // Wayland：覆盖层的背景就是 portal 截图。没有截图就没有可选内容（失败原因已由
+    // captureBackground 按级别记过：门户不可用 WARN / 用户取消静默），所以不显示覆盖层、
+    // 不弹窗、不发布任何事件。
+    if (!captureBackground()) {
+        hideOverlay();
+        return false;
+    }
+    // 等授权框期间宿主可能已经开始卸载本插件：不要再把覆盖层显示出来。
+    if (shouldQuit()) {
+        hideOverlay();
+        return false;
+    }
+#endif
 
     // 先隐藏状态下渲染一帧再显示：否则 glfwShowWindow 后、第一帧 swap 之前，DWM 会把
     // 窗口的初始（未渲染）内容合上去，用户看到一瞬间的黑/花屏。渲染一帧后缓冲区里
@@ -483,6 +519,12 @@ bool RegionWindow::Impl::startSelection() {
     glfwShowWindow(window);
     // 不再额外调 glfwFocusWindow：窗口 hint 里 GLFW_FOCUS_ON_SHOW 已经让它拿到焦点，
     // 再显式聚焦一次会多触发一轮焦点切换（真机上表现为又闪一下）。
+#if !defined(_WIN32)
+    // Wayland：窗口 map 之后再请求全屏（隐藏窗口上的请求可能被合成器忽略）。
+    // 是否真的全屏由合成器决定，日志里会记录实际尺寸（README「Linux / Wayland」）。
+    requestWaylandFullscreen();
+    glfwPollEvents();  // 让新尺寸/焦点配置事件进来，第一帧就按实际尺寸绘制
+#endif
     overlayVisible = true;
 
     // 把覆盖层几何与换算基准写进日志：落盘区域不对时第一眼看这几行。
@@ -541,6 +583,7 @@ void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth,
         shot::Logger(host).info(text);
     }
 
+#if defined(_WIN32)
     // 窗口内容坐标 → 绝对屏幕坐标 → 虚拟桌面坐标。
     //   · glfwGetWindowPos 是窗口内容区在屏幕上的位置（物理像素，实测 = 显示器位置）；
     //   · 本地坐标是物理像素（PMv2 下 framebuffer == 窗口大小）；
@@ -571,6 +614,11 @@ void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth,
         return;
     }
     publishRegion(region);
+#else
+    // Wayland：不需要"等遮罩消失"（不会第二次抓屏），直接从内存里的 portal 截图裁剪、
+    // 写 PNG、发布 capture.done；不发布 capture.request，避免第二次采集/第二次授权。
+    commitWaylandSelection(localX, localY, localWidth, localHeight);
+#endif
 }
 
 void RegionWindow::Impl::publishRegion(const ScreenRect& region) const {
