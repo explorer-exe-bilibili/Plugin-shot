@@ -4,21 +4,27 @@
 鼠标停在某个顶层窗口上时，选框会**吸附到该窗口**并带 100ms 指数平滑地平移/缩放过去；
 **单击**（位移 ≤4px、按住 ≤400ms）直接把当前悬停窗口的矩形作为采集区域；**拖动**则退化成
 原来的手绘选区（拖动期间严格跟手，不做吸附和动画）。确认后先隐藏覆盖层、等遮罩从屏幕上
-消失，再发布带 `region` 的 `capture.request`（**Windows 实现**；Linux/Wayland 是同一套
-窗口与交互，但背景来自 xdg-desktop-portal 截图、确认后直接裁剪落盘，见 §8）。
+消失，再发布带 `region` 的 `capture.request`（**Windows 与 Linux/X11 都是这套行为**；
+Linux/Wayland 是同一套窗口与交互，但背景来自 xdg-desktop-portal 截图、确认后直接裁剪落盘，
+见 §8）。
 
-**平台**：Windows 是完整实现（Win32 物理坐标 + GDI 快照 + 窗口枚举）；Linux 只支持
-**Wayland 会话**（`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE` 运行时探测），走 xdg-desktop-portal
-的 Screenshot 门户 + 自己的覆盖层窗口，非 Wayland（X11）会话下插件加载但不动作（X11 分支
-由后续任务补）；macOS 等其它平台由 CMake 直接跳过（`SHOT_PLUGIN_SKIPPED`）。详见 §8。
+**平台**：Windows 是完整实现（Win32 物理坐标 + GDI 快照 + 窗口枚举）；Linux 同一份 `.so`
+里编了**两套实现、运行期按会话类型二选一**：
 
-覆盖层是**不透明窗口 + 触发瞬间的桌面快照**（`region_background.cpp`）：先 GDI 截一张该
-显示器的快照、上传成 GL 纹理，窗口用这张纹理铺满当背景，遮罩/挖空/十字线/主题色折角都画在
-它上面。窗口先隐藏、`glfwSetWindowSize/SetWindowPos` 覆盖整块显示器、**隐藏状态下先渲染两帧**
-再 `glfwShowWindow`；刻意**不用** `glfwSetWindowMonitor`（那条路径会切窗口模式，表现为黑屏闪烁）。
-窗口尺寸是**显示器尺寸 + 1 像素**（`kOverlayOversize`）：刚好等于显示器尺寸时 Windows 会把它
-当成"全屏窗口"走 fullscreen optimization，导致每次显示/隐藏闪一下、进程退出后甚至留下黑色
-残影（真机踩过，详见 §6）。
+- **Wayland 会话**（`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland`）：走 xdg-desktop-portal
+  的 Screenshot 门户 + 自己的覆盖层窗口（定格图 + 拖选，见 §8）；
+- **X11 会话**：真正的全屏覆盖层——`XGetImage` 抓整块 X screen 当背景，交互与 Windows
+  一致，窗口命中用 `XQueryTree` + EWMH 类型过滤（见 §9）；
+- macOS 等其它平台由 CMake 直接跳过（`SHOT_PLUGIN_SKIPPED`）。
+
+覆盖层是**不透明窗口 + 触发瞬间的桌面快照**（Windows 是 `region_background.cpp`，X11 是
+`region_background_x11.cpp`）：先截一张桌面快照、上传成 GL 纹理，窗口用这张纹理当背景，
+遮罩/挖空/十字线/主题色折角都画在它上面。窗口先隐藏、`glfwSetWindowSize/SetWindowPos`
+覆盖整块显示器、**隐藏状态下先渲染两帧**再 `glfwShowWindow`；刻意**不用**
+`glfwSetWindowMonitor`（那条路径会切窗口模式，表现为黑屏闪烁）。Windows 的窗口尺寸是
+**显示器尺寸 + 1 像素**（`kOverlayOversize`）：刚好等于显示器尺寸时 Windows 会把它当成
+"全屏窗口"走 fullscreen optimization，导致每次显示/隐藏闪一下、进程退出后甚至留下黑色
+残影（真机踩过，详见 §6）；X11 没有这条规则，铺满即精确覆盖（见 §9）。
 
 > 为什么不用透明窗口：早期用 `GLFW_TRANSPARENT_FRAMEBUFFER` 让桌面透出来，第一次能显示，
 > 但窗口 `hide → show` 一轮之后 DWM 的 blur-behind 合成失效，覆盖层变回不透明黑屏且不再
@@ -35,49 +41,57 @@
 **平台边界**：Windows 分支的覆盖层几何、光标位置与"物理虚拟桌面像素"依赖 Win32 坐标语义
 （`GetCursorPos` / `GetSystemMetrics(SM_*VIRTUALSCREEN)` / `EnumWindows`），代码在
 `region_geometry.cpp` / `region_background.cpp` / `window_target.cpp`；Linux/Wayland 分支的
-平台层在 `*_wayland.cpp` + `region_portal.cpp` / `region_image.cpp` / `region_output_linux.cpp`。
-macOS 与其它平台由 CMake 跳过，不产出伪实现。
+平台层在 `*_wayland.cpp` + `region_portal.cpp` / `region_image.cpp` / `region_output_linux.cpp`；
+Linux/X11 分支在 `*_x11.cpp`（Xlib）。两套 Linux 实现在同一个 `.so` 里，启动时按会话类型
+运行期选择（`LinuxSessionBackend`）。macOS 与其它平台由 CMake 跳过，不产出伪实现。
 
 ## 1. 目录
 
 ```
 plugins/region_selector/
-├── CMakeLists.txt                  # 平台源文件 + imgui / nlohmann-json / glfw3（Linux 另加 libportal / stb）
+├── CMakeLists.txt                  # 平台源文件 + imgui / nlohmann-json / glfw3（Linux 另加 libportal / x11 / stb）
 ├── metadata.json                   # 插件清单（id region_selector.main，接口 shot.ui_provider）
 ├── README.md
 ├── include/
 │   ├── plugin_entry.h              # PluginEntry / PluginInstance / state_of（插件样板）
 │   ├── region_window.h             # RegionWindow 公共接口（契约层，不含任何图形库类型）
-│   ├── region_window_impl.h        # 内部头：Impl 声明 / 事件队列 / 拖拽与悬停吸附状态 / Wayland 段
-│   ├── window_target.h             # 内部头：窗口目标结构 + 枚举/命中接口
+│   ├── region_window_impl.h        # 内部头：Impl 声明 / 事件队列 / 拖拽与悬停吸附状态 / Wayland、X11 段
+│   ├── window_target.h             # 内部头：窗口目标结构 + 枚举/命中接口（Windows + X11）
 │   ├── region_portal.h             # Linux：xdg-desktop-portal Screenshot 门户 + 会话探测
-│   ├── region_image.h              # Linux：截图解码 / 裁剪 / PNG 编码（stb）
-│   └── region_output.h             # Linux：输出目录（image_saver 配置 / Pictures）+ 文件名
+│   ├── region_image.h              # Linux/Wayland：截图解码 / 裁剪 / PNG 编码（stb）
+│   └── region_output.h             # Linux/Wayland：输出目录（image_saver 配置 / Pictures）+ 文件名
 └── src/
     ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + kEntries + ABI 胶水 + 语言表
-    ├── region_window.cpp           # 生命周期 / 窗口线程 / 事件循环 / 触发解析 / 提交（平台分支）
-    ├── region_overlay.cpp          # 交互状态机 + 悬停吸附动画 + 主题色读取
+    ├── region_window.cpp           # 生命周期 / 窗口线程 / 事件循环 / 触发解析 / 提交（平台分派）
+    ├── region_overlay.cpp          # 交互状态机 + 悬停吸附动画 + 主题色读取（三平台共用）
     ├── region_overlay_draw.cpp     # ImGui 遮罩 / 选区 / 折角 / 十字线 / 标签绘制
     ├── region_graphics.cpp         # ImGui 后端 / 中文字体 / DPI 字号缩放 / 每帧渲染
     ├── region_background.cpp       # Windows：触发瞬间的桌面快照（GDI）+ 上传 GL 纹理
     ├── region_geometry.cpp         # Windows：显示器矩形 / 光标 / 物理坐标换算 + 实测日志
     ├── window_target.cpp           # Windows：顶层窗口枚举 / Z 序 / DWM 边界 / 命中测试
-    ├── region_portal.cpp           # Linux：libportal 异步截图 + GMainLoop + URI→路径 + 超时
-    ├── region_image.cpp            # Linux：stb PNG 解码 / 裁剪 / 编码（唯一定义 stb 实现的 TU）
-    ├── region_output_linux.cpp     # Linux：读 config_list 的 image_saver 目录 + shot_时间戳.png
-    ├── region_geometry_wayland.cpp # Linux：显示器几何（Wayland 无位置/无全局光标）+ 会话日志
-    ├── region_background_wayland.cpp # Linux：portal 截图 → stb 解码 → 删临时文件 → GL 纹理
-    ├── region_overlay_wayland.cpp  # Linux：等比适配映射 + 内存裁剪写盘 + 发布 capture.done
-    └── window_target_wayland.cpp   # Linux：空实现（Wayland 不允许全局窗口枚举，吸附关闭）
+    ├── region_portal.cpp           # Linux/Wayland：libportal 异步截图 + GMainLoop + URI→路径 + 超时
+    ├── region_image.cpp            # Linux/Wayland：stb PNG 解码 / 裁剪 / 编码（唯一定义 stb 实现的 TU）
+    ├── region_output_linux.cpp     # Linux/Wayland：读 config_list 的 image_saver 目录 + shot_时间戳.png
+    ├── region_geometry_wayland.cpp # Linux/Wayland：显示器几何（无位置/无全局光标）+ 会话日志
+    ├── region_background_wayland.cpp # Linux/Wayland：portal 截图 → stb 解码 → 删临时文件 → GL 纹理
+    ├── region_overlay_wayland.cpp  # Linux/Wayland：等比适配映射 + 内存裁剪写盘 + 发布 capture.done
+    ├── window_target_wayland.cpp   # Linux/Wayland：空实现（协议不允许全局窗口枚举，吸附关闭）
+    ├── region_geometry_x11.cpp     # Linux/X11：X screen 几何 / XQueryPointer 光标 / 显示器矩形 + 日志
+    ├── region_background_x11.cpp   # Linux/X11：XGetImage 整屏快照 → 像素解包 → GL 纹理
+    ├── region_overlay_x11.cpp      # Linux/X11：覆盖层定位 / 实际几何日志 / 确认后发布（Windows 同时序）
+    └── window_target_x11.cpp       # Linux/X11：XQueryTree + EWMH 类型过滤 + XTranslateCoordinates 命中
 ```
 
 公共头 `region_window.h` 只声明一个类；内部头 `region_window_impl.h` 与 `window_target.h`
 是**内部头**（只被本插件的 `.cpp` 包含，开头注明"不是插件对外接口"）。`.cpp` 按关注点拆成
-"生命周期 / 交互 / 绘制 / 图形 / 平台几何 / 窗口枚举 / ABI 胶水"七个文件（`STYLE.md` §6.7/§6.8）。
+"生命周期 / 交互 / 绘制 / 图形 / 平台几何 / 窗口枚举 / ABI 胶水"七个分区（`STYLE.md` §6.7/§6.8）；
+平台层再按 Windows / Wayland / X11 各一套文件。
 
-窗口枚举独立成 `window_target.cpp`：它只回答"光标下有没有窗口、矩形是多少"，不碰 ImGui
+窗口枚举独立成 `window_target*.cpp`：它只回答"光标下有没有窗口、矩形是多少"，不碰 ImGui
 和覆盖层状态；覆盖层交互文件负责把结果变成吸附/动画/采集。两者分开后，窗口筛选规则
-（DWM cloaked、`WS_EX_TOOLWINDOW`、扩展帧边界等）可以单独审查，不会淹没在绘制代码里。
+（DWM cloaked / `WS_EX_TOOLWINDOW`，或 EWMH 类型 / reparenting frame）可以单独审查，
+不会淹没在绘制代码里。X11 与 Wayland 的平台函数用**不同的成员函数名**（`x11*`），
+让同一个 `.so` 里两套实现并存、不产生重复符号；`region_window.cpp` 只做运行期分派。
 
 ## 2. 构建
 
@@ -97,16 +111,17 @@ cmake --build build
 ```
 
 依赖与 `settings_ui` 同一套，vcpkg 清单里已启用对应特性；Linux 额外依赖系统包
-`libportal-dev`（见 §8）：
+`libportal-dev` 与 `libx11-dev`（见 §8 / §9）：
 
 | 依赖 | 平台 | 用途 |
 | --- | --- | --- |
 | `imgui`（glfw-binding + opengl3-binding） | 全部 | 覆盖层绘制；后端源码已编进 `imgui.lib`，不抄进本工程 |
-| `glfw3` | 全部 | 窗口、事件循环、显示器几何、光标（Linux 需要 GLFW 带 Wayland 后端，见 §8） |
+| `glfw3` | 全部 | 窗口、事件循环、显示器几何、光标（Linux 需要 GLFW 带 Wayland/X11 后端，见 §8 / §9） |
 | `nlohmann-json` | 全部 | 触发负载解析 + 区域结果组包 + config_list 解析 + 多语言表解析（header-only） |
 | `opengl32` / `user32` / `dwmapi` | Windows | ImGui OpenGL3 后端 / `GetCursorPos`、`EnumWindows` / 窗口扩展帧边界与 cloaked 检测 |
-| `libportal-1.0`（`libportal-dev`） | Linux | xdg-desktop-portal 的 Screenshot 门户（Wayland 唯一的通用整屏截图途径） |
-| `stb`（vcpkg，header-only） | Linux | 截图像素解码、裁剪与 PNG 编码 |
+| `libportal-1.0`（`libportal-dev`） | Linux（Wayland 分支） | xdg-desktop-portal 的 Screenshot 门户（Wayland 唯一的通用整屏截图途径） |
+| `x11`（`libx11-dev`） | Linux（X11 分支） | `XGetImage` 快照 / `XQueryTree` 窗口枚举 / `XTranslateCoordinates` / `XQueryPointer`；**不需要 `libxrandr-dev`**（见 §9.1） |
+| `stb`（vcpkg，header-only） | Linux/Wayland | 截图像素解码、裁剪与 PNG 编码 |
 | `OpenGL::GL` | Linux | ImGui OpenGL3 后端的 GL 1.x 入口 |
 
 产物：`<构建树>/bin/plugins/region_selector.dll`（Linux 为 `.so`）；`metadata.json` 由
@@ -133,21 +148,21 @@ ImGui 调用都在插件的 UI 线程上执行（GLFW 和 ImGui 都不是线程�
 | --- | --- | --- |
 | 1 | 任意线程 | 发布 `capture.request`，负载 `{"mode":"region"}`（**没有** `region` 对象） |
 | 2 | 总线分发线程 | 插件回调只把事件入队并唤醒 UI 线程 |
-| 3 | UI 线程 | 取鼠标位置 → 找所在显示器 → 把隐藏窗口搬过去铺满整屏；读主题色、记录覆盖层 HWND、按 Z 序枚举顶层窗口命中光标下的窗口 → 显示并聚焦 |
+| 3 | UI 线程 | 取鼠标位置 → 找所在显示器 → 把隐藏窗口搬过去铺满整屏；读主题色、记录覆盖层原生句柄（HWND / X11 Window）、按 Z 序枚举顶层窗口命中光标下的窗口 → 显示并聚焦 |
 | 4 | UI 线程 | 空闲：每 30ms 枚举一次顶层窗口，命中窗口后选框用 100ms 指数平滑吸附过去；鼠标移到别的窗口就平滑平移/缩放 |
 | 5 | UI 线程 | 单击（位移 ≤4px 且按住 ≤400ms）：直接把当前悬停窗口矩形当 region 确认；拖动（位移 >4px）：选框严格跟手，松开左键确认；右键 / Esc = 取消 |
 | 6 | UI 线程 | 确认后先 `glfwHideWindow` + `glfwPollEvents`，再 `sleep 100ms`（`kHideSettleDelayMs`） |
-| 7 | UI 线程 | 发布 `capture.request`：`{"mode":"region","region":{"x","y","width","height"}}` |
-| 8 | 宿主 worker | 抓整屏 → 按 `region` 裁剪 → 处理 → 保存，发 `capture.done` |
+| 7 | UI 线程 | Windows / X11：发布 `capture.request`：`{"mode":"region","region":{"x","y","width","height"}}`；Wayland：内存裁剪写 PNG 后发 `capture.done` |
+| 8 | 宿主 worker | Windows / X11：抓整屏 → 按 `region` 裁剪 → 处理 → 保存，发 `capture.done`；Wayland 不经过流水线 |
 
-**覆盖层整屏全黑、只剩十字线**：说明背景快照没画出来——要么 `captureBackground()` 失败
-（日志有"桌面快照失败"WARN，`GetDC/BitBlt/GetDIBits` 任一步失败），要么纹理上传后没在
+**覆盖层整屏全黑、只剩十字线**：说明背景快照没画出来——要么 `captureBackground()`（Windows
+GDI / X11 `XGetImage`）失败（日志有"桌面快照失败"/"XGetImage"WARN），要么纹理上传后没在
 `drawOverlay` 里 `AddImage`（检查 `backgroundTexture != 0`）。透明窗口方案已被证实会在
 hide/show 后失效，不要再改回 `GLFW_TRANSPARENT_FRAMEBUFFER`。
 
-**为什么第 6 步要先隐藏再等 100ms**：DWM 合成是异步的，`glfwHideWindow` 返回时覆盖层
-可能还没从屏幕上消失；宿主 worker 收到事件就抓屏，中间没有任何同步点。宁可慢 100ms，
-也不能把半透明遮罩截进图里。
+**为什么第 6 步要先隐藏再等 100ms**：DWM / X11 合成器的合成是异步的，`glfwHideWindow`
+返回时覆盖层可能还没从屏幕上消失；宿主 worker 收到事件就抓屏，中间没有任何同步点。
+宁可慢 100ms，也不能把半透明遮罩截进图里。
 
 ### 3.1 为什么 GLFW / 窗口延迟到第一次框选才创建
 
@@ -186,7 +201,7 @@ settings_ui 的 deinit**（实测：本插件 deinit 14ms 返回，宿主 30s+ �
 
 | key | zh-CN | en-US |
 | --- | --- | --- |
-| `region.hint`（Windows） | 单击截取窗口 · 拖拽选择区域 · Esc / 右键取消 | Click a window to capture · Drag to select · Esc / right-click to cancel |
+| `region.hint`（Windows / X11） | 单击截取窗口 · 拖拽选择区域 · Esc / 右键取消 | Click a window to capture · Drag to select · Esc / right-click to cancel |
 | `region.hint.wayland`（Linux） | 拖拽选择区域 · Esc / 右键取消 | Drag to select · Esc / right-click to cancel |
 | `overlay.size.unit` | 像素 | px |
 | `overlay.window_title` | Plugin-shot 区域选择 | Plugin-shot Region Select |
@@ -222,7 +237,8 @@ Wayland 下单击不拖 = 取消（没有窗口可截），所以用单独的 `r
 - `purpose` 为空或负载非法时安静忽略；普通 `capture.request` 触发的框选完全不变，仍然
   发带 `region` 的 `capture.request`（`smoke_region_window.ps1` 走的就是这条路径）。
 - 已经在框选时收到新的选择请求只记 DEBUG、不重开覆盖层（避免打断用户正在拖的选区）。
-- 非 Windows 平台没有 `long_capture` 消费者，purpose 选择按取消回执（避免发起方空等）。
+- 非 Windows 平台里只有 Wayland 没有 `long_capture` 消费者，purpose 选择按取消回执
+  （避免发起方空等）；**X11 与 Windows 一样支持 purpose 选择**，确认时回 `region.selected`。
 
 ## 4. 坐标语义与 DPI 实测
 
@@ -279,6 +295,19 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
    上方的显示器会让 `SM_XVIRTUALSCREEN/Y` 变成负数，代码统一按"绝对坐标 − 最小显示器
    坐标"计算，不依赖本机布局（负原点布局本机无法验证，见 §7）。
 
+**Linux/X11 的坐标语义**（`region_geometry_x11.cpp` / `region_overlay_x11.cpp`）：
+
+```
+region.x = 覆盖窗口在 root 里的位置.x + 窗口内光标坐标.x      // 不减任何原点
+region.y = 覆盖窗口在 root 里的位置.y + 窗口内光标坐标.y
+region.width / height = 选区在窗口内的宽高
+```
+
+X11 只有一块 X screen，root 原点恒为 `(0,0)`，所以没有 Windows 的"虚拟桌面原点"减法；
+X 像素就是物理像素（`Xft.dpi` 只影响字体渲染），`content scale` 只放大字号/折角。
+窗口位置用 `glfwGetWindowPos`（X11 实现是 `XTranslateCoordinates` 到 root），
+即使 WM 没按请求摆放，发布结果仍与用户在屏幕上看到的位置一致。
+
 ## 5. 交互与视觉
 
 | 输入 | 行为 |
@@ -292,7 +321,8 @@ DPI 声明前后的进程级数值（解释"为什么必须 PMv2"）：
 
 Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表）：上表的单击一行退化为
 **取消**，拖动与 Esc/右键完全相同；尺寸标签显示的是换算后的**输出像素**，与落盘文件一致
-（见 §8.3）。
+（见 §8.3）。Linux/X11 的输入行为与 Windows 完全一致（有悬停吸附与单击截窗，尺寸标签
+就是选区像素），差异只在窗口枚举的实现（见 §9.3）。
 
 视觉：整屏 51% 黑色遮罩 + 十字线 + 选区边框 + **四角主题色折角** + 顶部提示
 （`region.hint`，中文为「单击截取窗口 · 拖拽选择区域 · Esc / 右键取消」，英文为
@@ -347,6 +377,10 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | `core/theme_color` 缺失 / 不是 `#RRGGBB` | 使用默认 `#4C9AFF`；只在 debug 日志里记一句，不反复刷屏 |
 | `DwmGetWindowAttribute` 失败（合成关闭等） | 扩展帧边界退回 `GetWindowRect`；cloaked 检测失败按"未 cloaked"处理 |
 | `EnumWindows` 枚举不到任何窗口 | 悬停框为空，拖动框选仍然可用（拖动不依赖窗口枚举） |
+| X11 `XGetImage` 快照失败 / 纹理上传失败 | 只记 WARN，覆盖层退化为**纯色底 + 遮罩**；拖框/吸附/发布区域照常工作 |
+| X11 `XQueryTree` 失败或拿不到 GLFW 的 X11 Display | 候选窗口为空，悬停吸附关闭；拖动框选仍然可用 |
+| X11 窗口没有 `_NET_WM_WINDOW_TYPE`（非 EWMH 应用） | 照常作为候选（宁可多列，不漏真实窗口） |
+| X11 WM 对隐藏窗口的位置/全屏请求不生效 | 显示后按**实际窗口位置/尺寸**换算与裁剪，并在日志里打印；选区仍准确，观感需真机确认（§9.5） |
 | 框选过程中收到 `host.shutdown` / 宿主热卸载 | 事件循环退出，覆盖层按取消处理，不发布事件 |
 | 显示器几何在框选期间变化（拔屏/改分辨率） | 本次框选仍按开始时的窗口坐标结束；下次触发重新取显示器 |
 | 第一次框选时 GLFW/窗口/ImGui 初始化失败 | 放弃本次框选并记 ERROR，不发布事件；`init` 本身不会因此失败（它不碰图形栈） |
@@ -364,7 +398,12 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | 触发请求也会被流水线看到 | `{"mode":"region"}`（无 region）是"开始框选"约定；宿主流水线会**忽略**这条请求（不抓屏、不落盘、不发 `capture.*` 事件），只有本插件消费它来弹覆盖层。"框选触发顺带存一张全屏图"是旧行为，已由宿主改掉 |
 | 与其它插件共用 GLFW 全局运行时 | 见 §3.1：本插件延迟初始化、**不调用 `glfwTerminate`**。若 `settings_ui` 启动时被禁用、本插件先初始化过 GLFW 后它才被启用，它的退出唤醒可能失效（GLFW 单 helper window 的固有限制） |
 | 不提供 `shot.configurable` | 本插件没有自己的配置项：最小选区、遮罩透明度是内部常量；主题色来自**宿主**配置 `core/theme_color`（不是插件配置项）。要加插件自己的配置时再声明 `shot.configurable` |
-| Linux 只支持 Wayland 会话 | X11 会话下 `init` 记一条 WARN 后不启动覆盖层（等价于改造前"Linux 不构建"的行为）；X11 分支由后续任务补（`region_window.cpp` 里有 `// TODO:`） |
+| Linux 支持 Wayland 与 X11 两种会话 | 同一份 `.so` 同时编进两套实现，启动时按 `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE` 运行期选择（Wayland 优先）。X11 见 §9，Wayland 见 §8 |
+| X11 只支持单 X screen | 覆盖层只铺鼠标所在显示器；XQueryTree 枚举的是默认 X screen 的 root 子窗口，多 X screen（`:0.1` 等）不枚举、也不能跨 screen 覆盖。多显示器在同一 X screen 内是支持的，但一次仍只选一块屏 |
+| X11 的覆盖层由窗口管理器管理 | 用的是普通 GLFW 无边框置顶窗口（不是 override-redirect）：WM 可能加装饰/延迟摆放/改动位置。代码按**实际窗口位置**换算与裁剪，选区结果不受影响，但"是否真的全屏、是否无边框"要真机确认（§9.5） |
+| X11 下的采集依赖宿主流水线 | 本插件只发布带 `region` 的 `capture.request`（与 Windows 一致），实际抓屏由 `screen_capture` 完成。**当前仓库里的 `screen_capture` 只有 Windows 与 Wayland 实现**，X11 会话下普通框选可能停在 `capture.failed`；本插件这一侧的区域选择与事件发布是完整的（见 §9.4） |
+| X11 + XWayland 的边界 | Wayland 会话里 XWayland 应用是 X11 窗口，但本插件走 Wayland 分支（门户截图 + 自己的窗口），拿不到、也不枚举这些窗口；不要指望在 Wayland 会话里用 X11 路径去吸 XWayland 窗口 |
+| X11 窗口枚举不做子控件命中 | 与 Windows 一样只认顶层窗口；`_NET_WM_WINDOW_TYPE_*` 过滤 DOCK/TOOLTIP/MENU 等，完全透明的点击穿透窗口没有额外过滤 |
 | Wayland 无法悬停吸附 / 单击截窗 | 协议不允许枚举全局窗口、也拿不到别的窗口矩形，所以只有"拖框"一种选择方式；单击不拖 = 取消（见 §8） |
 | Wayland 多屏是一张缩放图 | portal 的 Screenshot 门户一次返回**整个桌面合成图**，覆盖层把它等比缩放显示，不能按输出分开选；坐标换算基于图像像素，因此选中的内容仍然准确 |
 | Wayland 覆盖层位置/全屏由合成器决定 | 客户端不能定位窗口；代码请求全屏并记录实际尺寸，带标题栏/未全屏时框选仍可用（坐标按实际窗口尺寸算），观感需要真机确认 |
@@ -461,9 +500,138 @@ D-Bus `CaptureRegion()` 翻译成这条事件）或桌面自定义快捷键调�
 - portal 后端差异（GNOME / KDE / wlroots）：`CaptureRegion` 的触发入口、授权拒绝时门户
   返回的错误文本（取消/拒绝靠错误码 + 文本识别，不同版本可能不同）。
 - 图像编码：超大整屏图（8K+）时 GL 纹理上传可能超过 GPU 上限（有 WARN，裁剪与落盘不受影响）。
-- X11 会话：`init` 记 WARN 后不动作，宿主其它功能不受影响。
+- X11 会话：见 §9（同一份 `.so` 里另一套实现，与 Wayland 路径互不影响）。
 
-## 9. 检查清单
+## 9. Linux（X11）
+
+X11 会话下本插件走**真正的全屏覆盖层**，交互与 Windows 一致：悬停窗口吸附、单击截窗、
+拖框、主题色折角、Esc/右键取消。平台层全部在 `*_x11.cpp`，共享的交互/绘制代码
+（`region_overlay.cpp` / `region_overlay_draw.cpp` / `region_graphics.cpp`）一行不用改。
+
+同一份 `.so` 同时编进 Wayland（门户定格图）与 X11（Xlib）两套实现，**运行期按会话类型
+二选一**——不是编译期开关，用户不需要为不同会话装两份插件。
+
+### 9.1 依赖与构建
+
+```bash
+sudo apt-get install -y libx11-dev libportal-dev libgl1-mesa-dev
+cmake -S . -B build/Linux -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/Linux --target region_selector
+```
+
+- `pkg_check_modules(SHOT_X11 REQUIRED x11)`：缺 `libx11-dev` 时**配置阶段直接失败**，
+  CMake 的 `FATAL_ERROR` 里写明 Ubuntu 包名。用到的是 `XGetImage` / `XQueryTree` /
+  `XTranslateCoordinates` / `XQueryPointer` / `XGetWindowProperty` / `XInternAtom`。
+- **不需要 `libxrandr-dev`**：显示器布局交给 GLFW（内部用 RandR），本插件只包含
+  `<X11/Xlib.h>`；`glfw3native.h` 用 `GLFW_NATIVE_INCLUDE_NONE` 关掉了它默认带出的
+  `<X11/extensions/Xrandr.h>`。运行期 GLFW / X 服务器仍然需要 RandR 扩展（正常桌面都有）。
+- `libportal-dev` 仍然要装：Wayland 实现在同一个 `.so` 里，configure 阶段就要求它
+  （见 §8.1）。**即使只用 X11 会话也不能省**——否则 Wayland 用户装同一份包时缺依赖。
+- GLFW 必须带 **X11 后端**（vcpkg 的 glfw3 端口在 Linux 默认同时编 X11/Wayland）。
+  只带 Wayland 后端的 GLFW 在 X11 会话里 `glfwInit` 失败：本插件记 ERROR、放弃本次框选，
+  不会崩溃。
+- 运行期需要 `DISPLAY` 指向可用的 X 服务器；纯无显示会话（headless）第一次框选会失败并
+  记日志，插件加载本身不受影响。
+
+### 9.2 X11 vs Wayland 的运行期选择
+
+`RegionWindow::start()` 里判定一次，整个进程生命周期不变（显示服务器不会在运行中切换）：
+
+```
+WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写）  → Wayland 分支
+其它情况                                                               → X11 分支
+```
+
+- **Wayland 优先**：Wayland 会话里 XWayland 也可能导出 `DISPLAY`，但能覆盖所有输出、
+  读全局光标的是 Wayland 门户路径，不能因为 `DISPLAY` 存在就误判成 X11。
+- 判定结果与后端会写进日志（`region_selector：Linux 会话 = X11/...`），真机排查
+  "为什么没弹覆盖层"先看这一行。
+- 判定只在插件 `init` 时做一次；`WAYLAND_DISPLAY` 之后被修改不会切换（与显示服务器
+  生命周期一致）。
+
+### 9.3 覆盖层、背景快照与窗口命中
+
+**覆盖层窗口**（`region_window.cpp` + `region_overlay_x11.cpp`）：
+
+1. 与其它平台一样**延迟到第一次框选**才 `glfwInit` / 建窗口（原因见 §3.1）；
+2. 窗口 hint：无边框、`GLFW_FLOATING`（`_NET_WM_STATE_ABOVE`）、`GLFW_FOCUS_ON_SHOW`
+   （Esc 需要键盘焦点）、`GLFW_RESIZABLE=FALSE`；**不透明**，不用
+   `GLFW_TRANSPARENT_FRAMEBUFFER`（AGENTS §7 坑 #2）；
+3. 光标所在显示器：`XQueryPointer` 取 root 坐标（X 像素 = 物理像素），再在 GLFW 的
+   显示器矩形里找包含它的那块（GLFW 在 X11 下用 RandR 拿输出布局）；
+4. 隐藏状态下 `glfwSetWindowSize/glfwSetWindowPos` 铺满整块显示器（含任务栏）。
+   **不做 Windows 的 +1px**：那是 Windows 全屏判定的专有坑；也不用
+   `glfwSetWindowMonitor`（会走 WM 的全屏状态切换）；
+5. 隐藏状态下先渲染两帧再 `glfwShowWindow`（与 Windows 同一原因：避免第一帧未渲染内容
+   被合成上去）；显示后把**实际**窗口几何写进日志。
+
+**背景快照**（`region_background_x11.cpp`）：
+
+- 用 `glfwGetX11Display()` 拿 GLFW 的 X11 `Display`，对默认 screen 的 root 窗口做
+  `XGetImage(display, root, 0, 0, DisplayWidth, DisplayHeight, AllPlanes, ZPixmap)`，
+  抓**整个 X screen**（不是只抓当前显示器）；
+- 32bpp 且字节序与客户端一致时按行用 32 位字直接解包，通道按 `red_mask/green_mask/
+  blue_mask` 归一化；16/24bpp 或大端等少见格式退回 `XGetPixel`（慢但正确）；
+- 上传成 GL 纹理后立即释放临时像素（不常驻）。绘制时按覆盖层窗口在 root 里的**实际
+  位置/尺寸**取 UV 子矩形，所以 WM 把窗口挪几像素也不会和桌面错位；
+- 失败（`XGetImage` 返回空 / 纹理超上限）只 WARN，覆盖层退化为**纯色底 + 遮罩**，
+  拖框/吸附/发布区域都不受影响（需求要求）。
+
+**窗口命中**（`window_target_x11.cpp`）：
+
+1. `XQueryTree(root)` 取 root 的直接子窗口；协议规定顺序是**底 → 顶**，代码反向遍历，
+   得到与 Windows 一致的"最上层优先"列表；
+2. reparenting WM（Mutter / KWin / Xfwm）会把客户端包进 frame：先按 `WM_STATE` 属性
+   找到 client（找不到就用 root 子窗口自己），据此：
+   - 排除覆盖层自己（frame 与 client 都排除，否则永远命中自己的全屏矩形）；
+   - 用 client 上的 `_NET_WM_WINDOW_TYPE` 做类型过滤；
+3. 排除：覆盖层自身、`map_state != IsViewable`（最小化/其它虚拟桌面）、`InputOnly`、
+   零尺寸，以及 `_NET_WM_WINDOW_TYPE` 里的 DESKTOP / DOCK / TOOLBAR / MENU / UTILITY /
+   SPLASH / DROPDOWN_MENU / POPUP_MENU / TOOLTIP / NOTIFICATION / COMBO / DND
+   （与 Windows 的 `WS_EX_TOOLWINDOW` / cloaked 过滤对应）；
+4. 矩形用 `XTranslateCoordinates(frame → root)` 换算到 root 坐标，再裁剪到 X screen；
+   命中测试取第一个包含光标的窗口。枚举节流与其他平台相同（30ms）。
+
+### 9.4 产出事件
+
+| 触发 | 确认后发布 | 负载 |
+| --- | --- | --- |
+| 普通 `capture.request`（`{"mode":"region"}`） | `capture.request` | `{"mode":"region","region":{x,y,width,height}}`（X screen 物理像素） |
+| `region.select.request`（`{"purpose":"long_capture"}`） | `region.selected` | `{"purpose":"long_capture","region":{...}}`，取消时 `{"purpose":...,"cancelled":true}` |
+
+- 与 Windows 相同：先隐藏覆盖层 + `glfwPollEvents`，等 100ms（`kHideSettleDelayMs`）
+  让 X11 合成器把遮罩从画面上拿掉，再发布。
+- 取消（Esc / 右键 / 拖动选区任一边 < 8px / 无窗口时单击）不发布普通框选事件；
+  purpose 选择回 `cancelled:true`。
+- **注意**：普通框选发布的是 `capture.request`，真正的抓屏由宿主的 `screen_capture`
+  完成。当前仓库里 `screen_capture` 只有 Windows 与 Wayland 实现，**X11 抓屏尚未实现**，
+  所以 X11 会话下普通框选的端到端链路（选区 → 抓屏 → 落盘）暂时会停在
+  `capture.failed`。本插件的区域选择、坐标与事件发布是完整的；等 `screen_capture`
+  补 X11 分支后即可闭环（purpose 选择由消费者自己采集，不受此限制）。
+- 本插件不自己写 PNG（不像 Wayland 的 B 方案）：X11 有真正的屏幕访问能力，交给宿主
+  流水线才能统一经过 `image_processor` 链。
+
+### 9.5 需要真机验证（本机没有 X11 桌面）
+
+> 下面的条目**都还没有在真实 X11 会话跑过**。代码按 X11 协议与 EWMH 写，失败路径只记
+> WARN、不影响框选；真机结果出来后再更新本节（不要在注释/文档里写"已验证"）。
+
+- 覆盖层在 GNOME/KDE/Xfwm 等 WM 下是否真的无边框、铺满、置顶并拿到键盘焦点
+  （`GLFW_FOCUS_ON_SHOW` 可能被焦点窃取保护忽略，Esc 需要焦点）；
+- WM 对隐藏窗口 `setSize/setPos` 的处理（可能延迟到 map 时才摆放）：代码按显示后的
+  实际窗口位置/尺寸换算，理论上选区准确，但背景 UV 裁剪与选框对齐需实测；
+- `XGetImage` 在不同 depth/visual（24/30bpp、compositing 开关、Xvfb）下的像素解包；
+- reparenting frame 的 Z 序与 `_NET_WM_WINDOW_TYPE` 过滤在 GNOME/KDE 下的实际效果
+  （桌面窗口、面板、通知、工具提示是否都正确跳过）；
+- 多显示器在同一 X screen 内时，只覆盖鼠标所在显示器；跨屏拖选仍受 §7 的"单显示器"
+  限制。**多 X screen 不支持**；
+- 分数缩放 / 大字体：`content scale` 只影响字号，X 像素即物理像素；150%/200% 下的
+  观感与 `glfwGetMonitorContentScale` 的返回值需实测；
+- 与 `screen_capture` 的 X11 分支联调（见 §9.4）；
+- XWayland 应用在**X11 会话**里是普通 X11 窗口，可正常命中；在 **Wayland 会话**里
+  XWayland 窗口不会被枚举（走 Wayland 分支），这是平台边界，不是 bug。
+
+## 10. 检查清单
 
 - [ ] `region` 的 x/y/width/height 都是**物理虚拟桌面像素**，且减过虚拟桌面原点？
 - [ ] content scale 只用于字号/折角/边框，没有乘进区域坐标？
@@ -490,3 +658,12 @@ D-Bus `CaptureRegion()` 翻译成这条事件）或桌面自定义快捷键调�
 - [ ] Wayland：没有调用任何全局窗口枚举（悬停吸附关闭、单击=取消、Wayland 的错误只 WARN/静默）？
 - [ ] Wayland：门户不可用 WARN 且不弹窗不发事件；用户取消/拒绝/超时安静放弃？
 - [ ] Wayland：输出目录读的是 `image_saver.main/directory`，为空回退 Pictures，文件名 `shot_YYYYMMDD_HHMMSS.png`？
+- [ ] X11：`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland` 判定优先于 `DISPLAY`（XWayland 不会被误判成 X11 会话）？
+- [ ] X11：覆盖层用的是**不透明** GLFW 窗口（没有 `GLFW_TRANSPARENT_FRAMEBUFFER`），背景是 `XGetImage` 快照？
+- [ ] X11：快照失败只 WARN，覆盖层退化为纯色底 + 遮罩，框选仍可用？
+- [ ] X11：窗口枚举用 `XQueryTree(root)` 且**反向**遍历（底 → 顶），矩形用 `XTranslateCoordinates` 到 root？
+- [ ] X11：排除了覆盖层自己（含 reparenting WM 的 frame）与 `_NET_WM_WINDOW_TYPE_TOOLTIP/DOCK/...` 类型？
+- [ ] X11：`region` 是 root 坐标（原点 (0,0)），没有减任何"虚拟桌面原点"、没有乘 content scale？
+- [ ] X11：普通框选发 `capture.request`，purpose 选择发 `region.selected`（取消带 `cancelled:true`）？
+- [ ] X11：确认时序仍是"隐藏 → 等 100ms → 发布"，与 Windows 一致？
+- [ ] X11：Wayland 实现文件（`*_wayland.cpp` / `region_portal.cpp`）没有改动（两套平台函数用不同名字，避免重复符号）？

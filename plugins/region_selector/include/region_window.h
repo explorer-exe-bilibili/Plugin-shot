@@ -36,7 +36,11 @@ namespace region_selector {
  *     见 README「Linux / Wayland」），整张图等比缩放居中显示；Wayland 不允许全局
  *     窗口枚举，所以没有悬停吸附、单击不拖 = 取消；确认后直接从内存裁剪、写 PNG、
  *     发布 `capture.done`，**不发布 `capture.request`**（不第二次采集/授权）。
- *   - 其它平台由 CMake 跳过；X11 会话下插件加载但不启动覆盖层（X11 分支待补）。
+ *   - Linux / X11：真正的全屏覆盖层（XGetImage 整屏快照当背景），悬停窗口吸附、
+ *     单击截窗、拖框、主题色折角、Esc/右键取消与 Windows 一致；确认后发布带 `region`
+ *     的 `capture.request`，或对 `region.select.request` 回 `region.selected`。
+ *     Wayland 与 X11 在同一份 .so 里，启动时按环境变量运行期二选一（见 README）。
+ *   - 其它平台由 CMake 跳过。
  *
  * GLFW / OpenGL / ImGui 类型全部关在 Impl 里（内部头 region_window_impl.h），
  * 公共头不包含任何图形库或平台头文件。

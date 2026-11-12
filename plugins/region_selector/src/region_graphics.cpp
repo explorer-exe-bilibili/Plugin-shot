@@ -37,8 +37,8 @@ const char* const kFontCandidates[] = {
     "C:\\Windows\\Fonts\\simhei.ttf",
     "C:\\Windows\\Fonts\\simsun.ttc",
 #else
-    // Linux（Wayland）：Noto CJK 是 Ubuntu / GNOME 默认中文字体；文泉驿是精简安装
-    // 常见的回退。都没有时退回内置字体，只是中文显示成方块。
+    // Linux（Wayland / X11 共用）：Noto CJK 是 Ubuntu / GNOME 默认中文字体；文泉驿是
+    // 精简安装常见的回退。都没有时退回内置字体，只是中文显示成方块。
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",

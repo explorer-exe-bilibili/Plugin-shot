@@ -17,13 +17,22 @@
 //    region_geometry.cpp —— Windows：显示器矩形 / 光标 / 物理虚拟桌面坐标换算
 //    window_target.cpp   —— Windows：顶层窗口枚举 / Z 序 / DWM 边界 / 命中测试
 //
-//  Linux / Wayland 分支（只在 UNIX AND NOT APPLE 构建，文件以 _wayland 结尾）：
+//  Linux 分支（只在 UNIX AND NOT APPLE 构建）同时编进两套平台实现，运行期按
+//  LinuxSessionBackend 二选一（见 README「Linux（X11）」）：
+//
+//  Wayland（文件以 _wayland 结尾）：
 //    region_portal.cpp / region_image.cpp / region_output_linux.cpp
 //                        —— portal 截图、PNG 解码裁剪、输出目录与文件名
 //    region_geometry_wayland.cpp / region_background_wayland.cpp
 //                        —— 显示器几何、portal 截图转纹理（与 Windows 同名成员函数的另一实现）
 //    region_overlay_wayland.cpp —— 等比适配映射 + 内存裁剪写盘 + 发布 capture.done
 //    window_target_wayland.cpp  —— 空实现（Wayland 不允许全局窗口枚举，悬停吸附关闭）
+//
+//  X11（文件以 _x11 结尾；与 Wayland 用不同的成员函数名，避免同一符号两份定义）：
+//    region_geometry_x11.cpp   —— X screen 几何 / 光标 / 显示器矩形 + 实测日志
+//    region_background_x11.cpp —— XGetImage 整屏快照 → GL 纹理
+//    window_target_x11.cpp     —— XQueryTree 顶层窗口枚举 / EWMH 类型过滤 / 命中测试
+//    region_overlay_x11.cpp    —— 覆盖层定位 / 实际几何日志 / 确认后的发布（与 Windows 同一时序）
 // ============================================================================
 
 #include <chrono>
@@ -110,7 +119,7 @@ struct QueuedEvent {
     std::string payload;
 };
 
-/** @brief 物理像素矩形：绝对屏幕坐标（虚拟桌面坐标系里的一块，原点不一定是 0,0）。 */
+/** @brief 物理像素矩形：绝对屏幕坐标（Windows = 虚拟桌面坐标；X11 = root 坐标，原点恒为 (0,0)）。 */
 struct ScreenRect {
     int x = 0;
     int y = 0;
@@ -118,10 +127,9 @@ struct ScreenRect {
     int height = 0;
 };
 
-/**
- * @brief 一次框选的交互状态（只在 UI 线程读写）。
+/** @brief 一次框选的交互状态（只在 UI 线程读写）。
  *
- * 位置都是**覆盖窗口内容坐标**（物理像素，与窗口大小同一套单位；本机实测
+ * 位置都是**覆盖窗口内容坐标**（物理像素，与窗口大小同一套单位；X11 / Windows 实测
  * framebuffer == window size，所以直接等于绘制用的像素坐标）。
  */
 struct DragState {
@@ -153,6 +161,18 @@ struct HoverBox {
     float width = 0.0f;        /**< 当前显示矩形宽度。 */
     float height = 0.0f;       /**< 当前显示矩形高度。 */
     std::chrono::steady_clock::time_point lastTick; /**< 上一帧动画时刻（算 dt 用）。 */
+};
+
+/**
+ * @brief Linux 会话的显示后端：运行期二选一（见 README「Linux（X11）」）。
+ *
+ * Linux 的同一份 `.so` 同时编进 Wayland 与 X11 两套平台实现，启动时按环境变量
+ * 决定走哪套（显示服务器不会在进程运行期切换，所以判定一次即可）。Wayland 优先：
+ * Wayland 会话里 XWayland 也可能导出 DISPLAY，但能真正覆盖所有输出的是门户路径。
+ */
+enum class LinuxSessionBackend {
+    Wayland, /**< `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland`：门户定格图 + 自有窗口拖选。 */
+    X11,     /**< 其它会话：XGetImage 快照 + 全屏覆盖层 + XQueryTree 窗口命中。 */
 };
 
 /**
@@ -199,6 +219,10 @@ struct RegionWindow::Impl {
     std::uint32_t themeColorRgb = 0x4C9AFFu;  // 主题色（0xRRGGBB，每次显示读一次配置）
     float uiScale = 1.0f;              // 当前显示器 content scale：只放大字号与装饰
     ScreenRect monitorRect;            // 当前覆盖的显示器矩形（绝对物理像素）
+#if defined(__linux__)
+    // Linux 运行期后端：start() 里按环境变量判定一次，之后整个会话不变。
+    LinuxSessionBackend linuxBackend = LinuxSessionBackend::Wayland;
+#endif
     // 触发瞬间的桌面快照纹理：覆盖层窗口是不透明的，靠它当"背景画面"，
     // 这样就不依赖透明窗口（透明帧缓冲在 hide/show 之后会丢 DWM 合成，导致黑屏）。
     unsigned int backgroundTexture = 0;
@@ -289,6 +313,26 @@ struct RegionWindow::Impl {
     std::vector<std::uint8_t> sourcePixels;
     int sourceWidth = 0;
     int sourceHeight = 0;
+
+    // ---- Linux / X11 分支（只由 *_x11.cpp 实现；与上面的 Wayland 成员函数不同名） ----
+    /** @brief 光标所在显示器：XQueryPointer 取 root 坐标 + GLFW 显示器矩形。 */
+    bool x11MonitorUnderCursor(ScreenRect& out, float& contentScale) const;
+    /** @brief 左键当前是否按着（XQueryPointer 的 Button1Mask）：覆盖层显示前判 waitRelease。 */
+    bool x11LeftButtonHeld() const;
+    /** @brief X11 只有一块 X screen，root 原点就是 (0,0)；保留接口与 Windows 对称。 */
+    void x11VirtualDesktopOrigin(int& x, int& y) const;
+    /** @brief 覆盖层自身的 XID（glfwGetX11Window）；枚举时必须排除。 */
+    std::uintptr_t x11NativeWindowHandle() const;
+    /** @brief 把 X screen 尺寸与各显示器矩形写进日志（首次框选时一次）。 */
+    void x11LogMonitorMetrics() const;
+    /** @brief XGetImage 抓整块 X screen 并上传成 GL 纹理；失败时只 WARN、覆盖层退化为纯色底。 */
+    bool x11CaptureBackground();
+    /** @brief 把隐藏的覆盖层窗口搬到目标显示器并铺满（X11 客户端可以自己定位）。 */
+    void x11PlaceOverlay(const ScreenRect& monitor);
+    /** @brief 显示后记录实际窗口几何：WM 可能不按请求摆放，坐标一律按实际位置换算。 */
+    void x11LogOverlayGeometry() const;
+    /** @brief X11 确认框选：内容坐标 → X screen 坐标，然后按 Windows 同一时序发布。 */
+    void x11CommitSelection(int localX, int localY, int localWidth, int localHeight);
 #endif
 };
 

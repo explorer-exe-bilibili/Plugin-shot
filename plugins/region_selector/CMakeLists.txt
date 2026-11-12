@@ -23,14 +23,26 @@
 #    3. 确认后直接从内存里的截图像素裁剪、写 PNG、发布 capture.done
 #       {path,width,height,processors:0}——不再第二次采集、不再弹第二次授权。
 #  没有窗口悬停吸附（Wayland 拿不到全局窗口列表），单击不拖 = 取消，Esc/右键取消。
-#  非 Wayland 会话（X11）下插件加载但不启动覆盖层，X11 分支由后续任务补。
+#
+#  ── Linux / X11 ───────────────────────────────────────────────────────
+#  真正的全屏覆盖层：XGetImage 抓整块 X screen 当背景，GLFW 无边框置顶窗口铺满
+#  鼠标所在显示器；悬停吸附 / 单击截窗 / 拖框 / 主题色折角 / Esc、右键取消与
+#  Windows 完全一致。窗口命中用 XQueryTree 遍历 root 子窗口 + EWMH 类型过滤
+#  （window_target_x11.cpp）。确认后发布带 region 的 capture.request（普通框选）
+#  或 region.selected（purpose 选择）。
+#  依赖系统包 libx11-dev（pkg-config 模块 x11）。**不需要 xrandr**：显示器布局交给
+#  GLFW，X11 的 native 头用 GLFW_NATIVE_INCLUDE_NONE 关掉了 Xrandr 头依赖。
+#  同一份 .so 同时编 Wayland 与 X11 两套实现，启动时按 WAYLAND_DISPLAY /
+#  XDG_SESSION_TYPE 运行期选择（见 README「Linux（X11）」）。缺任一依赖都会在
+#  configure 阶段 FATAL_ERROR，并给出 Ubuntu 包名。
 #
 #  窗口/上下文/事件循环：glfw3（与 settings_ui 同一套依赖）。
 #  渲染：vcpkg 的 imgui 静态库 —— glfw-binding + opengl3-binding 已经把
 #  imgui_impl_glfw.cpp / imgui_impl_opengl3.cpp 编进 imgui.lib，所以这里只需要
 #  find_package(imgui) 再链接 imgui::imgui，不用把后端源码抄进本工程。
 #  JSON：nlohmann-json（负载解析 + 组包，header-only）。
-#  Linux 截图：libportal（pkg-config 模块 libportal-1.0）+ stb（解码/裁剪/编码）。
+#  Linux 截图：libportal（pkg-config 模块 libportal-1.0）+ stb（解码/裁剪/编码）；
+#  X11 快照/窗口枚举：libX11（XGetImage / XQueryTree / XTranslateCoordinates）。
 #
 #  构建方式一（宿主仓库内）：
 #    根 CMakeLists 用 file(GLOB plugins/*/CMakeLists.txt) 自动纳入本工程，
@@ -43,13 +55,13 @@
 
 set(SHOT_PLUGIN_NAME region_selector)
 
-# 平台：Windows 与 Linux（Wayland）有实现；macOS 与其它平台直接跳过，不产出
-# 未验证的伪实现。被宿主 add_subdirectory 时用 PARENT_SCOPE 告诉根工程"跳过"。
+# 平台：Windows 与 Linux（Wayland / X11 两套实现）有实现；macOS 与其它平台直接跳过，
+# 不产出未验证的伪实现。被宿主 add_subdirectory 时用 PARENT_SCOPE 告诉根工程"跳过"。
 if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
     if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         set(SHOT_PLUGIN_SKIPPED TRUE PARENT_SCOPE)
     endif()
-    message(STATUS "region_selector：当前平台没有实现（Windows / Linux Wayland 之外跳过）")
+    message(STATUS "region_selector：当前平台没有实现（Windows / Linux 之外跳过）")
     return()
 endif()
 
@@ -74,8 +86,9 @@ find_package(imgui CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 
-# 平台源文件与系统库：共享的窗口/交互/绘制代码两个平台都用；
-# Windows 额外编译 Win32 几何、GDI 快照与窗口枚举，Linux 额外编译 Wayland 实现。
+# 平台源文件与系统库：共享的窗口/交互/绘制代码所有平台都用；
+# Windows 额外编译 Win32 几何、GDI 快照与窗口枚举；Linux 同时编译 Wayland（门户）
+# 与 X11（Xlib）两套实现，运行期按会话类型二选一。
 set(_region_selector_sources
     src/plugin_entry.cpp
     src/region_window.cpp
@@ -103,16 +116,37 @@ if(WIN32)
     )
     list(APPEND _region_selector_libraries opengl32 user32 dwmapi)
 else()
-    # Linux / Wayland：libportal 提供 xdg-desktop-portal 的 Screenshot 门户调用
-    # （系统包 libportal-dev，pkg-config 模块名 libportal-1.0）；stb 负责 PNG 解码、
-    # 裁剪与编码（vcpkg 清单里已有，header-only）；OpenGL::GL 提供 GL 1.x 入口。
+    # Linux：Wayland 与 X11 两套平台实现都编进同一个 .so（运行期按会话类型选择）。
+    # 系统依赖用 pkg-config 查找；**缺依赖在 configure 阶段就 FATAL_ERROR**，并直接
+    # 给出 Ubuntu 包名——运行期静默降级会变成"插件加载了但按了没反应"，很难排查。
     find_package(PkgConfig REQUIRED)
     # 模块名在不同发行版里不一样：Ubuntu 24.04 的 libportal-dev 提供 libportal.pc，
     # 上游/其它发行版可能是 libportal-1.0.pc，所以两个都试。
-    pkg_search_module(LIBPORTAL REQUIRED IMPORTED_TARGET libportal libportal-1.0)
+    pkg_search_module(LIBPORTAL QUIET IMPORTED_TARGET libportal libportal-1.0)
+    if(NOT LIBPORTAL_FOUND)
+        message(FATAL_ERROR
+            "region_selector 需要 libportal（pkg-config 模块 libportal 或 libportal-1.0），"
+            "但系统里找不到。Ubuntu/Debian: sudo apt-get install -y libportal-dev")
+    endif()
+    # X11：XGetImage / XQueryTree / XTranslateCoordinates。模块名 x11 由 libx11-dev 提供。
+    pkg_check_modules(SHOT_X11 QUIET IMPORTED_TARGET x11)
+    # glfw3native.h（GLFW_EXPOSE_NATIVE_X11）会声明 RRCrtc/RROutput 并拉 <X11/extensions/Xrandr.h>，
+    # 所以头文件检查之外还要 libxrandr-dev；不链 Xrandr 函数，只借它的类型。
+    pkg_check_modules(SHOT_XRANDR QUIET IMPORTED_TARGET xrandr)
+    if(NOT SHOT_X11_FOUND)
+        message(FATAL_ERROR
+            "region_selector 需要 X11 开发库（pkg-config 模块 x11），但系统里找不到。"
+            "Ubuntu/Debian: sudo apt-get install -y libx11-dev")
+    endif()
+    if(NOT SHOT_XRANDR_FOUND)
+        message(FATAL_ERROR
+            "region_selector 的 X11 分支需要 Xrandr 头（glfw3native.h 声明 RROutput），"
+            "但系统里找不到。Ubuntu/Debian: sudo apt-get install -y libxrandr-dev")
+    endif()
     find_package(Stb REQUIRED)
     find_package(OpenGL REQUIRED)
     list(APPEND _region_selector_sources
+         # Wayland（方案 B）：portal 截图 / 定格图映射 / 落盘
          src/region_portal.cpp
          src/region_image.cpp
          src/region_output_linux.cpp
@@ -120,8 +154,14 @@ else()
          src/region_background_wayland.cpp
          src/region_overlay_wayland.cpp
          src/window_target_wayland.cpp
+         # X11：X screen 几何 / XGetImage 快照 / XQueryTree 枚举 / 覆盖层提交
+         src/region_geometry_x11.cpp
+         src/region_background_x11.cpp
+         src/region_overlay_x11.cpp
+         src/window_target_x11.cpp
     )
-    list(APPEND _region_selector_libraries PkgConfig::LIBPORTAL OpenGL::GL)
+    list(APPEND _region_selector_libraries PkgConfig::LIBPORTAL PkgConfig::SHOT_X11
+         PkgConfig::SHOT_XRANDR OpenGL::GL)
     # stb 是 header-only：vcpkg 的 FindStb.cmake 只给包含目录，没有导入目标。
     list(APPEND _region_selector_include_dirs ${Stb_INCLUDE_DIR})
 endif()

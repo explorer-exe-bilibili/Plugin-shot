@@ -19,9 +19,13 @@
 // 绘制全部在 region_overlay_draw.cpp：本文件只维护"当前应该画哪个矩形"的状态。
 //
 // 坐标：drag 里存的是窗口内容坐标（物理像素）。绘制用 framebuffer 坐标，两者在
-// Windows PMv2 下相等（实测 2560x1600 == 2560x1600）；绘制侧仍按 ActualScale 换算一次，
-// 万一将来窗口被系统缩放也不会画歪。content scale 只放大字号与折角/边框这类装饰，
-// 绝不乘进区域坐标。
+// Windows PMv2 与 X11 下相等（实测 2560x1600 == 2560x1600）；绘制侧仍按 ActualScale
+// 换算一次，万一将来窗口被系统缩放也不会画歪。content scale 只放大字号与折角/边框
+// 这类装饰，绝不乘进区域坐标。
+//
+// 悬停枚举按平台层分派：Windows 走 EnumWindows + DWM 边界；X11 走 XQueryTree +
+// EWMH 类型过滤；Wayland 恒为空列表（协议不允许枚举，吸附关闭）。交互代码本身与
+// 平台无关，两种新会话共用。X11 的鼠标/键盘同样用 GLFW 轮询（覆盖层拿焦点）。
 
 #include <algorithm>
 #include <chrono>
@@ -119,18 +123,29 @@ void RegionWindow::Impl::loadThemeColor() {
 // ---------------------------------------------------------------------------
 void RegionWindow::Impl::updateHover() {
     if (window == nullptr || overlayHwnd == 0) {
-        // 拿不到自己的 HWND 时宁可关掉吸附：否则枚举结果里可能包含覆盖层自己，
+        // 拿不到自己的原生句柄时宁可关掉吸附：否则枚举结果里可能包含覆盖层自己，
         // 选框会永远吸附在一块全屏矩形上。拖动框选不受影响。
         // Wayland 分支恒为这种情况（nativeWindowHandle() 返回 0，且协议不允许全局
-        // 窗口枚举）：悬停吸附关闭，单击不拖 = 取消。
+        // 窗口枚举）：悬停吸附关闭，单击不拖 = 取消。X11 下句柄非 0，走 XQueryTree。
         return;
     }
     const auto now = std::chrono::steady_clock::now();
-    // 最多每 30ms 枚举一次：覆盖层每帧 120Hz，逐帧 EnumWindows + DWM 查询上百个窗口
-    // 会白白吃掉 UI 线程。30ms 的 hover 延迟用户感觉不出来。
+    // 最多每 30ms 枚举一次：覆盖层每帧 120Hz，逐帧枚举顶层窗口（Windows 是
+    // EnumWindows + DWM 查询，X11 是 XQueryTree + X 属性查询）会白白吃掉 UI 线程。
+    // 30ms 的 hover 延迟用户感觉不出来。
     if (!windowScanValid ||
         now - lastWindowScan >= std::chrono::milliseconds(kWindowScanIntervalMs)) {
+#if defined(__linux__)
+        // Linux 两套实现都编进来了：运行期按会话类型调用对应的窗口枚举。
+        if (linuxBackend == LinuxSessionBackend::X11) {
+            windowTargets = listWindowTargetsX11(overlayHwnd);
+        } else {
+            // Wayland：空实现（协议不允许枚举），返回空列表。
+            windowTargets = listWindowTargets(overlayHwnd);
+        }
+#else
         windowTargets = listWindowTargets(overlayHwnd);
+#endif
         lastWindowScan = now;
         windowScanValid = true;
     }

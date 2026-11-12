@@ -15,7 +15,10 @@
 //
 // Linux / Wayland：背景是一张等比缩放居中显示的 portal 截图，ImGui 坐标就是窗口内容
 // 坐标（framebuffer 比例由后端在投影里处理），换算系数因此恒为 1；尺寸标签显示的是
-// 换算后的**截图图像像素**，与落盘文件一致。Windows 分支的绘制代码保持不变。
+// 换算后的**截图图像像素**，与落盘文件一致。
+// Linux / X11：背景是整块 X screen 的 root 快照，按覆盖层窗口在 root 里的实际位置取
+// UV 子矩形绘制；窗口像素就是输出像素，尺寸标签直接显示选区大小。Windows 分支的绘制
+// 代码保持不变。
 
 #include <algorithm>
 #include <cfloat>
@@ -158,9 +161,49 @@ void RegionWindow::Impl::drawOverlay() const {
         const ImVec2 backgroundMax(origin.x + static_cast<float>(backgroundWidth),
                                    origin.y + static_cast<float>(backgroundHeight));
         draw->AddImage(static_cast<ImTextureID>(backgroundTexture), origin, backgroundMax);
+#elif defined(__linux__)
+        if (linuxBackend == LinuxSessionBackend::X11) {
+            // X11：纹理是**整个 X screen**的 root 快照；覆盖层窗口只盖一块显示器，所以
+            // 按窗口在 root 里的实际位置/尺寸取 UV 子矩形。用实际窗口位置（而不是
+            // monitorRect）是为了 WM 调整过窗口时也不与桌面错位。
+            int windowX = 0;
+            int windowY = 0;
+            int windowWidth = 0;
+            int windowHeight = 0;
+            glfwGetWindowPos(window, &windowX, &windowY);
+            glfwGetWindowSize(window, &windowWidth, &windowHeight);
+            if (backgroundWidth > 0 && backgroundHeight > 0 && windowWidth > 0 &&
+                windowHeight > 0) {
+                const auto toU = [this](int x) {
+                    return std::clamp(static_cast<float>(x) /
+                                          static_cast<float>(backgroundWidth),
+                                      0.0f, 1.0f);
+                };
+                const auto toV = [this](int y) {
+                    return std::clamp(static_cast<float>(y) /
+                                          static_cast<float>(backgroundHeight),
+                                      0.0f, 1.0f);
+                };
+                const ImVec2 uvMin(toU(windowX), toV(windowY));
+                const ImVec2 uvMax(toU(windowX + windowWidth), toV(windowY + windowHeight));
+                draw->AddImage(static_cast<ImTextureID>(backgroundTexture), origin,
+                               ImVec2(origin.x + static_cast<float>(windowWidth),
+                                      origin.y + static_cast<float>(windowHeight)),
+                               uvMin, uvMax);
+            }
+        } else {
+            // Wayland：整张 portal 截图（可能是多显示器合成图）等比缩放后居中显示，
+            // 留出的黑边也在窗口内；布局每帧按实际窗口尺寸重算（合成器可能改变窗口大小）。
+            const WaylandLayout layout = overlayLayout();
+            if (layout.width > 0.0f && layout.height > 0.0f) {
+                const ImVec2 backgroundMin(origin.x + layout.offsetX, origin.y + layout.offsetY);
+                const ImVec2 backgroundMax(backgroundMin.x + layout.width,
+                                           backgroundMin.y + layout.height);
+                draw->AddImage(static_cast<ImTextureID>(backgroundTexture), backgroundMin,
+                               backgroundMax);
+            }
+        }
 #else
-        // Wayland：整张 portal 截图（可能是多显示器合成图）等比缩放后居中显示，
-        // 留出的黑边也在窗口内；布局每帧按实际窗口尺寸重算（合成器可能改变窗口大小）。
         const WaylandLayout layout = overlayLayout();
         if (layout.width > 0.0f && layout.height > 0.0f) {
             const ImVec2 backgroundMin(origin.x + layout.offsetX, origin.y + layout.offsetY);
@@ -168,6 +211,14 @@ void RegionWindow::Impl::drawOverlay() const {
                                        backgroundMin.y + layout.height);
             draw->AddImage(static_cast<ImTextureID>(backgroundTexture), backgroundMin,
                            backgroundMax);
+        }
+#endif
+    } else {
+#if defined(__linux__)
+        // X11 快照失败时这里补一块纯色底（需求：失败退化为纯色底 + 遮罩；WARN 在
+        // region_background_x11.cpp 里）。Wayland 没有截图就不会显示覆盖层，走不到这里。
+        if (linuxBackend == LinuxSessionBackend::X11) {
+            draw->AddRectFilled(origin, bottomRight, IM_COL32(32, 32, 32, 255));
         }
 #endif
     }
@@ -194,13 +245,22 @@ void RegionWindow::Impl::drawOverlay() const {
 #if defined(_WIN32)
             sizeWidth = localWidth;
             sizeHeight = localHeight;
+#elif defined(__linux__)
+            if (linuxBackend == LinuxSessionBackend::X11) {
+                // X11：窗口像素就是最终输出像素（没有缩放/裁剪），直接显示选区尺寸。
+                sizeWidth = localWidth;
+                sizeHeight = localHeight;
+            } else {
+                // Wayland：标签显示换算到截图图像像素的尺寸：等比缩放后窗口像素 ≠ 最终
+                // 输出像素，用户看到的数字必须和落盘文件一致（落在黑边上的部分不计）。
+                const ImageRect imageRect =
+                    selectionToImagePixels(localX, localY, localWidth, localHeight);
+                sizeWidth = imageRect.width;
+                sizeHeight = imageRect.height;
+            }
 #else
-            // 标签显示换算到截图图像像素的尺寸：等比缩放后窗口像素 ≠ 最终输出像素，
-            // 用户看到的数字必须和落盘文件一致（落在黑边上的部分不计）。
-            const ImageRect imageRect =
-                selectionToImagePixels(localX, localY, localWidth, localHeight);
-            sizeWidth = imageRect.width;
-            sizeHeight = imageRect.height;
+            sizeWidth = localWidth;
+            sizeHeight = localHeight;
 #endif
         }
     } else if (hover.active && hover.width > 0.5f && hover.height > 0.5f) {
@@ -287,8 +347,13 @@ void RegionWindow::Impl::drawOverlay() const {
 #if defined(_WIN32)
     const char* hint =
         overlayText(i18n, "region.hint", "单击截取窗口 · 拖拽选择区域 · Esc / 右键取消");
+#elif defined(__linux__)
+    const char* hint =
+        (linuxBackend == LinuxSessionBackend::X11)
+            ? overlayText(i18n, "region.hint", "单击截取窗口 · 拖拽选择区域 · Esc / 右键取消")
+            : overlayText(i18n, "region.hint.wayland", "拖拽选择区域 · Esc / 右键取消");
 #else
-    const char* hint = overlayText(i18n, "region.hint.wayland", "拖拽选择区域 · Esc / 右键取消");
+    const char* hint = overlayText(i18n, "region.hint", "单击截取窗口 · 拖拽选择区域 · Esc / 右键取消");
 #endif
     const ImVec2 hintSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, hint);
     const ImVec2 hintPos(origin.x + (size.x - hintSize.x) * 0.5f, origin.y + 24.0f);

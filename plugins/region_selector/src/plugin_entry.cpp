@@ -22,10 +22,6 @@
 #include "region_window.h"
 #include "shot_plugin_helpers.h"
 
-#if defined(__linux__)
-#include "region_portal.h"  // isWaylandSession()：Linux 只有 Wayland 实现（X11 待补）
-#endif
-
 namespace {
 
 using region_selector::PluginEntry;
@@ -193,16 +189,8 @@ std::int32_t ui_init(void* self, const ShotHostServices* host) {
     // 异常绝不能越过 extern "C" 边界：start() 内部已兜住建线程，这里再兜一层
     if (auto* state = static_cast<RegionSelectorState*>(state_of(self))) {
         try {
-#if defined(__linux__)
-            // Linux 目前只有 Wayland 实现（xdg-desktop-portal 截图 + 合成器窗口）。
-            // 非 Wayland 会话保持"插件加载但不动作"的既有行为：init 仍返回成功，
-            // 只是不启动覆盖层线程；X11 分支由后续任务补（README「Linux / Wayland」）。
-            if (!isWaylandSession()) {
-                shot::Logger(host).warn(
-                    "region_selector：当前不是 Wayland 会话，Linux 版暂不启动覆盖层（X11 待补）");
-                return 0;
-            }
-#endif
+            // Linux 的 Wayland / X11 后端在 RegionWindow::start() 里按会话类型运行期
+            // 选择（同一份 .so 编了两套平台实现）；这里不再按平台做门槛判断。
             // 多语言表只在 init 里构造一次：此时才拿得到宿主服务表。tr() 之后只查
             // 本地表，不碰宿主，所以覆盖层可以每帧直接调用。指针交给窗口线程时
             // 必须先于 start()，否则第一帧就可能读到空指针（触发事件不保证延后）。

@@ -33,18 +33,25 @@
 // kHideSettleDelayMs（100ms），最后才 publish capture.request。DWM 合成是异步的，
 // 隐藏函数返回不代表遮罩已经消失；宿主 worker 收到事件就抓屏，中间没有同步点。
 //
-// Linux / Wayland（#if !defined(_WIN32) 的分支，实现见 region_*_wayland.cpp）：
-//   覆盖层窗口与绘制复用同一套 GLFW/ImGui 代码，但背景不是 GDI 快照，而是
-//   xdg-desktop-portal 的一次整屏截图（首次会弹系统授权框）。确认后直接从内存里的
-//   整屏像素裁剪、写 PNG、发布 capture.done，**不发布 capture.request**——不再第二次
-//   采集、也不再弹第二次授权（需求"方案 B"）。Wayland 不允许全局窗口枚举，所以没有
-//   悬停吸附，单击（不拖）= 取消。
+// Linux（UNIX AND NOT APPLE）：同一份 .so 同时编进两套平台实现，按会话类型运行期
+// 二选一（LinuxSessionBackend）：
+//   · Wayland（WAYLAND_DISPLAY / XDG_SESSION_TYPE=wayland，实现见 region_*_wayland.cpp）：
+//     覆盖层窗口与绘制复用同一套 GLFW/ImGui 代码，但背景不是桌面快照，而是
+//     xdg-desktop-portal 的一次整屏截图（首次会弹系统授权框）。确认后直接从内存里的
+//     整屏像素裁剪、写 PNG、发布 capture.done，**不发布 capture.request**——不再第二次
+//     采集、也不再弹第二次授权（需求"方案 B"）。Wayland 不允许全局窗口枚举，所以没有
+//     悬停吸附，单击（不拖）= 取消。
+//   · X11（实现见 region_*_x11.cpp）：真正的全屏覆盖层——XGetImage 抓整块 X screen
+//     当背景，交互与 Windows 完全一致（悬停吸附、单击截窗、拖框、主题色折角、Esc/右键
+//     取消）；确认后按 Windows 同一时序发布带 region 的 capture.request（普通框选）或
+//     region.selected（purpose 选择）。窗口命中用 XQueryTree + EWMH 类型过滤。
+//     选择逻辑本身（region_overlay.cpp / _draw.cpp / region_graphics.cpp）与平台无关，
+//     两个分支共用，本文件只做"平台层调用点"的运行期分派。
+//   X11 的坐标原点 = root 窗口 (0,0)，X 像素即物理像素；content scale 只放大字号。
 //
 // TODO: 跨显示器选择：现在只覆盖"鼠标所在显示器"，拖到另一块屏的选区会被夹在
 // 当前屏内。要做跨屏需要在虚拟桌面矩形上开一个覆盖所有显示器的窗口，窗口尺寸/定位
-// 仍用物理像素；等宿主把混合 DPI 下的跨屏截图验证过再一起做。
-// TODO: X11 分支：Linux 目前只支持 Wayland 会话（isWaylandSession() 为假时插件不动作），
-// 后续任务用 XGetImage + override-redirect 覆盖层补齐。
+// 仍用物理像素；等宿主把混合 DPI 下的跨屏截图验证过再一起做（X11 同样是单显示器）。
 
 #include "region_window.h"
 
@@ -60,6 +67,10 @@
 #include <GLFW/glfw3.h>  // 跨平台窗口库：窗口生命周期与事件循环
 
 #include <nlohmann/json.hpp>  // 触发负载解析 + 区域结果组包（header-only）
+
+#if defined(__linux__)
+#include "region_portal.h"  // isWaylandSession()：Linux 运行期选择 Wayland / X11 后端
+#endif
 
 #include "region_window_impl.h"
 #include "shot_plugin_helpers.h"
@@ -258,7 +269,15 @@ bool RegionWindow::Impl::ensureGraphics() {
     }
     // 实测几何写进日志：多显示器 / DPI 问题的第一现场，排查时不用再跑探针。
     if (!metricsLogged) {
+#if defined(__linux__)
+        if (linuxBackend == LinuxSessionBackend::X11) {
+            x11LogMonitorMetrics();
+        } else {
+            logMonitorMetrics();
+        }
+#else
         logMonitorMetrics();
+#endif
         metricsLogged = true;
     }
     return true;
@@ -336,9 +355,17 @@ void RegionWindow::Impl::drainEvents() {
                 } else if (!startSelection(std::string())) {
 #if defined(_WIN32)
                     shot::Logger(host).warn("region_selector：启动框选失败（没有可用显示器？）");
+#elif defined(__linux__)
+                    if (linuxBackend == LinuxSessionBackend::X11) {
+                        // X11 的失败是 GLFW/窗口初始化或显示器查询失败这类硬错误：WARN。
+                        shot::Logger(host).warn(
+                            "region_selector：启动 X11 框选失败（显示器查询或图形栈初始化失败？）");
+                    } else {
+                        // Wayland：失败原因（门户不可用 / 用户取消 / 超时 / 没有截图）已经在
+                        // 启动流程里按级别记录，这里不再重复 WARN——用户取消必须安静。
+                        shot::Logger(host).debug("region_selector：本次框选没有启动");
+                    }
 #else
-                    // Wayland：失败原因（门户不可用 / 用户取消 / 超时 / 没有截图）已经在
-                    // 启动流程里按级别记录，这里不再重复 WARN——用户取消必须安静。
                     shot::Logger(host).debug("region_selector：本次框选没有启动");
 #endif
                 }
@@ -397,7 +424,16 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     }
     ScreenRect monitor;
     float contentScale = 1.0f;
-    if (!monitorUnderCursor(monitor, contentScale)) {
+#if defined(__linux__)
+    // Linux 两套平台实现都编进来了，运行期按会话类型调用对应的一份。Windows 版沿用
+    // monitorUnderCursor（GetCursorPos + GLFW 显示器矩形）。
+    const bool monitorFound = (linuxBackend == LinuxSessionBackend::X11)
+                                  ? x11MonitorUnderCursor(monitor, contentScale)
+                                  : monitorUnderCursor(monitor, contentScale);
+#else
+    const bool monitorFound = monitorUnderCursor(monitor, contentScale);
+#endif
+    if (!monitorFound) {
         // 光标不在任何显示器矩形里（显示器之间的缝隙 / 远程会话刚断开）：退回主显示器，
         // 不然用户点了"区域截屏"却什么也不发生。
         GLFWmonitor* primary = glfwGetPrimaryMonitor();
@@ -431,9 +467,17 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     glfwSetWindowSize(window, monitor.width + kOverlayOversize,
                       monitor.height + kOverlayOversize);
     glfwSetWindowPos(window, monitor.x, monitor.y);
+#elif defined(__linux__)
+    if (linuxBackend == LinuxSessionBackend::X11) {
+        // X11 客户端可以自己定位：root 坐标即像素，直接铺满目标显示器（含任务栏）。
+        // 不需要 +1px（那是 Windows 的 DWM 全屏判定专有坑）。
+        x11PlaceOverlay(monitor);
+    } else {
+        // Wayland 不允许客户端定位窗口：位置由合成器决定。这里先把尺寸对齐输出，
+        // 真正的全屏请求放到窗口显示之后（region_overlay_wayland.cpp）。
+        prepareWaylandOverlay(monitor);
+    }
 #else
-    // Wayland 不允许客户端定位窗口：位置由合成器决定。这里先把尺寸对齐输出，
-    // 真正的全屏请求放到窗口显示之后（region_overlay_wayland.cpp）。
     prepareWaylandOverlay(monitor);
 #endif
     // content scale 只用来放大字号/折角：坐标已经是物理像素，不能再乘它。
@@ -444,8 +488,13 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     // 时 loadThemeColor 内部回退默认 #4C9AFF。
     loadThemeColor();
     // 枚举时必须排除覆盖层自己：它是全屏置顶窗口，不排除的话命中测试永远选中自己。
-    // HWND 只在平台层取（region_geometry.cpp），这里拿到的是整型句柄。
+    // 句柄只在平台层取（Windows = HWND / X11 = Window），这里拿到的是整型句柄。
+#if defined(__linux__)
+    overlayHwnd = (linuxBackend == LinuxSessionBackend::X11) ? x11NativeWindowHandle()
+                                                             : nativeWindowHandle();
+#else
     overlayHwnd = nativeWindowHandle();
+#endif
 
     // 记录初始光标位置：覆盖层显示的第一帧就能画出十字线。
     int windowWidth = 0;
@@ -460,7 +509,15 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     drag.startX = drag.cursorX;
     drag.startY = drag.cursorY;
     // 显示覆盖层时左键可能还按着（从托盘菜单触发）：先等松开，别把菜单点击当确认。
+#if defined(__linux__)
+    // X11 窗口还没 map，GLFW 没收到按钮按下事件；用 XQueryPointer 的 Button1Mask 判断
+    // 当前物理状态（与 Windows 的 GetAsyncKeyState 语义对齐）。Wayland 仍用 GLFW 状态。
+    drag.waitRelease = (linuxBackend == LinuxSessionBackend::X11)
+                           ? x11LeftButtonHeld()
+                           : (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+#else
     drag.waitRelease = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+#endif
 
     // 初始悬停目标：显示第一帧就落在光标下的窗口矩形上，**不从 (0,0) 飞入**
     // （需求：动画只在非拖动、非显示首帧时生效）。找不到窗口就保持无框状态。
@@ -471,9 +528,21 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     int windowY = 0;
     glfwGetWindowPos(window, &windowX, &windowY);
     WindowTarget initialTarget;
-    if (overlayHwnd != 0 &&
+#if defined(__linux__)
+    const bool initialHit =
+        overlayHwnd != 0 &&
+        ((linuxBackend == LinuxSessionBackend::X11)
+             ? findWindowAtX11(windowX + static_cast<int>(cursorX),
+                               windowY + static_cast<int>(cursorY), overlayHwnd, initialTarget)
+             : findWindowAt(windowX + static_cast<int>(cursorX),
+                            windowY + static_cast<int>(cursorY), overlayHwnd, initialTarget));
+#else
+    const bool initialHit =
+        overlayHwnd != 0 &&
         findWindowAt(windowX + static_cast<int>(cursorX), windowY + static_cast<int>(cursorY),
-                     overlayHwnd, initialTarget)) {
+                     overlayHwnd, initialTarget);
+#endif
+    if (initialHit) {
         hover.active = true;
         hover.initialized = true;
         hover.hwnd = initialTarget.hwnd;
@@ -497,15 +566,33 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     if (!captureBackground()) {
         shot::Logger(host).warn("region_selector：没有桌面快照背景，覆盖层只显示遮罩");
     }
+#elif defined(__linux__)
+    if (linuxBackend == LinuxSessionBackend::X11) {
+        // X11：XGetImage 整屏快照。失败只 WARN（绘制层退化为纯色底 + 遮罩），
+        // 拖框/吸附/发布区域都不依赖背景。
+        if (!x11CaptureBackground()) {
+            shot::Logger(host).warn(
+                "region_selector：没有 X11 桌面快照背景，覆盖层显示纯色底 + 遮罩");
+        }
+    } else {
+        // Wayland：覆盖层的背景就是 portal 截图。没有截图就没有可选内容（失败原因已由
+        // captureBackground 按级别记过：门户不可用 WARN / 用户取消静默），所以不显示覆盖层、
+        // 不弹窗、不发布任何事件。
+        if (!captureBackground()) {
+            hideOverlay();
+            return false;
+        }
+        // 等授权框期间宿主可能已经开始卸载本插件：不要再把覆盖层显示出来。
+        if (shouldQuit()) {
+            hideOverlay();
+            return false;
+        }
+    }
 #else
-    // Wayland：覆盖层的背景就是 portal 截图。没有截图就没有可选内容（失败原因已由
-    // captureBackground 按级别记过：门户不可用 WARN / 用户取消静默），所以不显示覆盖层、
-    // 不弹窗、不发布任何事件。
     if (!captureBackground()) {
         hideOverlay();
         return false;
     }
-    // 等授权框期间宿主可能已经开始卸载本插件：不要再把覆盖层显示出来。
     if (shouldQuit()) {
         hideOverlay();
         return false;
@@ -527,18 +614,37 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     glfwShowWindow(window);
     // 不再额外调 glfwFocusWindow：窗口 hint 里 GLFW_FOCUS_ON_SHOW 已经让它拿到焦点，
     // 再显式聚焦一次会多触发一轮焦点切换（真机上表现为又闪一下）。
-#if !defined(_WIN32)
-    // Wayland：窗口 map 之后再请求全屏（隐藏窗口上的请求可能被合成器忽略）。
-    // 是否真的全屏由合成器决定，日志里会记录实际尺寸（README「Linux / Wayland」）。
-    requestWaylandFullscreen();
+#if defined(_WIN32)
+    // Windows：无边框置顶窗口，hint 里 FOCUS_ON_SHOW 已经让它拿到焦点，不做额外处理。
+#elif defined(__linux__)
+    if (linuxBackend != LinuxSessionBackend::X11) {
+        // Wayland：窗口 map 之后再请求全屏（隐藏窗口上的请求可能被合成器忽略）。
+        // 是否真的全屏由合成器决定，日志里会记录实际尺寸（README「Linux / Wayland」）。
+        requestWaylandFullscreen();
+    }
     glfwPollEvents();  // 让新尺寸/焦点配置事件进来，第一帧就按实际尺寸绘制
+    if (linuxBackend == LinuxSessionBackend::X11) {
+        // X11：WM 可能在 map 之后才真正摆放窗口，poll 完再记录实际几何；坐标一律按
+        // 实际窗口位置换算（见 x11CommitSelection）。
+        x11LogOverlayGeometry();
+    }
+#else
+    glfwPollEvents();
 #endif
     overlayVisible = true;
 
     // 把覆盖层几何与换算基准写进日志：落盘区域不对时第一眼看这几行。
     int desktopX = 0;
     int desktopY = 0;
+#if defined(__linux__)
+    if (linuxBackend == LinuxSessionBackend::X11) {
+        x11VirtualDesktopOrigin(desktopX, desktopY);
+    } else {
+        virtualDesktopOrigin(desktopX, desktopY);
+    }
+#else
     virtualDesktopOrigin(desktopX, desktopY);
+#endif
     char text[320] = {};
     std::snprintf(text, sizeof(text),
                   "region_selector：开始框选 显示器矩形=(%d,%d) %dx%d content_scale=%.2f "
@@ -638,18 +744,34 @@ void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth,
     } else {
         publishRegion(region);
     }
-#else
+#elif defined(__linux__)
+    if (linuxBackend == LinuxSessionBackend::X11) {
+        // X11：坐标换算 + "隐藏 → 等遮罩消失 → 发布"与 Windows 同一套时序，
+        // 区别只在 origin 是 root 的 (0,0)（x11CommitSelection 里有逐条说明）。
+        x11CommitSelection(localX, localY, localWidth, localHeight);
+        return;
+    }
     if (!purpose.empty()) {
-        // 长截图等 purpose 消费者目前只有 Windows 实现；其它平台按取消回执，
+        // 长截图等 purpose 消费者目前只有 Windows 实现；Wayland 按取消回执，
         // 避免发起方一直等到超时（Wayland 也没有可用的全局屏幕坐标）。
         hideOverlay();
         shot::Logger(host).warn(
-            "region_selector：purpose 选择在非 Windows 平台未实现，按取消回执");
+            "region_selector：purpose 选择在 Wayland 会话未实现，按取消回执");
         publishPurposeCancelled(purpose);
         return;
     }
     // Wayland：不需要"等遮罩消失"（不会第二次抓屏），直接从内存里的 portal 截图裁剪、
     // 写 PNG、发布 capture.done；不发布 capture.request，避免第二次采集/第二次授权。
+    commitWaylandSelection(localX, localY, localWidth, localHeight);
+#else
+    if (!purpose.empty()) {
+        // 其它未实现平台（CMake 实际会跳过）：按取消回执，避免发起方等到超时。
+        hideOverlay();
+        shot::Logger(host).warn(
+            "region_selector：purpose 选择在当前平台未实现，按取消回执");
+        publishPurposeCancelled(purpose);
+        return;
+    }
     commitWaylandSelection(localX, localY, localWidth, localHeight);
 #endif
 }
@@ -732,6 +854,17 @@ bool RegionWindow::start(const ShotHostServices* host, const shot::I18n* i18n) {
     }
     m_impl->host = host;
     m_impl->i18n = i18n;  // 起线程之前设好：UI 线程第一帧渲染就已经能取到文案
+
+#if defined(__linux__)
+    // Linux 的同一份 .so 里编了两套平台实现，这里按会话类型运行期二选一（判定一次，
+    // 之后整个进程生命周期不变）。Wayland 优先：Wayland 会话里 XWayland 也可能导出
+    // DISPLAY，但能真正覆盖所有输出的只有门户路径。选择结果在第一次框选时生效。
+    m_impl->linuxBackend = isWaylandSession() ? LinuxSessionBackend::Wayland
+                                              : LinuxSessionBackend::X11;
+    shot::Logger(host).info(m_impl->linuxBackend == LinuxSessionBackend::Wayland
+                                ? "region_selector：Linux 会话 = Wayland（门户定格图 + 拖选）"
+                                : "region_selector：Linux 会话 = X11（XGetImage 快照 + 全屏覆盖层）");
+#endif
 
     // 先订阅再起线程：订阅之后到达的触发事件不会漏；窗口还没就绪时事件先入队，
     // 事件循环启动后统一 drain。

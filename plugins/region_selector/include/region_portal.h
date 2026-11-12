@@ -75,10 +75,12 @@ private:
  * @brief 判断当前桌面会话是不是 Wayland。
  *
  * 运行时探测 `WAYLAND_DISPLAY`（最直接）与 `XDG_SESSION_TYPE`（display manager 设置，
- * 有些精简环境只有其中一个）：任一命中就按 Wayland 处理。Linux 目前只有 Wayland
- * 实现；X11 会话下插件保持"加载但不动作"的既有行为（X11 分支由后续任务补）。
+ * 有些精简环境只有其中一个）：任一命中就按 Wayland 处理。Linux 同一份 .so 同时编进
+ * Wayland 与 X11 两套实现：返回 true 走门户定格图（B 方案），false 走 X11 的
+ * XGetImage 快照 + 全屏覆盖层（见 README「Linux（X11）」）。
  *
- * @return true = 当前是 Wayland 会话；false = 不是（X11 / 无显示会话）。
+ * @return true = 当前是 Wayland 会话；false = 不是（按 X11 处理；无显示会话时
+ *         X11 初始化会失败并记日志）。
  */
 bool isWaylandSession();
 
