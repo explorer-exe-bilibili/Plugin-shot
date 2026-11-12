@@ -23,7 +23,7 @@ cmake_minimum_required(VERSION 3.20)
 
 # --- 项目标识 ------------------------------------------------
 set(PROJECT_NAME                  "Plugin-shot")            # 项目名称 = 可执行文件名
-set(PROJECT_DESCRIPTION           "A plugin-based screenshot tool: the host only loads, validates and dispatches; every capability is a plugin.")
+set(PROJECT_DESCRIPTION           "A plugin-based screenshot tool where the host only loads, validates and dispatches; every capability is a plugin")
 set(PROJECT_HOMEPAGE_URL          "https://github.com/explorer-exe-bilibili/Plugin-shot")
 set(PROJECT_COMPANY               "Plugin-shot contributors")           # 出现在 exe 属性的 CompanyName
 set(PROJECT_COPYRIGHT             "Copyright (C) 2026 Plugin-shot contributors")   # 出现在 LegalCopyright
