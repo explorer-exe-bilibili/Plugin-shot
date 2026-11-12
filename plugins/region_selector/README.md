@@ -401,7 +401,7 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | Linux 支持 Wayland 与 X11 两种会话 | 同一份 `.so` 同时编进两套实现，启动时按 `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE` 运行期选择（Wayland 优先）。X11 见 §9，Wayland 见 §8 |
 | X11 只支持单 X screen | 覆盖层只铺鼠标所在显示器；XQueryTree 枚举的是默认 X screen 的 root 子窗口，多 X screen（`:0.1` 等）不枚举、也不能跨 screen 覆盖。多显示器在同一 X screen 内是支持的，但一次仍只选一块屏 |
 | X11 的覆盖层由窗口管理器管理 | 用的是普通 GLFW 无边框置顶窗口（不是 override-redirect）：WM 可能加装饰/延迟摆放/改动位置。代码按**实际窗口位置**换算与裁剪，选区结果不受影响，但"是否真的全屏、是否无边框"要真机确认（§9.5） |
-| X11 下的采集依赖宿主流水线 | 本插件只发布带 `region` 的 `capture.request`（与 Windows 一致），实际抓屏由 `screen_capture` 完成。**当前仓库里的 `screen_capture` 只有 Windows 与 Wayland 实现**，X11 会话下普通框选可能停在 `capture.failed`；本插件这一侧的区域选择与事件发布是完整的（见 §9.4） |
+| X11 下的采集依赖宿主流水线 | 本插件只发布带 `region` 的 `capture.request`（与 Windows 一致），实际抓屏由 `screen_capture` 完成。`screen_capture` 现在也有 X11 分支（XShm/XGetImage），但两边**尚未联调**；X11 会话下普通框选的端到端链路要真机确认（见 §9.4/§9.5） |
 | X11 + XWayland 的边界 | Wayland 会话里 XWayland 应用是 X11 窗口，但本插件走 Wayland 分支（门户截图 + 自己的窗口），拿不到、也不枚举这些窗口；不要指望在 Wayland 会话里用 X11 路径去吸 XWayland 窗口 |
 | X11 窗口枚举不做子控件命中 | 与 Windows 一样只认顶层窗口；`_NET_WM_WINDOW_TYPE_*` 过滤 DOCK/TOOLTIP/MENU 等，完全透明的点击穿透窗口没有额外过滤 |
 | Wayland 无法悬停吸附 / 单击截窗 | 协议不允许枚举全局窗口、也拿不到别的窗口矩形，所以只有"拖框"一种选择方式；单击不拖 = 取消（见 §8） |
@@ -604,10 +604,10 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 - 取消（Esc / 右键 / 拖动选区任一边 < 8px / 无窗口时单击）不发布普通框选事件；
   purpose 选择回 `cancelled:true`。
 - **注意**：普通框选发布的是 `capture.request`，真正的抓屏由宿主的 `screen_capture`
-  完成。当前仓库里 `screen_capture` 只有 Windows 与 Wayland 实现，**X11 抓屏尚未实现**，
-  所以 X11 会话下普通框选的端到端链路（选区 → 抓屏 → 落盘）暂时会停在
-  `capture.failed`。本插件的区域选择、坐标与事件发布是完整的；等 `screen_capture`
-  补 X11 分支后即可闭环（purpose 选择由消费者自己采集，不受此限制）。
+  完成。`screen_capture` 的 X11 分支已经实现（XShm 优先、XGetImage 回退，同一轮随
+  Linux 全量构建通过），但两者**尚未真机联调**；X11 会话下选区 → 抓屏 → 落盘这条
+  链路需要真机确认。本插件的区域选择、坐标与事件发布按 Windows 同款实现（purpose
+  选择由消费者自己采集，不受此限制）。
 - 本插件不自己写 PNG（不像 Wayland 的 B 方案）：X11 有真正的屏幕访问能力，交给宿主
   流水线才能统一经过 `image_processor` 链。
 

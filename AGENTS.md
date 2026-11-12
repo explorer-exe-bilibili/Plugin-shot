@@ -50,13 +50,13 @@ src/                宿主实现 + main.cpp
 plugins/            13 个插件工程，各自独立 CMakeLists + metadata.json
   example_processor  一 DLL 两插件（image_processor）+ 贡献一条托盘命令
   opencv_provider    lib_provider（把 OpenCV 带进进程）
-  screen_capture     shot.screen_capture（Windows GDI 多屏；Wayland 走 portal ScreenCast + PipeWire，已编译、真机未验证）
+  screen_capture     shot.screen_capture（Windows GDI 多屏；Linux Wayland portal + PipeWire / X11 XShmGetImage + XFixes，均已编译、真机未验证）
   image_saver        shot.image_saver（PNG/JPEG，stb）
   settings_ui        设置页（ImGui + GLFW + OpenGL3，跨平台）
   translator         外部语言包（Generic；扫描官方/用户目录，跨平台代码，Windows 已验证）
   tray               托盘（图标 + 数据驱动菜单，Windows）
-  region_selector    区域框选覆盖层（Windows 完整交互；Wayland 为门户定格图 + 拖选，已编译、真机未验证）
-  hotkey             全局热键（Windows 用 RegisterHotKey；非 Windows 编 stub，不注册）
+  region_selector    区域框选覆盖层（Windows 完整交互；Wayland 门户定格图 + 拖选；X11 GLFW 覆盖层 + XGetImage 快照，均已编译、真机未验证）
+  hotkey             全局热键（Windows 用 RegisterHotKey；Linux 用 X11 XGrabKey，纯 Wayland 运行期降级为不注册）
   session_control    Linux Wayland 的 D-Bus 触发入口（Generic；代替全局热键；已随 Linux 构建通过）
   long_capture       手动滚动长截图（Windows P1；已编译通过，真机交互待验证）
   clipboard          截图 → 剪贴板（Windows CF_DIB；Linux 走 X11 selection，已编译、真机未验证）
@@ -74,11 +74,13 @@ STYLE.md            ★ 代码风格与工程约定（硬约定）
 **万物皆插件**：宿主只负责「扫描 → 校验 → 加载 → 调度」，一切能力都在 DLL 里。
 
 > 平台状态见 [`document/PLATFORMS.md`](document/PLATFORMS.md)：Windows 是唯一真机验证过的完整链路；
-> Linux 默认目标是 Wayland（Ubuntu 24.04 GNOME），X11 列为第二优先但仍缺 `XGetImage`/`XGrabKey`/
-> 覆盖层；Wayland 链路（ScreenCast + PipeWire 抓屏、门户定格图 + B 方案框选、`session_control`
-> 的 D-Bus 触发入口）已实现并随 Linux 构建通过，**尚未在真机验证**；`hotkey` 在 Linux 编 stub
-> （提供列表与配置项、不注册热键）；`long_capture` 已随 Windows 构建通过，**交互待真机验证**；
-> macOS 尚未成功构建。改平台相关代码、CMake 跳过条件或根 README 平台段前先看矩阵。
+> Linux 默认目标是 Wayland（Ubuntu 24.04 GNOME），X11 列为第二优先。Wayland 链路（ScreenCast +
+> PipeWire 抓屏、门户定格图 + B 方案框选、`session_control` 的 D-Bus 触发入口）与 **X11 分支**
+> （`screen_capture` 的 XShm/XGetImage + XFixes、`region_selector` 的 GLFW 覆盖层、`hotkey` 的
+> `XGrabKey`）都已实现并随 Linux 全量构建通过（WSL configure/build exit 0），**都没有在真机验证**；
+> `hotkey` 在 Linux 用 X11 `XGrabKey`，纯 Wayland（取不到 X11 Display）运行期降级为只提供列表与
+> 配置项、不注册并 WARN 指向 `session_control`；`long_capture` 已随 Windows 构建通过，**交互待
+> 真机验证**；macOS 尚未成功构建。改平台相关代码、CMake 跳过条件或根 README 平台段前先看矩阵。
 
 ```text
 插件 DLL ──(唯一导出符号 shot_module_entry)──► ShotModule{get_info, create, destroy, query_interface}
@@ -365,6 +367,9 @@ harness 等），**不入库**，换机器会丢；需要时按同样思路重�
     虽然返回成功，但 `WM_HOTKEY` 不会到达插件（本机实测：keybd_event/SendInput 各种方式都不行）。
     带修饰键的 `Ctrl+PrintScreen` 等不受影响（实测能触发并落盘）。hotkey 插件注册裸
     PrintScreen 时会打 WARN；要用裸键需关闭该 Windows 设置。
+18. **X11 没有 `MOD_NOREPEAT` 等价物**：Windows 的 `RegisterHotKey` 可以带 `MOD_NOREPEAT`，
+    X11 的 `XGrabKey` 没有对应标志——`plugins/hotkey` 在 X11 上按住热键会按服务器的自动重复
+    连续触发。这是已知差异，不要据此判断注册失败（见 `plugins/hotkey/README.md` §10）。
 
 ---
 

@@ -5,14 +5,20 @@
 Wayland**（维护者实测环境：Ubuntu 24.04 / GNOME 46 / Wayland 会话），X11 保留但列为
 **第二优先**；macOS 从未真机运行，也没有成功的构建结论。平台实现按目标平台在各自
 `CMakeLists.txt` 里选择：没有实现的平台直接跳过（`SHOT_PLUGIN_SKIPPED`），不产出伪实现；
-Linux 的 `screen_capture` / `region_selector` 目前只实现 Wayland 分支，X11 会话下不会工作。
-**`hotkey` 是明确例外**：非 Windows 编一个只发布列表/配置项、不注册热键并 WARN 的 stub
-（详见 §2）。
+**Linux X11 分支已落地**：`screen_capture`（`XShmGetImage` 优先 / `XGetImage` 回退 + XFixes
+光标合成）、`region_selector`（GLFW 无边框覆盖层 + `XGetImage` 快照 + `XQueryTree` 窗口命中）、
+`hotkey`（`XGrabKey` + 锁修饰符变体 + `BadAccess` 冲突 WARN + self-pipe 事件循环 + suspend/resume）
+都已入库，并随 WSL 全量构建通过（configure/build exit 0）；但**没有任何真机验证**，下表与
+§3.2 按“能编译、未真机验证”记录。运行期由各插件按 `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE`
+选择 Wayland 或 X11 分支。`hotkey` 的纯 Wayland 路径（`XOpenDisplay` 失败）不是编译期 stub，
+而是运行期降级：只发布列表与配置项、不注册热键并 WARN 指向 `session_control`；macOS 等其它
+平台仍编 `hotkey_window_stub.cpp`（详见 §2）。
 
-> **2026-11-12 同步说明**：`screen_capture`（Wayland 门户）、`region_selector`（Wayland B 方案）、
-> `clipboard`（X11）、`notify`（libnotify）、`session_control`、`long_capture` 的实现代码已入库，
-> 并已随 Linux / Windows 构建通过；但**都没有在真机跑过对应交互**，下表按“编译通过、真机未验证”
-> 记录，验证后再逐项升格。
+> **2026-11-13 同步说明**：`screen_capture`（Wayland 门户 + X11 采集）、`region_selector`
+> （Wayland B 方案 + X11 覆盖层）、`hotkey`（Linux X11 分支）、`clipboard`（X11）、
+> `notify`（libnotify）、`session_control`、`long_capture` 的实现代码已入库，并已随 Linux /
+> Windows 构建通过（X11 分支随 WSL 全量构建 exit 0）；但**都没有在真机跑过对应交互**，下表按
+> “编译通过、真机未验证”记录，验证后再逐项升格。
 > **0.1.0 只发布 Windows 构建，未验证能力不随包分发**；表格会在逐项验证后更新。
 
 **改平台相关代码、CMake 跳过条件、根 `README*.md` 的平台段、或插件清单前先读这里，
@@ -21,8 +27,8 @@ Linux 的 `screen_capture` / `region_selector` 目前只实现 Wayland 分支，
 > **核对口径**：本表只承认**能 configure/build 的插件工程**；未提交的并行改动不计为平台支持。
 > `plugins/session_control`（Linux）与 `plugins/long_capture`（Windows）已实现并分别随 Linux /
 > Windows 构建通过，状态见 §3.3；**两者都还没在真机跑过对应交互**，因此按 🟡 记录，只有真机
-> 验证后才升 ✅。Linux 的 Wayland 采集/框选、X11 剪贴板与 libnotify 通知同样只到“编译通过”，
-> 在真机跑过之前也不升 ✅。
+> 验证后才升 ✅。Linux 的 Wayland 采集/框选、X11 采集/热键/框选、X11 剪贴板与 libnotify 通知
+> 同样只到“编译通过”，在真机跑过之前也不升 ✅。
 
 ## 1. 记号
 
@@ -43,26 +49,27 @@ Linux X11（**第二优先**）、macOS。
 | 能力 / 插件 | Windows | Linux Wayland（默认目标） | Linux X11（第二优先） | macOS |
 | --- | --- | --- | --- | --- |
 | 宿主核心（加载 / ABI / 事件总线 / 列表 / 配置 / CLI） | ✅ 本机全链路：插件加载与热卸载、采集/设置 e2e、`--capture`/`--settings`/`--help` 都跑过 | 🟡 与 X11 同一份二进制；宿主不依赖显示服务器，但只做过 WSL2 编译与无头 `--help`，Wayland 会话未跑 | 🟡 WSL2 下 configure/build 通过、`--help` 退出 0；真实 X11 桌面未跑 | 🟡 代码有 `_NSGetExecutablePath` / `dlopen` 分支，但 macOS 从未成功 configure/build |
-| 屏幕采集 `plugins/screen_capture` | ✅ `gdi_desktop_capture.cpp` 用 `GetDC`/`BitBlt`/`GetDIBits` 抓物理虚拟桌面，双屏 3584x1600 与光标合成已实测 | 🟡 已实现、编译通过：`xdg-desktop-portal` ScreenCast + PipeWire 取帧（一次一个源：输出或窗口）；真实 Wayland 会话的授权弹窗、取帧与多帧稳定性未验证（§3.1） | ⛔ 没有 `XGetImage`/`XShmGetImage` 实现，X11 分支未写（§3.2） | ⛔ 只有 GDI 实现；CMake 跳过，没有 ScreenCaptureKit / CGDisplayStream 分支 |
+| 屏幕采集 `plugins/screen_capture` | ✅ `gdi_desktop_capture.cpp` 用 `GetDC`/`BitBlt`/`GetDIBits` 抓物理虚拟桌面，双屏 3584x1600 与光标合成已实测 | 🟡 已实现、编译通过：`xdg-desktop-portal` ScreenCast + PipeWire 取帧（一次一个源：输出或窗口）；真实 Wayland 会话的授权弹窗、取帧与多帧稳定性未验证（§3.1） | 🟡 已实现、编译通过：`XShmGetImage` 优先、`XGetImage` 回退抓整个 X screen，XFixes 光标合成；随 WSL 全量构建通过（exit 0）；真机未验证（XShm 路径、24/30bpp/大端、光标热点、XWayland 边界，§3.2） | ⛔ 只有 GDI 实现；CMake 跳过，没有 ScreenCaptureKit / CGDisplayStream 分支 |
 | 图像保存 `plugins/image_saver` | ✅ PNG/JPEG 落盘在 `--capture` 与多个 e2e 中验证 | 🟡 能编译未验证：纯 POSIX 代码、`.so` 编译通过；Linux 采集链路（Wayland `screen_capture`）已编译但未真机跑过保存 | 🟡 能编译未验证：与 Wayland 同一份 POSIX 分支 | 🟡 `output_path.cpp` 有 `$HOME/Pictures` 与 `localtime_r` 分支，但 macOS 未构建 |
 | 图像处理 `plugins/example_processor` / `opencv_provider` | ✅ 两个 `image_processor` 参与采集流水线，`opencv_provider` 把 OpenCV 带进进程 | 🟡 能编译未验证：`.so` 编译并被 dlopen；没有真实采集帧进入处理链 | 🟡 能编译未验证：同上 | 🟡 只用标准库/OpenCV，CMake 不跳过，但 macOS 未构建 |
 | 设置页 `plugins/settings_ui` | ✅ ImGui + GLFW + OpenGL3，双屏 150%+100% DPI、跨屏拖动与几何恢复已 e2e | 🟡 能编译未验证：WSLg 下建过 GL 上下文；GLFW Wayland 后端、NFD portal、中文渲染未在 Wayland 会话验证 | 🟡 能编译未验证：真实 X11 下的字体、文件对话框与 DPI 未跑 | 🟡 Cocoa 要求窗口与事件循环在主线程，而插件用自建 UI 线程，是已知移植风险；未构建 |
 | 托盘 `plugins/tray` | ✅ Win32 `Shell_NotifyIconW` + 数据驱动菜单，本机运行验证 | ⛔ 没有 StatusNotifierItem/AppIndicator 实现，构建期跳过；Ubuntu GNOME 默认带 AppIndicator 扩展，技术上可用（§3.1） | ⛔ 同上：SNI 与显示服务器无关，缺的是实现 | ⛔ 没有 `NSStatusBar`/`NSStatusItem` 实现，CMake 跳过 |
-| 全局热键 `plugins/hotkey` | ✅ `RegisterHotKey` + 隐藏消息窗口；`Ctrl+Alt+S` 等与 `e2e_hotkey_capture.ps1` 已验证 | 🟡 编 stub（`hotkey_window_stub.cpp`）：发布 `hotkey_list` 与配置项、不注册任何热键，启动 WARN 指向 `session_control` 的 D-Bus 入口；编译通过，真机未验证 | 🟡 同上，编 stub 不注册；`XGrabKey` 仍未实现（第二优先），过渡期用 `session_control`；真机未验证 | ⛔ 没有 `RegisterEventHotKey`/`CGEventTap` 原生实现；非 Windows 的 stub 也不注册，且 macOS 从未成功构建 |
+| 全局热键 `plugins/hotkey` | ✅ `RegisterHotKey` + 隐藏消息窗口；`Ctrl+Alt+S` 等与 `e2e_hotkey_capture.ps1` 已验证 | 🟡 已实现、编译通过：Linux 用 X11 `XGrabKey`（锁修饰符变体、`BadAccess` 冲突 WARN、self-pipe 事件循环、suspend/resume）；纯 Wayland（`XOpenDisplay` 失败）运行期降级为只发布列表与配置项、WARN 指向 `session_control`；随 WSL 全量构建通过（exit 0），真机未验证 | 🟡 已实现、编译通过：`XGrabKey` 在默认 screen 的 root window 上抓取；随 WSL 全量构建通过（exit 0）；真机未验证（真机键值与键盘布局、多 X screen 只抓默认 root）。已知差异：X11 没有 `MOD_NOREPEAT`，按住会重复触发（§3.2） | ⛔ 没有 `RegisterEventHotKey`/`CGEventTap` 原生实现；macOS 编 `hotkey_window_stub.cpp`（不注册），且 macOS 从未成功构建 |
 | 会话控制入口 `plugins/session_control` | ⛔ 仅 Linux 构建（GDBus 依赖桌面会话），Windows/macOS 在 `shot_add_plugin()` 之前跳过 | 🟡 已实现、编译通过：随 Linux 构建产出 `.so`；D-Bus 名称与四个方法已实现，GNOME 自定义快捷键的端到端未跑（§3.3） | 🟡 同一份实现，编译通过：D-Bus 是会话级的，X11 会话同样能用，但未真机验证 | ⛔ 不构建 |
 | 剪贴板 `plugins/clipboard` | ✅ `OpenClipboard` + `SetClipboardData` 写 `CF_DIB`（可选 `CF_HDROP`），`e2e_clipboard.ps1` 验证 | 🟡 Linux 实现（X11 selection，经 XWayland 桥接）编译通过；纯 Wayland 且无 XWayland 时不可用，真机未验证 | 🟡 已实现、编译通过：`XSetSelectionOwner` + `SelectionRequest` 提供 `image/png` / `text/uri-list`；X11 真机未验证 | ⛔ 没有 `NSPasteboard` 实现，CMake 跳过 |
 | 通知 `plugins/notify` | ✅ 隐藏占位图标 + `Shell_NotifyIconW(NIF_INFO)`，Windows 11 真机显示成功 | 🟡 Linux 实现（libnotify → `org.freedesktop.Notifications`）已编译；Wayland 真机未验证 | 🟡 同一份 libnotify 实现，编译通过；X11 真机未验证 | ⛔ 没有 `UNUserNotificationCenter` 实现，CMake 跳过 |
-| 区域框选 `plugins/region_selector` | ✅ GLFW 覆盖层 + Win32 物理坐标；悬停窗口吸附、单击截窗、DWM 扩展边界、主题色折角已实测 | 🟡 B 方案已实现、编译通过：门户抓一张定格图 → 自有窗口里拖选；真机未验证，且没有窗口悬停吸附（§3.1） | ⛔ 没有 override-redirect 覆盖层 + `_NET_CLIENT_LIST`/`_NET_FRAME_EXTENTS` 枚举实现（§3.2） | ⛔ 没有 `NSScreen`/`CGWindowList` 覆盖层实现，CMake 跳过 |
+| 区域框选 `plugins/region_selector` | ✅ GLFW 覆盖层 + Win32 物理坐标；悬停窗口吸附、单击截窗、DWM 扩展边界、主题色折角已实测 | 🟡 B 方案已实现、编译通过：门户抓一张定格图 → 自有窗口里拖选；真机未验证，且没有窗口悬停吸附（§3.1） | 🟡 已实现、编译通过：GLFW 无边框覆盖层 + `XGetImage` 背景快照 + `XQueryTree`/`_NET_WM_WINDOW_TYPE` 窗口命中；普通框选发 `capture.request`，长截图目的走 `region.selected`；随 WSL 全量构建通过（exit 0）；与 `screen_capture` 的 X11 分支**尚未联调**；真机未验证（WM 下覆盖层置顶/焦点、reparenting frame 的 Z 序、XWayland 边界，§3.2） | ⛔ 没有 `NSScreen`/`CGWindowList` 覆盖层实现，CMake 跳过 |
 | 外部语言包 / 翻译 `plugins/translator` | ✅ 扫描官方/用户目录、用户包覆盖官方包、坏包只 WARN，`smoke_i18n_translator.ps1` 已跑 | 🟡 能编译未验证：CMake 不跳过，POSIX 分支编译过；未在 Wayland 会话跑过 | 🟡 能编译未验证：同一份 POSIX 路径 | 🟡 `pack_dirs.cpp` 有 `_NSGetExecutablePath` + `$HOME` 分支，但 macOS 未构建 |
 | 长截图 `plugins/long_capture` | 🟡 已实现、编译通过：`region.select.request` / `region.selected` 选目标窗口 → 自带 GDI 采集层连续抓帧 → 只在保存时发一条 `capture.done`；作为实验特性随 0.1.0 分发、默认在插件列表里禁用（`plugins.disabled`），在设置页勾选启用后重启生效；真机交互未验证（§3.3） | ⛔ 未实现；计划走 ScreenCast 的**窗口流**持续取帧 + 复用 `long_capture` 的拼接核心（该核心已随 Windows 构建通过，§3.1） | ⛔ 未实现；计划 `XGetImage` 逐帧 + `XTest`/手动滚动 + 行指纹拼接（§3.2） | ⛔ 未实现；需要 `AXUIElement` 读滚动位置并模拟滚动 |
 
 **结论**：唯一跑通过完整“采集 → 处理 → 保存 → 消费”链路的仍是 Windows，本轮全量构建 exit 0、
 8 个 e2e/冒烟脚本全绿。Linux 已能 configure/build，产出宿主与全部可构建插件的 `.so`（含 Linux
-实现的屏幕采集、B 方案框选、`session_control`、X11 剪贴板、libnotify 通知，以及 `hotkey` stub），
+实现的屏幕采集、框选、`session_control`、X11 剪贴板、libnotify 通知，以及带 X11 分支的 `hotkey`），
 `--help` 退出 0；但**没有一条 Linux 链路在真机桌面跑过**：Wayland 抓屏要过 portal 授权、框选是
-B 方案、剪贴板依赖 XWayland、通知依赖会话服务，这些一律只能算 🟡。X11 仍缺 `XGetImage` /
-`XGrabKey` / 覆盖层三件套（剪贴板与通知的 Linux 实现已编译，但 X11 真机未验证）。macOS 没有
-构建结论。
+B 方案、剪贴板依赖 XWayland、通知依赖会话服务，这些一律只能算 🟡。X11 采集 / 热键 / 覆盖层三件套
+已落地并随 WSL 全量构建 exit 0，但同样**只有编译结论**：X11 框选与 `screen_capture` 的 X11 分支
+尚未联调，XShm 路径、24/30bpp/大端、X11 光标热点、WM 下覆盖层置顶/焦点、真机键值与键盘布局都
+未验证。macOS 没有构建结论。
 
 ## 3. 缺口清单（要补齐需要做什么）
 
@@ -72,7 +79,7 @@ B 方案、剪贴板依赖 XWayland、通知依赖会话服务，这些一律只
 | --- | --- | --- |
 | 抓屏 | `org.freedesktop.portal.ScreenCast`（`CreateSession` → `SelectSources` → `Start`）拿到 PipeWire 流，再从流里取帧 | 已实现、编译通过：`screen_capture` 的 Wayland 路径（portal 会话 + PipeWire 接收 + BGRA8 帧缓冲），本机 WSL 构建产出 `.so`；真实会话的授权弹窗、取帧与多帧稳定性未验证。依赖 `libportal-dev` + `libpipewire-0.3-dev` + `libspa-0.2-dev` + `libglib2.0-dev` |
 | 授权弹窗 | 每次新建 ScreenCast 会话，合成器都会弹系统授权对话框（Ubuntu 24.04 / GNOME 46 的预期行为）；portal 的 `persist_mode`/`restore_token` 能否免弹窗取决于桌面实现与版本，**不要当既有能力** | 已实现授权等待与失败路径并随 Linux 构建通过，但真机未跑；拒绝授权必须走 `capture.failed`，不能假装成功 |
-| 全局热键 | 没有全局热键协议；改用 `plugins/session_control` 在会话总线暴露 `org.pluginshot.Control`，用户在 GNOME「自定义快捷键」里绑一条 `gdbus call`，桌面负责按键 | `hotkey` 在非 Windows 上编 stub（发布列表与配置项、不注册，启动 WARN 指向本入口）；`session_control` 已实现并随 Linux 构建通过，GNOME 自定义快捷键的绑定端到端未真机验证；绑定步骤见 `plugins/session_control/README.md` |
+| 全局热键 | 没有全局热键协议；改用 `plugins/session_control` 在会话总线暴露 `org.pluginshot.Control`，用户在 GNOME「自定义快捷键」里绑一条 `gdbus call`，桌面负责按键 | `hotkey` 的 Linux 实现是 X11 `XGrabKey`；纯 Wayland（`XOpenDisplay` 失败）运行期降级为发布列表与配置项、不注册，启动 WARN 指向本入口；`session_control` 已实现并随 Linux 构建通过，GNOME 自定义快捷键的绑定端到端未真机验证；绑定步骤见 `plugins/session_control/README.md` |
 | 区域框选（B 方案） | 先用门户抓一张整屏定格图 → 在自己的窗口里显示这张图 → 用户拖选 → 按选区裁像素 | 已实现、编译通过：门户 Screenshot + 自有覆盖层拖选；真机未验证。**没有窗口悬停吸附**：portal 不提供其它应用的窗口列表与几何。窗口位置与大小由合成器决定，做不成全屏遮罩，只能“先看图、再拖选” |
 | 长截图 | ScreenCast 的 `SelectSources` 选**窗口**源持续取帧，在内存里按行指纹拼接；拼接核心可复用 `long_capture` 的 `stitch_canvas` / `scroll_stitcher`（不含平台头） | 未实现；被复用的拼接核心已实现并随 Windows 构建通过（§3.3），Wayland 的取帧与滚动编排尚未开始 |
 | 托盘 | StatusNotifierItem + `com.canonical.dbusmenu`（D-Bus）；GNOME 需要 **AppIndicator 扩展**（Ubuntu 默认随系统安装并启用），扩展缺失时图标不显示 | 未实现，构建期跳过。这是“能显示但依赖桌面扩展”，不是平台限制 |
@@ -81,13 +88,16 @@ B 方案、剪贴板依赖 XWayland、通知依赖会话服务，这些一律只
 | 设置页 | GLFW 的 Wayland 后端（vcpkg 的 glfw3 同时编 X11/Wayland）或 XWayland；NFD 走 portal | 能编译，Wayland 会话未验证 |
 | 多屏与 HiDPI | 采集坐标用 stream 的像素尺寸与 `spa_meta` 的缩放信息，**不要**用逻辑坐标 | 未实现 |
 
-### 3.2 Linux X11（第二优先）
+### 3.2 Linux X11（第二优先：分支已落地，真机未验证）
 
-| 能力 | 要补齐什么 | 现状 |
+X11 的采集 / 热键 / 覆盖层三件套已不再是缺口：分支已入库并随 WSL 全量构建通过
+（configure/build exit 0）。下表改为记录**剩余未验证项**，真机跑过之前不升 ✅。
+
+| 能力 | 方案 | 现状 / 未验证项 |
 | --- | --- | --- |
-| 采集 | `XGetImage`/`XShmGetImage` 抓 root window；RandR/Xinerama 拼多屏；XFixes 取光标并合成 | 没有 X11 代码；`screen_capture` 的 Linux 构建走 Wayland 分支，X11 会话下不能采集 |
-| 热键 | 独立 X11 连接 + `XGrabKey`/`XUngrabKey`，处理 NumLock/CapsLock 组合，自己跑事件循环 | `hotkey` 在 Linux 编 stub（发布列表与配置项、不注册）；`XGrabKey` 仍未实现（第二优先），过渡期可先用 `session_control` 的 D-Bus 入口；编译通过，真机未验证 |
-| 区域框选 | override-redirect 全屏窗口 + XComposite/XShape；`_NET_CLIENT_LIST`/`_NET_FRAME_EXTENTS` 枚举窗口；多屏用 Xinerama | `region_selector` 有 Win32 与 Wayland B 方案两份实现；X11 分支未实现（加载后不动作） |
+| 采集 | `XShmGetImage`（MIT-SHM）优先、`XGetImage` 回退抓默认 root window；XFixes 取光标并合成；每次调用独立 `XOpenDisplay` | 已实现、随 WSL 全量构建通过（exit 0）；真机未验证：XShm 路径、24/30bpp/大端、X11 光标热点、多屏/负坐标、多帧稳定性、XWayland 边界（只能看到 X 客户端窗口，Wayland 原生窗口不会进入 root pixmap） |
+| 热键 | 独立 X11 连接 + `XGrabKey`/`XUngrabKey`，CapsLock/NumLock/ScrollLock 锁修饰符变体，`BadAccess` 冲突 WARN，self-pipe 事件循环，`hotkey.suspend`/`resume` | 已实现、随 WSL 全量构建通过（exit 0）；纯 Wayland（`XOpenDisplay` 失败）运行期降级为只发布列表与配置项并 WARN 指向 `session_control`；真机未验证：真机键值与键盘布局、多 X screen 只抓默认 root。已知差异：没有 `MOD_NOREPEAT`，按住会重复触发 |
+| 区域框选 | GLFW 无边框覆盖层 + `XGetImage` 背景快照 + `XQueryTree`/`_NET_WM_WINDOW_TYPE` 窗口命中；普通框选发 `capture.request`（长截图目的走 `region.selected`） | 已实现、随 WSL 全量构建通过（exit 0）；**与 `screen_capture` 的 X11 分支尚未联调**；真机未验证：WM 下覆盖层置顶/焦点、reparenting frame 的 Z 序、多 X screen、XWayland 边界 |
 | 剪贴板 | `XSetSelectionOwner` 持有 `image/png`，响应 `SelectionRequest`，可选 `text/uri-list` | 已实现、编译通过（`clipboard_x11*.cpp`）；X11 真机未验证 |
 | 通知 | libnotify 或直接调 `org.freedesktop.Notifications` | 已实现、编译通过（`notify` 的 libnotify 路径）；X11 真机未验证 |
 | 托盘 | StatusNotifierItem + DBusMenu | 未实现 |
@@ -105,8 +115,9 @@ B 方案、剪贴板依赖 XWayland、通知依赖会话服务，这些一律只
 > `long_capture` 仅 Windows 构建。它们都已在各自目标平台通过编译，但**编译通过不等于真机可用**：
 > Wayland 的 portal 授权、B 方案框选与 Windows 的长截图交互都还没在真机上跑过，仍按 🟡 记录。
 >
-> Linux 的其它实现（`clipboard` 的 X11 selection、`notify` 的 libnotify、`region_selector` 的 B 方案）
-> 同样已合入并随 Linux 构建通过，但均未真机验证；矩阵按“编译通过、真机未验证”记录。
+> Linux 的其它实现（`clipboard` 的 X11 selection、`notify` 的 libnotify、`region_selector` 的 B 方案，
+> 以及本轮落地的 `screen_capture` / `region_selector` / `hotkey` X11 分支）同样已合入并随 Linux 构建
+> 通过，但均未真机验证；矩阵按“编译通过、真机未验证”记录。
 
 ### 3.4 macOS
 
@@ -114,7 +125,7 @@ B 方案、剪贴板依赖 XWayland、通知依赖会话服务，这些一律只
 | --- | --- | --- |
 | 构建 | 先让 vcpkg `arm64-osx` + CMake preset 通过 configure/build；统一本地默认 `x64-osx` 与 CI 的 `arm64-osx`；处理 Mach-O 贴尾对 ad-hoc 签名的影响 | CI 的 macOS job 从未进入编译，历史上在 configure 阶段失败 |
 | 屏幕采集 | ScreenCaptureKit（macOS 12.3+）或 `CGDisplayStream`；申请“屏幕录制”TCC 权限；多显示器坐标与光标 | 当前只有 GDI 实现，macOS 构建期跳过 |
-| 全局热键 | `RegisterEventHotKey`（Carbon/HIToolbox，不需要辅助功能授权）或 `CGEventTap`（需要“辅助功能”授权） | 没有原生实现；非 Windows 编 stub（发布列表与配置项、不注册），且 macOS 从未成功构建 |
+| 全局热键 | `RegisterEventHotKey`（Carbon/HIToolbox，不需要辅助功能授权）或 `CGEventTap`（需要“辅助功能”授权） | 没有原生实现；macOS 编 `hotkey_window_stub.cpp`（发布列表与配置项、不注册），且 macOS 从未成功构建 |
 | 剪贴板 | `NSPasteboard` 写 `NSImage`/PNG | 没有实现；`clipboard` 的 CMake 里已留 TODO |
 | 托盘 | `NSStatusBar`/`NSStatusItem` + 菜单 | 没有实现；`tray` 的 CMake 里已留 TODO |
 | 通知 | `UNUserNotificationCenter`（需要应用身份/签名） | 没有实现；`notify` 的 CMake 里已留 TODO |
@@ -137,14 +148,15 @@ B 方案、剪贴板依赖 XWayland、通知依赖会话服务，这些一律只
 - **Windows job**：最近一次可见的 CI run 中通过；本机真机验证（`tools/verify/`）是主要证据。
 - **Linux job**：WSL2 Ubuntu 24.04 + GCC 13.3 全量构建通过，产出宿主与 11 个 `.so`（13 个插件
   工程减去仅 Windows 的 `tray` / `long_capture`；含 `screen_capture` / `region_selector` /
-  `session_control` / `clipboard` / `notify` 的 Linux 实现与 `hotkey` stub）；`--help` 退出 0。
-  这是**本机 WSL 结论**，不是 CI 结论；workflow 的 apt 步骤已补这些依赖（`fc2d69e`），但 CI run
-  还没复跑。
+  `session_control` / `clipboard` / `notify` 的 Linux 实现，以及带 X11 分支的 `hotkey`）；`--help`
+  退出 0。这是**本机 WSL 结论**，不是 CI 结论；workflow 的 apt 步骤已补这些依赖（`fc2d69e`），
+  但 CI run 还没复跑。
 - **macOS job**：从未成功进入编译。历史上失败在 configure 阶段（vcpkg/工具链），本机没有 Mac。
 - **CI 的 Linux job 仍不是绿的**：workflow 已安装 `libglib2.0-dev` / `libportal-dev` /
-  `libpipewire-0.3-dev` / `libspa-0.2-dev` / `libnotify-dev` / `libx11-dev` 等依赖；最近一次可见
-  的失败点是 `vcpkg-configuration.json` 的 builtin-baseline（已改，未复跑）。本机 WSL 已装齐这些
-  包，所以本地构建通过；在 CI 复跑变绿之前，不要把本项目写成“CI 已通过 Linux 构建”。
+  `libpipewire-0.3-dev` / `libspa-0.2-dev` / `libnotify-dev` / `libx11-dev` / `libxext-dev` /
+  `libxfixes-dev` / `libxrandr-dev` 等依赖；最近一次可见的失败点是 `vcpkg-configuration.json` 的
+  builtin-baseline（已改，未复跑）。本机 WSL 已装齐这些包，所以本地构建通过；在 CI 复跑变绿之前，
+  不要把本项目写成“CI 已通过 Linux 构建”。
 - **CI 绿 ≠ 平台可用**：
   1. `--help` 在日志、插件加载和 GUI 初始化之前就返回，连插件都没加载；
   2. Linux 构建产物里已经有 `screen_capture`，但 runner 没有真实 Wayland 会话，portal/PipeWire
@@ -154,8 +166,9 @@ B 方案、剪贴板依赖 XWayland、通知依赖会话服务，这些一律只
 
 ### 4.1 新增 Linux 依赖包清单（供以后补 workflow）
 
-`ubuntu-latest` 的 apt 步骤已装这些包（见 `fc2d69e`）；本机 WSL（Ubuntu 24.04）也已装齐，
-Linux 构建通过。下表保留逐项用途与状态：
+`ubuntu-latest` 的 apt 步骤已装这些包（当前 workflow 的 apt 段，X11 组为
+`libx11-dev libxext-dev libxfixes-dev libxrandr-dev`；更早一轮见 `fc2d69e`）；本机 WSL
+（Ubuntu 24.04）也已装齐，Linux 构建通过。下表保留逐项用途与状态：
 
 | 包 | 用途 | 现状 |
 | --- | --- | --- |
@@ -164,7 +177,10 @@ Linux 构建通过。下表保留逐项用途与状态：
 | `libpipewire-0.3-dev` | 消费 ScreenCast 的 PipeWire 帧（`pw_stream`） | workflow 已装（`fc2d69e`）；本机 WSL 已装，`screen_capture` 的 PipeWire 路径编译通过 |
 | `libspa-0.2-dev` | PipeWire 帧元数据（`spa_meta`）与缓冲区布局头文件 | workflow 已装（`fc2d69e`）；本机 WSL 已装，随 `libpipewire-0.3-dev` 一起使用 |
 | `libnotify-dev` | Linux 通知（`org.freedesktop.Notifications` 的客户端封装） | workflow 已装（`fc2d69e`）；本机 WSL 已装，`notify` 编译通过 |
-| `libx11-dev` | X11 剪贴板 / 热键 / 框选的 Xlib | workflow 与 WSL 均已装，`clipboard` 编译通过 |
+| `libx11-dev` | X11 采集 / 热键 / 框选 / 剪贴板的 Xlib（`XOpenDisplay` / `XGetImage` / `XGrabKey` / `XSetSelectionOwner`） | workflow 与 WSL 均已装；`screen_capture` / `hotkey` / `region_selector` / `clipboard` 的 X11 分支随 Linux 全量构建通过 |
+| `libxext-dev` | MIT-SHM（`XShm.h` 与链接 `-lXext`）：`screen_capture` 的 `XShmGetImage` 首选路径 | workflow 与 WSL 均已装；随 Linux 全量构建通过 |
+| `libxfixes-dev` | XFixes：`screen_capture` 的 `XFixesGetCursorImage` 光标合成 | workflow 与 WSL 均已装；随 Linux 全量构建通过 |
+| `libxrandr-dev` | RandR：`screen_capture` 只在 debug 日志里列显示器布局（RandR 1.5+）；GLFW 自身也用它取输出布局 | workflow 与 WSL 均已装；随 Linux 全量构建通过 |
 | `pkg-config` | `pkg_check_modules` 找 gio / libportal / libpipewire | workflow 已装 |
 
 > 版本随发行版走：CMake 里一律用 `pkg_check_modules(... REQUIRED)` 探测，**不要写死版本号**，
@@ -198,7 +214,7 @@ Linux 构建通过。下表保留逐项用途与状态：
 | 不做 | 原因 |
 | --- | --- |
 | 在根 README 写“全平台支持” | Windows 之外没有完整链路；Linux 只验证编译，macOS 没有构建结论 |
-| 给非 Windows 平台留空实现的 `screen_capture`/`tray` | 空实现会让宿主误判能力可用，失败点被推迟到运行时，比构建期跳过更难查（`hotkey` 例外：非 Windows 编的是明确不注册的 stub，只提供列表与配置项并 WARN） |
+| 给非 Windows 平台留空实现的 `screen_capture`/`tray` | 空实现会让宿主误判能力可用，失败点被推迟到运行时，比构建期跳过更难查（`hotkey` 例外：Linux 用 X11 `XGrabKey`，纯 Wayland 运行期降级为只提供列表与配置项并 WARN；macOS 编不注册的 stub） |
 | 把 `--help` 冒烟当作平台验证 | 它在插件加载与 GUI 初始化之前返回，几乎不覆盖任何平台代码 |
 | 用 X11 API 冒充 Linux 支持 | Wayland 会话下 `XGetImage`/`XGrabKey`/全局覆盖层都不可用，而 Wayland 是默认目标 |
 | 在 Wayland 上用 libinput/evdev 直接抓键盘 | 需要 root/input 组权限，会绕过桌面环境的快捷键分发；`session_control` 明确不做这条 |
@@ -210,7 +226,7 @@ Linux 构建通过。下表保留逐项用途与状态：
 
 - [ ] 我改动的平台代码是否只在 `*_windows.cpp` / `*_macos.mm` / `*_linux.cpp` 或等价平台层里？
 - [ ] 公共头是否仍然不包含 `<windows.h>`、Cocoa、X11、GLib 等平台头？
-- [ ] 未实现的平台是否在 `CMakeLists.txt` 里 `SHOT_PLUGIN_SKIPPED`，而不是留空实现（`hotkey` 的非 Windows stub 是明确不注册的例外）？
+- [ ] 未实现的平台是否在 `CMakeLists.txt` 里 `SHOT_PLUGIN_SKIPPED`，而不是留空实现（`hotkey` 的 macOS stub 与纯 Wayland 运行期降级是明确不注册的例外）？
 - [ ] 新增插件是否在 `shot_add_plugin()` **之前**判断平台（否则依赖与源文件会先被解析）？
 - [ ] Wayland 与 X11 是否分别给了状态，没有用一句“Linux 支持”糊过去？
 - [ ] 本文件的矩阵是否已按新证据更新（✅/🟡/⛔/🚫 没有升级错，未真机验证的仍标 🟡 并写清“能编译未验证”）？
