@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "long_capture.main",
+      "name": "Long Capture",
+      "version": "0.1.0",
+      "description": "手动滚动长截图：连续抓帧 + 行指纹在线拼接 + Enter 保存（Windows GDI HUD / 全局按键）",
+      "interfaces": ["shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}
