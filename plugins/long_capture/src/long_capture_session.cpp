@@ -303,6 +303,18 @@ void LongCapture::runSession() {
         } else if (!match.matched) {
             ++gapCount;
         }
+        // 逐帧记录位移/分数/画布高度：拼接出问题时这段日志是唯一能离线复现的证据。
+        // 只在送拼时记（约 5~10 条/秒），不影响性能；用户贴日志即可定位。
+        if (match.matched) {
+            log.info("[long_capture] 帧 " + std::to_string(feedCount) + "：位移 " +
+                     std::to_string(match.delta) + "，分数 " +
+                     std::to_string(match.score) + "，画布 " +
+                     std::to_string(canvas->height()));
+        } else if (!match.duplicate && !match.heightLimited) {
+            log.warn("[long_capture] 帧 " + std::to_string(feedCount) + "：缺口（分数 " +
+                     std::to_string(match.score) + "），画布 " +
+                     std::to_string(canvas->height()));
+        }
 
         const auto now = std::chrono::steady_clock::now();
         if (limitReached || now - lastHudRefresh >= std::chrono::milliseconds(kHudRefreshMs)) {
