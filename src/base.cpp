@@ -63,11 +63,12 @@ namespace core{
         char buffer[MAX_PATH];
         SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, SHGFP_TYPE_CURRENT, buffer);
         std::string path(buffer);
-        dataPath=path+"/screen-shot/";
+        // 目录名与仓库名、包名保持一致（小写）；0.1.0 起对外公布的就是这个路径。
+        dataPath=path+"/plugin-shot/";
 #else
         // POSIX 用 $HOME；HOME 未设置（极端环境）时退回当前目录，避免空串构造路径。
         const char* home = std::getenv("HOME");
-        dataPath=std::string(home != nullptr ? home : ".")+"/.screen-shot/";
+        dataPath=std::string(home != nullptr ? home : ".")+"/.plugin-shot/";
 #endif
         if(!dataPath.empty() && (dataPath.back()=='\\'||dataPath.back()=='/')) dataPath.pop_back();
     }

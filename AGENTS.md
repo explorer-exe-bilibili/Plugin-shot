@@ -16,8 +16,8 @@
 | 工程根 | `D:\src\repo\plugin-shot\Host`（Windows-first，C++23） |
 | 构建目录 | `build\Windows`（Ninja + MSVC Debug），Linux 用 `build\Linux`（WSL 已验证） |
 | 宿主产物 | `build\Windows\bin\Plugin-shot.exe`，插件在 `build\Windows\bin\plugins\*.dll` |
-| 配置文件 | `%LOCALAPPDATA%\screen-shot\config.json` |
-| 日志 | `%LOCALAPPDATA%\screen-shot\logs\host.log`（UTF-8，中文会显示成乱码是编码问题，不是 bug） |
+| 配置文件 | `%LOCALAPPDATA%\plugin-shot\config.json` |
+| 日志 | `%LOCALAPPDATA%\plugin-shot\logs\host.log`（UTF-8，中文会显示成乱码是编码问题，不是 bug） |
 | CLI | `--capture` 截一张存盘后退出 / `--settings` 打开设置页后常驻 / `--help` |
 | 契约头 | `include/plugin_api.h`（汇总头，只 include）＋ `include/plugin_api/*.h`（按主题的子头；纯 C、append-only、**当前 2.0**） |
 

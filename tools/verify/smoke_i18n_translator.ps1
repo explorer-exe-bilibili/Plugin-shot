@@ -3,7 +3,7 @@
 #
 #  断言（每一步都备份/恢复 config.json、bin\files\lang\、用户语言包目录）：
 #    1. 官方包（bin\files\lang\ja-JP.json，priority 200）与用户包
-#       （%LOCALAPPDATA%\screen-shot\langs\ja-JP.json，priority 300）都被加载，
+#       （%LOCALAPPDATA%\plugin-shot\langs\ja-JP.json，priority 300）都被加载，
 #       日志有「语言包已加载」；
 #    2. 坏包（用户目录里的 broken.json，非法 JSON）只 WARN 跳过，近期日志无 [error；
 #       文件名与 @meta.tag 不一致的包（de-DE.json 里写 "@meta":"fr-FR"）只 WARN，
@@ -26,7 +26,7 @@ Initialize-PmAwareness
 
 $script:LangTag = "ja-JP"
 $script:OfficialDir = Join-Path $script:RepoRoot "build\Windows\bin\files\lang"
-$script:UserDir = Join-Path $env:LOCALAPPDATA "screen-shot\langs"
+$script:UserDir = Join-Path $env:LOCALAPPDATA "plugin-shot\langs"
 $script:BackupRoot = Join-Path $script:OutDir "i18n_translator_backup"
 $script:OfficialBackup = Join-Path $script:BackupRoot "official"
 $script:UserBackup = Join-Path $script:BackupRoot "user"

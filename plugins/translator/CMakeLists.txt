@@ -2,7 +2,7 @@
 #  translator —— 外部语言包插件（"shot.configurable"，Generic 插件）
 #
 #  扫描 <exe>/files/lang/*.json（官方包，priority 200）与
-#  %LOCALAPPDATA%\screen-shot\langs\*.json（用户包，priority 300），把每个
+#  %LOCALAPPDATA%\plugin-shot\langs\*.json（用户包，priority 300），把每个
 #  texts[owner][key] 贡献成 i18n_source_list 的条目（target=owner、priority=来源），
 #  并为每个包贡献一条 "@language/<tag>" 语言目录声明。合并与投影都由宿主完成，
 #  本插件不碰 ABI、不改宿主任何代码——这就是"语言包"能做到零 ABI 改动的原因。

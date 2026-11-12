@@ -52,7 +52,7 @@ bash tools/verify/build.sh --target translator
 | 目录 | 来源 | priority |
 | --- | --- | --- |
 | `<exe>/files/lang/*.json` | 官方包（随安装包分发） | 200 |
-| `%LOCALAPPDATA%\screen-shot\langs\*.json` | 用户包（升级不覆盖） | 300 |
+| `%LOCALAPPDATA%\plugin-shot\langs\*.json` | 用户包（升级不覆盖） | 300 |
 | 配置项 `pack_dirs` 指定的目录 | 用户显式指定 | 300 |
 
 - `pack_dirs` 为空 = 用上面两个默认目录；非空 = **只用它**，不再读默认目录。
@@ -61,7 +61,7 @@ bash tools/verify/build.sh --target translator
   （目录内按文件名排序，所以结果可复现）。用户包因此天然覆盖官方包。
 - exe 目录由 `GetModuleFileNameW` 取（ABI 不暴露数据目录）；非 Windows 用
   `/proc/self/exe`（Linux）或 `_NSGetExecutablePath`（macOS）。用户目录在
-  Windows 走 `SHGetKnownFolderPath(FOLDERID_LocalAppData)`，其它平台用 `$HOME/.screen-shot/langs`。
+  Windows 走 `SHGetKnownFolderPath(FOLDERID_LocalAppData)`，其它平台用 `$HOME/.plugin-shot/langs`。
 
 ## 包格式
 
@@ -171,7 +171,7 @@ bash tools/verify/build.sh --target translator
 tools\verify\run.bat smoke_i18n_translator.ps1
 ```
 
-它会备份/恢复 `config.json`、`bin\files\lang\`、`%LOCALAPPDATA%\screen-shot\langs\`，
+它会备份/恢复 `config.json`、`bin\files\lang\`、`%LOCALAPPDATA%\plugin-shot\langs\`，
 造两个临时包（官方 + 用户，同一 key 不同文本）和一个坏包，验证：语言包已加载、
 `@language` 声明进了语言目录、`i18n_list` 重新发布、托盘 label 显示**用户包**文本、
 坏包只 WARN 无 error、关闭插件后回退 en-US。

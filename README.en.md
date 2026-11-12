@@ -1,10 +1,44 @@
-# plugin-shot
+# Plugin-shot
 
 [中文](README.md) | **English**
 
-> A screenshot tool where everything is a plugin. The host does only what a host
-> should — load, validate, dispatch; screenshots, image processing, screen
-> recording and every other capability come from plugins.
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/explorer-exe-bilibili/Plugin-shot?label=release)](https://github.com/explorer-exe-bilibili/Plugin-shot/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4.svg)](#platforms)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C.svg)](#build)
+
+![Plugin-shot](document/assets/banner.png)
+
+> **A screenshot tool where everything is a plugin.** The host does only what a host
+> should — load, validate, dispatch; screenshots, image processing, long capture,
+> screen recording and every other capability come from plugins.
+
+**Plugin-shot** is a Windows-first C++23 screenshot tool and an experiment in turning a
+desktop utility into a plugin host: a small host, independently built and distributed
+plugins, runtime hot-plug, an append-only ABI, and UI data that never enters the contract.
+
+## At a glance
+
+- **Download and run**: portable Windows 10/11 x64 build; unzip and start `Plugin-shot.exe`.
+- **Three entry points**: `Ctrl+Alt+S` full screen, `Ctrl+Alt+A` region capture (hover a window to snap, click to capture it), `Ctrl+Alt+O` settings.
+- **After the shot**: save PNG/JPEG, copy to the clipboard, show a system notification; output folder, format, quality and filename template are configurable.
+- **Everything is a plugin**: tray, hotkeys, settings UI, saving, notifications and clipboard are plugins themselves, each can be disabled or re-enabled in the settings window.
+- **Extend it**: build one DLL with the offline SDK to add your own processor or entry point — no host changes.
+
+### Download
+
+[**Plugin-shot 0.1.0 · Windows x64 portable**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
+[Changelog](CHANGELOG.md)
+
+Unzip and run `Plugin-shot.exe`. 0.1.0 ships a Windows build only; the Linux / macOS code
+paths have not been verified on real hardware yet — see [Platforms](#platforms).
+
+### UI
+
+![Plugin-shot settings](document/assets/settings.png)
+
+> The settings window is a plugin too: the host aggregates plugin-declared configuration
+> into `config_list`, and the form, theme and plugin toggles are rendered from that data.
 
 > **Taking over / handing to an AI agent**: read [`AGENTS.md`](AGENTS.md) first
 > (build, verification, machine setup, known traps), then [`STYLE.md`](STYLE.md) (code style).
@@ -61,8 +95,8 @@ current main line.
 | Notification plugin `plugins/notify` (success/failure balloons via a hidden placeholder icon; config items `enabled` / `show_on_success` / `show_on_error` / `sound`; Windows only) | ✅ working |
 | Clipboard plugin `plugins/clipboard` (subscribes to `capture.done` → CF_DIB / optional CF_HDROP; config items `enabled` / `also_file_drop`; Windows only) | ✅ working |
 | Global hotkey plugin `plugins/hotkey` (defaults Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O → `capture.request` / `settings.open`; primary keys A-Z / 0-9 / F1-F12 / PrintScreen plus optional modifiers (Windows 11 routes a bare PrintScreen to Snipping Tool by default, so prefer Ctrl+PrintScreen or disable that Windows setting); the settings window records a new combo by key press (`options="hotkey"`, temporarily unregistering global hotkeys via `hotkey.suspend/resume` while recording); invalid hotkeys are warned and skipped; Windows only) | ✅ working |
-| Linux session-control plugin `plugins/session_control` (exposes `org.pluginshot.Control` on the session bus; `Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` map to existing events; Wayland has no global-hotkey API, so the desktop's custom shortcut runs `gdbus call`; config item `enabled`; Linux only) | Draft (not compiled or verified): sources and docs are in the workspace and need the system `libglib2.0-dev`; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
-| Long screenshot plugin `plugins/long_capture` (manual-scroll long capture: continuous frames + online row-fingerprint stitching + Enter to save; config items `hotkey` / `maxHeight`; Windows P1) | Draft (not compiled or verified): only part of the sources exist, so a Windows configure fails on the missing files; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
+| Linux session-control plugin `plugins/session_control` (exposes `org.pluginshot.Control` on the session bus; `Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` map to existing events; Wayland has no global-hotkey API, so the desktop's custom shortcut runs `gdbus call`; config item `enabled`; Linux only) | 🟡 sources committed, not compiled or verified: needs the system `libglib2.0-dev`; not shipped in 0.1.0; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
+| Long screenshot plugin `plugins/long_capture` (manual-scroll long capture: continuous frames + online row-fingerprint stitching + Enter to save; config items `hotkey` / `maxHeight`; Windows P1) | 🟡 Windows implementation committed, not compiled or verified; not shipped in 0.1.0; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | Mixed-DPI multi-monitor capture (physical virtual desktop 3584x1600; per-call thread DPI context fallback; negative origin not verified on real hardware) | ✅ working (`document/CAPTURE.md` §2.1) |
 | Settings-window DPI (dual-screen 150%+100%: live rescale while dragging across monitors, geometry clamped to the target screen's DPI, non-accumulating; other DPI mixes / 3+ screens unverified) | ✅ working (`document/SETTINGS.md` §6.1) |
 | Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--help` | ✅ working |
@@ -73,7 +107,7 @@ current main line.
 | Plugin-level dependencies (`requires` / `provides` with version ranges, `core` = the host) | ✅ working (`document/METADATA.md`) |
 | Dependency-driven load order (topological sort; an unsatisfied plugin is skipped on its own) | ✅ working |
 | Shared plugin build rules (`shot_add_plugin()`) | ✅ working (host and offline SDK share one module) |
-| i18n / multilingual UI (`core/language` = `auto` or a language-catalog tag; plugins contribute `i18n_source_list`, the host merges it into the read-only `i18n_list`; external packs in `files/lang/` and `%LOCALAPPDATA%\screen-shot\langs\`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; 27 built-in tags, only zh-CN / en-US ship translations; external-pack protocol ready, translator plugin `plugins/translator` included (off by default); dynamic font atlas plus Segoe UI/Arial merge, RTL and Korean/Thai/Arabic glyphs not done) |
+| i18n / multilingual UI (`core/language` = `auto` or a language-catalog tag; plugins contribute `i18n_source_list`, the host merges it into the read-only `i18n_list`; external packs in `files/lang/` and `%LOCALAPPDATA%\plugin-shot\langs\`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; 27 built-in tags, only zh-CN / en-US ship translations; external-pack protocol ready, translator plugin `plugins/translator` included (off by default); dynamic font atlas plus Segoe UI/Arial merge, RTL and Korean/Thai/Arabic glyphs not done) |
 | Offline plugin SDK export (`export_sdk` target) | ✅ working |
 
 > The binary name comes from `PROJECT_NAME` in `CMakeLists.txt` (currently `Plugin-shot`):
@@ -234,8 +268,8 @@ settings window records a new combo by pressing it, no manual typing).
 (capture/save failure, missing plugin, full request queue) and 2 on unknown arguments. The
 one-shot mode dispatches one event round before exiting, so subscribers such as the clipboard
 and notification plugins also see the `capture.done` of this run (`document/CAPTURE.md` §6).
-Logging goes through spdlog: console plus `%LOCALAPPDATA%\screen-shot\logs\host.log` (appended).
-Configuration lives in `%LOCALAPPDATA%\screen-shot\config.json` (host settings and plugin items,
+Logging goes through spdlog: console plus `%LOCALAPPDATA%\plugin-shot\logs\host.log` (appended).
+Configuration lives in `%LOCALAPPDATA%\plugin-shot\config.json` (host settings and plugin items,
 keyed as `<owner>/<id>`, matching the `owner` / `id` of a `config_list` entry).
 
 ### Multi-monitor and DPI
@@ -369,7 +403,7 @@ pseudo-plugin (log level, console/file log switches), and the host aggregates ev
 instance into the `config_list` JSON snapshot, so the settings window renders one set of code.
 
 - Storage keys are `<owner>/<id>`; the **host** persists them to
-  `%LOCALAPPDATA%\screen-shot\config.json` — plugins only get/set values and never write config files.
+  `%LOCALAPPDATA%\plugin-shot\config.json` — plugins only get/set values and never write config files.
 - On startup the host feeds stored values back into plugins (using `default_value` when nothing is
   stored yet), so a plugin never has to read configuration itself.
 - Value writes go through `lists.update` (event-driven, per-item results) and persistence through
@@ -535,6 +569,10 @@ the root `CMakeLists.txt` and drifted away from the docs.
 
 ## Platforms
 
+> **0.1.0 release scope**: a **Windows 10/11 x64** build only. This section records the state of the
+> repository code and real-hardware verification, not a promise for 0.1.0; unverified capabilities
+> are not shipped in this release.
+
 Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`). On Linux
 the **default target is Wayland** (the maintainer's environment: Ubuntu 24.04 / GNOME 46 / Wayland
 session), with X11 kept as the **second priority**; macOS has never built successfully.
@@ -551,10 +589,10 @@ only build/verification conclusions — do not read it as "supported everywhere"
 
 | Platform | Status |
 | --- | --- |
-| Windows (MSVC x64) | ✅ primary development and verification platform (incl. mixed-DPI dual screen, plugin enable/disable, capture/save/notify/clipboard/hotkey/region selection); long capture is draft-only |
+| Windows (MSVC x64) | ✅ primary development and verification platform (incl. mixed-DPI dual screen, plugin enable/disable, capture/save/notify/clipboard/hotkey/region selection); long capture is committed but unverified and not shipped in 0.1.0 |
 | Linux (WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`) | 🟡 compiles, functionality unverified: configure + build (43s, 0 warnings), producing `Plugin-shot` and the `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` `.so` files; `--help` exits 0; a headless `--capture` run loads all `.so` files but fails by design with exit 1 (no `screen_capture`); no real X11 / Wayland desktop run. `SHOT_ENABLE_OPENCV=OFF` also passes. **That result predates the `session_control` draft**: the draft needs `libglib2.0-dev` and has not been compiled |
-| Linux (Wayland, default target) | ⛔ capture / region selection / global hotkeys are all unimplemented: capture must go through `xdg-desktop-portal` ScreenCast + PipeWire, hotkeys are replaced by `plugins/session_control` (draft), selection can only use the "portal snapshot + drag inside our own window" plan B, and the tray depends on StatusNotifierItem plus a desktop extension. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
-| Linux (X11, second priority) | ⛔ kept but unimplemented: no `XGetImage`/`XShmGetImage` capture, no `XGrabKey` hotkeys, no override-redirect overlay; the X11 clipboard/notify drafts are uncommitted and uncompiled. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
+| Linux (Wayland, default target) | 🟡 capture / region-selection implementations are committed but neither compiled nor verified on real hardware; global hotkeys go through `plugins/session_control` (committed, unverified); the tray still lacks a StatusNotifierItem implementation. 0.1.0 ships no Linux build. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
+| Linux (X11, second priority) | 🟡 the Linux clipboard / notification implementations are committed but neither compiled nor verified; still no `XGetImage`/`XShmGetImage` capture, no `XGrabKey` hotkeys, no override-redirect overlay. 0.1.0 ships no Linux build. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
 | macOS | **not built and not verified on real hardware**: the CI macOS job fails at configure (vcpkg/toolchain); code audit only (`base.cpp`'s `_NSGetExecutablePath` / empty-string UB / HOME fallback); no real build or run result |
 | GitHub Actions | workflow ready; the Windows job passes while Linux/macOS have configure-stage failure records (see [`document/PLATFORMS.md`](document/PLATFORMS.md) §4); a green CI run does not mean the platform is usable |
 
@@ -578,4 +616,16 @@ capture would add `libportal-dev` + `libpipewire-0.3-dev`; Linux notifications n
 
 ## License
 
-Not specified yet.
+Plugin-shot is released under the [Apache License 2.0](LICENSE),
+Copyright 2026 Plugin-shot contributors.
+
+Third-party components and their licenses are listed in [NOTICE](NOTICE); the release package
+also ships their full texts under `THIRD_PARTY_LICENSES/`.
+
+## Contributing
+
+- Build, verification, machine setup and known traps: [AGENTS.md](AGENTS.md)
+- Code style and engineering conventions: [STYLE.md](STYLE.md)
+- Plugin contract and design documents: [document/](document/)
+- Questions and bug reports: [Issues](https://github.com/explorer-exe-bilibili/Plugin-shot/issues)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)

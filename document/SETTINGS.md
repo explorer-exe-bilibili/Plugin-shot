@@ -268,7 +268,7 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
   同步刷新（`document/I18N.md` §3.1、§3.3）。
 
 外部语言包的目录、文件格式与优先级见 `document/I18N.md` §3.3
-（官方 `<exe>/files/lang/`、用户 `%LOCALAPPDATA%\screen-shot\langs\`）。
+（官方 `<exe>/files/lang/`、用户 `%LOCALAPPDATA%\plugin-shot\langs\`）。
 
 **宿主设置里刻意没有 `output.*`**：输出目录/格式/质量/剪贴板这类"保存"相关的配置不在宿主
 设置里，由实现保存/剪贴板能力的插件用 `shot.configurable` 自己声明

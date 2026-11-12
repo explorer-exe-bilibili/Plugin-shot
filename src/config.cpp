@@ -111,7 +111,7 @@ bool Config::saveConfigFile() {
     nlohmann::json configJson;
     configJson["version"] = VERSION_STRING;
     configJson["fullVersion"] = VERSION_FULL_STRING;
-    configJson["appName"] = "screen-shot";
+    configJson["appName"] = "plugin-shot";
     nlohmann::json configItemsJson;
     for (const auto& [key, value] : configItems) {
         nlohmann::json configItemJson;

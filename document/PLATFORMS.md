@@ -6,6 +6,11 @@ Wayland**（维护者实测环境：Ubuntu 24.04 / GNOME 46 / Wayland 会话）�
 **第二优先**；macOS 从未真机运行，也没有成功的构建结论。平台相关插件在非目标平台上由
 CMake 显式跳过（`SHOT_PLUGIN_SKIPPED`），不产出“跑起来什么都不做”的伪实现。
 
+> **2026-11-12 同步说明**：`screen_capture`（Wayland 门户）、`region_selector`（Wayland B 方案）、
+> `clipboard`（X11）、`notify`（libnotify）、`session_control`、`long_capture` 的实现代码已入库，
+> 但尚未在本机编译、也未在真机验证；下表部分单元格仍按“未实现 / 草稿”记录。
+> **0.1.0 只发布 Windows 构建，未验证能力不随包分发**；表格会在逐项验证后更新。
+
 **改平台相关代码、CMake 跳过条件、根 `README*.md` 的平台段、或插件清单前先读这里，
 并在同一个提交里更新矩阵。**
 

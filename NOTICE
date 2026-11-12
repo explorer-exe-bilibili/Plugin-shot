@@ -1,0 +1,23 @@
+Plugin-shot
+Copyright 2026 Plugin-shot contributors
+
+This product includes software developed by third parties. The main components
+and their licenses are listed below; the full license text of each upstream
+project ships with the release package under THIRD_PARTY_LICENSES/.
+
+  OpenCV                          Apache License 2.0
+  spdlog                          MIT
+  fmt (bundled by spdlog)         MIT
+  nlohmann/json                   MIT
+  GLFW                            zlib/libpng
+  Dear ImGui                      MIT
+  nativefiledialog-extended       zlib
+  stb                             MIT / public domain
+  libpng                          libpng License
+  libjpeg-turbo                   BSD-3-Clause / Zlib
+  libwebp                         BSD-3-Clause
+  libtiff                         libtiff License
+  xz / liblzma                    public domain
+
+Plugin-shot itself is licensed under the Apache License, Version 2.0.
+See LICENSE for the full text.

@@ -5,7 +5,7 @@
 //
 //  默认两个目录：
 //    · 官方：<exe 目录>/files/lang   —— 随安装包分发，priority 200；
-//    · 用户：%LOCALAPPDATA%\screen-shot\langs —— 升级不覆盖，priority 300。
+//    · 用户：%LOCALAPPDATA%\plugin-shot\langs —— 升级不覆盖，priority 300。
 //  exe 目录在 ABI 里没有暴露（数据目录不在契约里），所以 Windows 用
 //  GetModuleFileNameW(nullptr) 取，Linux/macOS 走 /proc/self/exe / dyld。
 //
@@ -49,7 +49,7 @@ public:
     static std::filesystem::path executableDirectory();
 
     /**
-     * @brief 用户语言包目录（默认 %LOCALAPPDATA%\screen-shot\langs）。
+     * @brief 用户语言包目录（默认 %LOCALAPPDATA%\plugin-shot\langs）。
      * @return 目录；取不到用户目录时返回空路径。
      */
     static std::filesystem::path defaultUserDirectory();
