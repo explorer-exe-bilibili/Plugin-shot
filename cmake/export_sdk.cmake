@@ -11,9 +11,12 @@
 #
 #  交付规则（硬约束）：
 #    sdk/include  契约头(plugin_api*.h + plugin_api/ 子目录) + opencv4 头
-#    sdk/lib      仅 *.lib
-#    sdk/bin      仅 *.dll
+#    sdk/lib      白名单内的 *.lib（OpenCV + 图像编解码/压缩传递依赖）
+#    sdk/bin      白名单内的 *.dll
 #    全树无 *.pdb，无 pkgconfig 噪音，附 README.md
+#
+#  白名单规则见下方「SDK 白名单」注释：整目录 dump 会把宿主私有依赖（fmt /
+#  spdlog / glfw3dll / imgui / nfd）也带进 SDK，等于把它们变成对外契约。
 #
 #  历史坑：旧写法用 cmake -E copy_directory 整目录拷贝 + cmake -E remove -f
 #  "DIR/*.pdb"，通配符无人展开，pdb 与 pkgconfig 全漏进 SDK。
@@ -48,6 +51,96 @@ function(_copy_files_tree _base _dest)
     endforeach()
 endfunction()
 
+# ---------------------------------------------------------------------------
+#  白名单：SDK 只承诺 OpenCV 及其图像编解码 / 压缩传递依赖
+#
+#  为什么不能整目录拷贝：vcpkg_installed/<triplet>/lib|bin 里同时躺着宿主私有
+#  依赖（fmt / spdlog / glfw3dll / imgui / nfd）。整目录 dump 等于把它们写进
+#  SDK 的对外契约——第三方照着链接宿主的内部实现，宿主一升级就断；SDK 的
+#  bin/ 也会被塞进一堆与插件无关的 DLL。白名单让"SDK 能力"只等于
+#  shot.lib_provider 真正带来的那一套（OpenCV + opencv_imgcodecs 落地时
+#  必需的编解码/压缩库），其余一概不进 SDK。
+#
+#  正则匹配"完整文件名"，release / debug 的命名差异（opencv_*4d、libpng16d、
+#  tiffd、zd）都写在同一张表里，所以两个变体共用一份白名单。
+#  白名单以当前 sdk/lib、sdk/bin 的实测清单为准（2026-11 复核）：
+#    lib: jpeg / libpng16 / tiff / z / lzma / libwebp* / libsharpyuv / turbojpeg
+#    dll: jpeg62 / libpng16 / tiff / z / liblzma / libwebp* / libsharpyuv / turbojpeg
+# ---------------------------------------------------------------------------
+set(_SDK_LIB_WHITELIST
+    "^opencv_[A-Za-z0-9]+\\.lib$"   # OpenCV 模块：opencv_core4.lib / opencv_core4d.lib
+    "^jpeg\\.lib$"                  # libjpeg-turbo 的 jpeg 兼容库
+    "^turbojpeg\\.lib$"
+    "^libpng16d?\\.lib$"            # PNG：release libpng16.lib / debug libpng16d.lib
+    "^tiffd?\\.lib$"
+    "^zd?\\.lib$"                   # zlib：release z.lib / debug zd.lib
+    "^lzma\\.lib$"
+    "^libwebp[a-z]*\\.lib$"         # libwebp / decoder / demux / mux
+    "^libsharpyuv\\.lib$"
+)
+
+set(_SDK_DLL_WHITELIST
+    "^opencv_[A-Za-z0-9]+\\.dll$"
+    "^jpeg[0-9]*\\.dll$"            # 实际文件名是 jpeg62.dll
+    "^turbojpeg\\.dll$"
+    "^libpng16d?\\.dll$"
+    "^tiffd?\\.dll$"
+    "^zd?\\.dll$"
+    "^liblzma\\.dll$"               # 导入库叫 lzma.lib，DLL 叫 liblzma.dll
+    "^libwebp[a-z]*\\.dll$"
+    "^libsharpyuv\\.dll$"
+)
+
+set(_SDK_LIB_WHITELIST_DESC
+    "opencv_* / jpeg / turbojpeg / libpng16 / tiff / z / lzma / libwebp* / libsharpyuv")
+set(_SDK_DLL_WHITELIST_DESC
+    "opencv_* / jpeg* / turbojpeg / libpng16 / tiff / z / liblzma / libwebp* / libsharpyuv")
+
+message(STATUS "export_sdk: SDK 导入库白名单 = ${_SDK_LIB_WHITELIST_DESC}")
+message(STATUS "export_sdk: SDK 运行时白名单 = ${_SDK_DLL_WHITELIST_DESC}")
+message(STATUS "export_sdk: 宿主私有依赖不入 SDK：fmt / spdlog / glfw3dll / imgui / nfd")
+
+# 按白名单正则过滤文件列表：命中项与未命中项分别写入两个输出变量。
+function(_filter_whitelist _out_kept _out_dropped _patterns)
+    set(_kept "")
+    set(_dropped "")
+    foreach(_src_file IN LISTS ARGN)
+        get_filename_component(_src_name "${_src_file}" NAME)
+        set(_matched FALSE)
+        foreach(_pattern IN LISTS _patterns)
+            if(_src_name MATCHES "${_pattern}")
+                set(_matched TRUE)
+                break()
+            endif()
+        endforeach()
+        if(_matched)
+            list(APPEND _kept "${_src_file}")
+        else()
+            list(APPEND _dropped "${_src_file}")
+        endif()
+    endforeach()
+    set(${_out_kept} "${_kept}" PARENT_SCOPE)
+    set(${_out_dropped} "${_dropped}" PARENT_SCOPE)
+endfunction()
+
+# 白名单过滤 + 平铺拷贝（沿用 _copy_files_flat 的逐文件风格）。
+# 输出：命中数量与被排除的文件列表；日志由调用方打印，便于发现 vcpkg 新增依赖。
+function(_copy_whitelisted _src_dir _dest _ext _patterns _out_count _out_dropped)
+    file(GLOB _candidates "${_src_dir}/*${_ext}")
+    if(_candidates)
+        _filter_whitelist(_matched _dropped "${_patterns}" ${_candidates})
+    else()
+        set(_matched "")
+        set(_dropped "")
+    endif()
+    if(_matched)
+        _copy_files_flat("${_dest}" ${_matched})
+    endif()
+    list(LENGTH _matched _count)
+    set(${_out_count} "${_count}" PARENT_SCOPE)
+    set(${_out_dropped} "${_dropped}" PARENT_SCOPE)
+endfunction()
+
 foreach(_required VCPKG_BIN_DIR VCPKG_LIB_DIR VCPKG_INC_DIR CONTRACT_INCLUDE_DIR SDK_OUTPUT_DIR SHOT_CMAKE_DIR)
     if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
         message(FATAL_ERROR "export_sdk: 缺少必需参数 -D${_required}=<path>")
@@ -72,6 +165,9 @@ endforeach()
 
 # ---------------------------------------------------------------------------
 # 2. include/：OpenCV 头（保留子目录结构）+ 契约头
+#
+# 头文件同样只取白名单内的 opencv4：vcpkg include/ 下的 fmt / spdlog / imgui /
+# nfd 是宿主内部实现，暴露给第三方等于把它们变成 SDK 契约。
 # ---------------------------------------------------------------------------
 if(IS_DIRECTORY "${VCPKG_INC_DIR}/opencv4")
     file(GLOB_RECURSE _opencv_headers
@@ -126,27 +222,27 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# 3. lib/：仅 *.lib
+# 3. lib/：白名单内的 *.lib（OpenCV + 图像编解码/压缩传递依赖）
 # ---------------------------------------------------------------------------
-file(GLOB _libs "${VCPKG_LIB_DIR}/*.lib")
-if(_libs)
-    _copy_files_flat("${SDK_OUTPUT_DIR}/lib" ${_libs})
-    list(LENGTH _libs _lib_count)
-    message(STATUS "export_sdk: ${_lib_count} 个导入库 -> sdk/lib")
+_copy_whitelisted("${VCPKG_LIB_DIR}" "${SDK_OUTPUT_DIR}/lib" ".lib"
+                  "${_SDK_LIB_WHITELIST}" _lib_count _lib_dropped)
+list(LENGTH _lib_dropped _lib_dropped_count)
+if(_lib_count GREATER 0)
+    message(STATUS "export_sdk: ${_lib_count} 个导入库 -> sdk/lib（白名单命中；排除 ${_lib_dropped_count} 个非 SDK 依赖）")
 else()
-    message(WARNING "export_sdk: ${VCPKG_LIB_DIR} 下没有 *.lib")
+    message(WARNING "export_sdk: ${VCPKG_LIB_DIR} 下没有白名单命中的 *.lib（SDK 将缺少 OpenCV 导入库）")
 endif()
 
 # ---------------------------------------------------------------------------
-# 4. bin/：仅 *.dll（绝不含 *.pdb）
+# 4. bin/：白名单内的 *.dll（绝不含 *.pdb）
 # ---------------------------------------------------------------------------
-file(GLOB _dlls "${VCPKG_BIN_DIR}/*.dll")
-if(_dlls)
-    _copy_files_flat("${SDK_OUTPUT_DIR}/bin" ${_dlls})
-    list(LENGTH _dlls _dll_count)
-    message(STATUS "export_sdk: ${_dll_count} 个运行时 DLL -> sdk/bin")
+_copy_whitelisted("${VCPKG_BIN_DIR}" "${SDK_OUTPUT_DIR}/bin" ".dll"
+                  "${_SDK_DLL_WHITELIST}" _dll_count _dll_dropped)
+list(LENGTH _dll_dropped _dll_dropped_count)
+if(_dll_count GREATER 0)
+    message(STATUS "export_sdk: ${_dll_count} 个运行时 DLL -> sdk/bin（白名单命中；排除 ${_dll_dropped_count} 个非 SDK 依赖）")
 else()
-    message(WARNING "export_sdk: ${VCPKG_BIN_DIR} 下没有 *.dll")
+    message(WARNING "export_sdk: ${VCPKG_BIN_DIR} 下没有白名单命中的 *.dll（SDK 将缺少 OpenCV 运行库）")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -158,22 +254,26 @@ endif()
 # 覆盖 —— SDK 会被悄悄替换成其中一种变体，而且不会有任何报错。
 # ---------------------------------------------------------------------------
 if(DEFINED VCPKG_DEBUG_LIB_DIR AND IS_DIRECTORY "${VCPKG_DEBUG_LIB_DIR}")
-    file(GLOB _debug_libs "${VCPKG_DEBUG_LIB_DIR}/*.lib")
-    if(_debug_libs)
-        _copy_files_flat("${SDK_OUTPUT_DIR}/lib/debug" ${_debug_libs})
-        list(LENGTH _debug_libs _debug_lib_count)
-        message(STATUS "export_sdk: ${_debug_lib_count} 个 debug 导入库 -> sdk/lib/debug")
+    _copy_whitelisted("${VCPKG_DEBUG_LIB_DIR}" "${SDK_OUTPUT_DIR}/lib/debug" ".lib"
+                      "${_SDK_LIB_WHITELIST}" _debug_lib_count _debug_lib_dropped)
+    list(LENGTH _debug_lib_dropped _debug_lib_dropped_count)
+    if(_debug_lib_count GREATER 0)
+        message(STATUS "export_sdk: ${_debug_lib_count} 个 debug 导入库 -> sdk/lib/debug（排除 ${_debug_lib_dropped_count} 个）")
+    else()
+        message(WARNING "export_sdk: ${VCPKG_DEBUG_LIB_DIR} 下没有白名单命中的 *.lib，SDK debug 变体不完整")
     endif()
 else()
     message(WARNING "export_sdk: 未找到 debug 导入库目录 ${VCPKG_DEBUG_LIB_DIR}，SDK 仅含 release")
 endif()
 
 if(DEFINED VCPKG_DEBUG_BIN_DIR AND IS_DIRECTORY "${VCPKG_DEBUG_BIN_DIR}")
-    file(GLOB _debug_dlls "${VCPKG_DEBUG_BIN_DIR}/*.dll")
-    if(_debug_dlls)
-        _copy_files_flat("${SDK_OUTPUT_DIR}/bin/debug" ${_debug_dlls})
-        list(LENGTH _debug_dlls _debug_dll_count)
-        message(STATUS "export_sdk: ${_debug_dll_count} 个 debug 运行时 DLL -> sdk/bin/debug")
+    _copy_whitelisted("${VCPKG_DEBUG_BIN_DIR}" "${SDK_OUTPUT_DIR}/bin/debug" ".dll"
+                      "${_SDK_DLL_WHITELIST}" _debug_dll_count _debug_dll_dropped)
+    list(LENGTH _debug_dll_dropped _debug_dll_dropped_count)
+    if(_debug_dll_count GREATER 0)
+        message(STATUS "export_sdk: ${_debug_dll_count} 个 debug DLL -> sdk/bin/debug（排除 ${_debug_dll_dropped_count} 个）")
+    else()
+        message(WARNING "export_sdk: ${VCPKG_DEBUG_BIN_DIR} 下没有白名单命中的 *.dll，SDK debug 变体不完整")
     endif()
 else()
     message(WARNING "export_sdk: 未找到 debug 运行时目录 ${VCPKG_DEBUG_BIN_DIR}，SDK 仅含 release")

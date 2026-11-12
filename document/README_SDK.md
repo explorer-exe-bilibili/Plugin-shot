@@ -8,11 +8,16 @@
 | 目录 | 内容 | 用途 |
 | --- | --- | --- |
 | `include/` | `plugin_api.h`（契约汇总头，只做 include）、`plugin_api/`（契约正文，每类一个子头）、`plugin_api_export.h`、`shot_plugin_helpers.h`（汇总头，只做 include）、`shot_plugin_helpers/`（每类一个头文件）、`opencv4/` | 契约头 + 插件侧小工具（能力目录 / `shot::Logger` / `shot::Config` / `shot::EventBus` / `shot::PluginLists` / `shot::PluginRegistry`） + OpenCV 头 |
-| `lib/` | release 版 `*.lib` 导入库 | Release 构建链接期使用 |
+| `lib/` | release 版 `*.lib` 导入库（OpenCV + 图像编解码/压缩传递依赖） | Release 构建链接期使用 |
 | `lib/debug/` | debug 版 `*.lib`（`opencv_*4d.lib` 等） | Debug 构建链接期使用 |
-| `bin/` | release 版 `*.dll` 运行时库 | **不要拷进插件目录**，见下 |
+| `bin/` | release 版 `*.dll` 运行时库（同一份白名单） | **不要拷进插件目录**，见下 |
 | `bin/debug/` | debug 版 `*.dll`（`opencv_*4d.dll` 等） | Debug 宿主/插件运行时使用 |
 | `cmake/` | `ShotPlugin.cmake`、`AppendPluginMeta.cmake`、`ValidatePluginMeta.cmake`、`ReadContractHeader.cmake`、`prune_output_dir.cmake` | 用 `shot_add_plugin()` 构建插件工程（含 metadata 校验） |
+
+`lib/` 与 `bin/` 只导出 OpenCV 以及 OpenCV 图像编解码/压缩必需的传递依赖
+（jpeg / libpng16 / tiff / webp / zlib / lzma / sharpyuv / turbojpeg）。
+宿主私有依赖（fmt / spdlog / glfw3dll / imgui / nfd）**不会**出现在 SDK 里：
+它们不是 SDK 承诺的公共能力；第三方插件需要时请自带，不要指望宿主目录里恰好有。
 
 `include/plugin_api/` 是契约正文：版本宏与读取规则（`basics.h`）、interface id
 （`interfaces.h`）、各能力与宿主服务（`image_processor.h` / `host_services.h` …）、
@@ -22,7 +27,7 @@
 ## 编译
 
 > **依赖**：插件汇总头 `shot_plugin_helpers.h` 会包含 `shot_plugin_helpers/shot_i18n.h`，
-> 后者用 header-only 的 **nlohmann-json** 解析多语言表（`document/I18N.md`）。用本 SDK
+> 后者用 header-only 的 **nlohmann-json** 解析多语言表（宿主仓库的 `document/I18N.md`）。用本 SDK
 > 的插件工程需要自己提供 nlohmann-json（vcpkg 清单加 `"nlohmann-json"`，或把
 > `single_include/nlohmann/json.hpp` 放进 include 路径）。宿主仓库内的插件已由根
 > `vcpkg.json` 提供。如果插件要落盘 PNG/JPEG（例如 `image_saver`），还需要
@@ -39,16 +44,16 @@ shot_add_plugin(my_plugin
     METADATA     metadata.json
     SOURCES      src/plugin_entry.cpp src/my_processor.cpp
     INCLUDE_DIRS include
-    LINK_LIBRARIES opencv_core4 opencv_imgproc4   # 可选
+    LINK_LIBRARIES opencv_core4 opencv_imgproc4   # 可选；Debug 换成 opencv_core4d / opencv_imgproc4d
 )
 ```
 
 `shot_add_plugin()` 统一处理 /MD、隐藏符号、产物目录、元数据贴尾与产物剪枝。
 
 **跨平台**：这份 SDK 的离线 **导出**目前只在 Windows 提供（`export_sdk` 是 `WIN32` 分支）；
-宿主本身可以在 Linux 构建——仓库根目录的 `CMakePresets.json` + `.github/workflows/cmake.yml`
+宿主本身可以在 Linux 构建——宿主仓库根目录的 `CMakePresets.json` + `.github/workflows/cmake.yml`
 以 Linux / macOS / Windows 为目标，Linux 已在 WSL2 Ubuntu 24.04.5 / GCC 13.3.0 / x64-linux
-实测 configure + build 通过（0 warning，产物与冒烟结果见仓库 `README.md`「平台」段）；
+实测 configure + build 通过（0 warning，产物与冒烟结果见宿主仓库的 `README.md`「平台」段）；
 macOS 尚无真机构建结论。CI workflow 已就绪，但当前 GitHub 账号的 Actions 受 **billing 锁定**
 无法启动，待账号解封后验证。
 
@@ -57,13 +62,31 @@ macOS 尚无真机构建结论。CI workflow 已就绪，但当前 GitHub 账号
 （读取宿主聚合的列表 JSON 快照，如 `config_list` / `tray_command_list`）、`shot::PluginRegistry`
 （插件启停）。汇总头本身只做 include，每个类各有一个头文件（在 `shot_plugin_helpers/` 子目录）；
 它们对老宿主自动降级，不需要逐处手写 `SHOT_HAS_FIELD` 判空。
-手工搭建时，等价的最小配置是：
+手工搭建时，等价的最小配置是按**配置**选择链接目录与库名（不能写死 `<SDK>/lib`）：
 
 ```cmake
 include_directories(<SDK>/include <SDK>/include/opencv4)
-link_directories(<SDK>/lib)
-target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
+
+# Debug 链接 <SDK>/lib/debug 的 opencv_*4d.lib，Release 链接 <SDK>/lib 的
+# opencv_*4.lib。两个变体混用会链接通过、运行期找不到另一个后缀的 DLL。
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(SDK_LIB_DIR "<SDK>/lib/debug")
+    set(SDK_OPENCV_LIBS opencv_core4d opencv_imgproc4d)
+else()
+    set(SDK_LIB_DIR "<SDK>/lib")
+    set(SDK_OPENCV_LIBS opencv_core4 opencv_imgproc4)
+endif()
+
+link_directories(${SDK_LIB_DIR})
+target_link_libraries(my_plugin PRIVATE ${SDK_OPENCV_LIBS})
 ```
+
+单配置生成器（Ninja）看 `CMAKE_BUILD_TYPE`；多配置生成器（如 Visual Studio）在
+configure 时还定不下配置，请给 Debug / Release 各配一个构建目录，或改用
+`$<CONFIG:Debug>` 生成表达式。**Debug 宿主的 exe 旁边是 `bin/debug` 那一套**
+（`opencv_*4d.dll`、`libpng16d.dll`、`zd.dll` …），所以 Debug 插件必须链接
+`opencv_*4d.lib`；拿 release 库编出来的 Debug 插件会在加载或第一次调用 OpenCV 时
+因为找不到 `opencv_core4d.dll` 失败。详见下面「debug 变体（重要）」一节。
 
 ## 必须遵守的 ABI 约定
 
@@ -131,9 +154,8 @@ target_link_libraries(my_plugin PRIVATE opencv_core4 opencv_imgproc4 ...)
 | 能力目录 | `interfaces` 只写真实实现的 id（如只有 `shot.configurable`）；**不要**为了拿 `host.shutdown` 就假装 `shot.ui_provider`——UI provider 的语义是"宿主可以给你投 `post_to_plugin`" |
 | 事件回调 | 订阅回调仍然只在宿主 main 线程执行；回调里只做入队/唤醒，耗时工作转到自己的线程 |
 
-仓库里的两个完整例子：[`plugins/clipboard/README.md`](../plugins/clipboard/README.md)
-（订阅 `capture.done` 写剪贴板）与 [`plugins/notify/README.md`](../plugins/notify/README.md)
-（订阅 `capture.done` / `capture.failed`，隐藏占位托盘图标 + 通知线程）。
+仓库里的两个完整例子在宿主仓库：`plugins/clipboard`（订阅 `capture.done` 写剪贴板）
+与 `plugins/notify`（订阅 `capture.done` / `capture.failed`，隐藏占位托盘图标 + 通知线程）。
 
 ## 给 UI 提供数据：用列表 + 事件，不加 ABI
 
@@ -166,15 +188,16 @@ const std::string text = lists.json("tray_command_list");
 **硬规则**：
 
 - 新增数据形状 = 新 list id + JSON schema + `lists.*` 事件；**禁止**为它新增 ABI 结构体/服务。
-- 运行期贡献**不写进 `metadata.json`**：metadata 只放身份、依赖与能力（见 `document/METADATA.md` §3）。
+- 运行期贡献**不写进 `metadata.json`**：metadata 只放身份、依赖与能力（语义见宿主仓库的
+  `document/METADATA.md` §3，SDK 不附带该文档）。
 - 消费方在 `lists.changed` / `settings.open` / `config.applied` 等事件之后刷新；
   完整协议（负载 schema、owner 校验、`order` / `separator` 规则、线程与信任模型）见
-  `document/LISTS.md`。
+  宿主仓库的 `document/LISTS.md`。
 
 ## 采集与保存能力
 
 SDK 目录结构不变：采集/保存插件仍是普通插件（`shot_add_plugin()` + `metadata.json`），
-通过能力函数表与宿主交互。完整数据流见 `document/CAPTURE.md`，宿主仓库的
+通过能力函数表与宿主交互。完整数据流见宿主仓库的 `document/CAPTURE.md`，宿主仓库的
 `plugins/screen_capture/` 与 `plugins/image_saver/` 是可直接编译的样板。
 
 | 能力 | 结构体 | 实现要点 |
@@ -185,8 +208,96 @@ SDK 目录结构不变：采集/保存插件仍是普通插件（`shot_add_plugi
 **能力回调的线程**：`screen_capture` / `image_processor` / `image_saver` 的虚函数在
 采集流水线的**工作线程**上被调用（一次一张、串行执行），而 `shot.configurable` 的
 `set_config` 在宿主 main 线程（启动回灌 / 设置页应用）。跨线程共享状态必须自己同步；
-不要在能力回调里直接操作 UI 或假设"永远在 main 线程"（流水线线程模型见
+不要在能力回调里直接操作 UI 或假设"永远在 main 线程"（流水线线程模型见宿主仓库的
 `document/CAPTURE.md` §7）。
+
+## 写一个 lib 插件（`shot.lib_provider`）
+
+有些包不提供宿主能调用的算法，只负责把某个运行库带进进程（典型：OpenCV）。这类插件实现
+`shot.lib_provider`，宿主据此把它登记成 `PluginType::Lib`（运行库提供者），而不是一个
+"没有能力的坏图像处理器"：它报告的库名与版本会被宿主记录，版本还是依赖校验的依据；
+别的插件通过 `provides` / `requires` 与它建立加载顺序。
+
+### 接口
+
+`include/plugin_api/lib_provider.h` 的 `ShotLibProviderV1` 只有两个 getter（外加
+`struct_size` / `version` 两个头字段）：
+
+| 字段 | 语义 |
+| --- | --- |
+| `get_library_name(void* self)` | 库名（标识提供者身份；metadata 的 `provides` 约定写同一个名字）；**不能返回 `NULL`** |
+| `get_library_version(void* self)` | 运行库版本（如 `"4.12.0"`），依赖校验按它比较；须为可解析数字版本（缺段按 0） |
+
+两个 getter 返回的都是插件内的静态字符串，有效期到 DLL 卸载，宿主只读、不释放。
+版本按数字段比较，尾部 `-dev` 之类的附加信息会被忽略。函数表用
+`SHOT_OPS(ShotLibProviderV1, .get_library_name = ..., .get_library_version = ...)` 构造
+（`struct_size` / `version` 自动填好），再把 `{SHOT_IFACE_LIB_PROVIDER, 1, &kLibOps}` 登记进
+能力目录；其它能力 id 一律返回 `NULL`。宿主仓库的 `plugins/opencv_provider` 是完整样板。
+
+`get_library_name` 返回 `NULL` 等于没提供这个能力：宿主会继续按其它能力识别，最终可能只把
+它当 Generic 插件。`get_library_version` 返回 `NULL` 不会阻止加载，但依赖方写
+`opencv>=4.12` 时宿主只能退用**插件自身版本**来比较，通常会因版本不匹配跳过依赖方；
+只有名字的 `opencv` 依赖不受影响。
+
+### 元数据
+
+```json
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "acme.opencv",
+      "name": "ACME OpenCV Provider",
+      "version": "1.0.0",
+      "interfaces": ["shot.lib_provider"],
+      "requires": ["core>=0.1.0"],
+      "provides": ["opencv"]
+    }
+  ]
+}
+```
+
+- `interfaces`：写 `"shot.lib_provider"`，宿主加载前用它预筛；与 `query_interface()` 的
+  实际回答不一致时只警告、不拒绝加载，但排查会很困难。
+- `provides`：**别的插件依赖的名字**，约定与 `get_library_name()` 的返回串一致 ——
+  写 `"opencv"`，消费者就写 `"requires": ["opencv"]` 或 `"requires": ["opencv>=4.12"]`。
+  宿主做依赖匹配时只看 `provides`（插件 id 和 `provides` 里的名字都算提供者），
+  `get_library_name()` 只用于记录运行库身份；两者不一致不会报错，但依赖声明会难以对照。
+  `provides` 只放名字、不放版本：库版本以运行期 `get_library_version()` 为准，避免 vcpkg
+  升级后 metadata 与真实库版本各说一套。
+- `requires`：至少写 `"core>=0.1.0"`（宿主自身版本）；同包内其它插件也可以按 id 依赖它。
+- metadata 只是声明，不是权威：加载后宿主以 `get_info()` / `query_interface()` 的真实回答
+  为准。字段与校验规则的完整语义见宿主仓库的 `document/METADATA.md`（SDK 不附带该文档）。
+
+### 加载顺序
+
+宿主扫描 `plugins/` 时**先读每个 DLL 尾部的 metadata（不加载）**，建"提供者名字 → 插件"
+索引，再按 `requires` 做拓扑排序，所以 **provider 先于消费者加载**：消费者在
+`create` / `init` 里需要 OpenCV 时，provider 已经在进程里。运行期重新启用消费者时，
+宿主也会先启用它的 provider（深度优先，跳过 `core`）。
+
+声明只是声明：provider 没装、被禁用或加载失败时，宿主只跳过依赖它的插件并在日志写明
+原因，不会让整个宿主失败；依赖成环时打印警告后按发现顺序继续；没有 metadata 的包按
+"无依赖"最后加载。消费者不要自己 `LoadLibrary` 基础库，也不要假设"provider 一定在" ——
+依赖不满足时宿主根本不会创建消费者。
+
+### 版本协商
+
+宿主用 `query_interface(instance, "shot.lib_provider", 1)` 查能力表。SDK 的
+`shot_query_interface()` 语义是"只回答不高于请求版本的能力"：插件若只提供更高版本的
+函数表，请求 1 会拿到 `NULL`，宿主按"没有该能力"继续处理（不会猜测结构布局，也不会
+降级调用）。所以第三方 lib 插件**当前只应实现版本 1**；将来按契约规则往结构体末尾
+追加字段、递增版本号，老宿主仍按版本 1 请求、拿到兼容的那张表。
+
+### 分发
+
+`opencv_provider.dll` 随**宿主**的 `plugins/` 目录分发，不在本 SDK 的 `bin/` 里：SDK 的
+`bin/` 只放 OpenCV 等基础运行库（宿主构建期从 vcpkg 布置到宿主 exe 旁边），`plugins/`
+只放插件自己的 DLL。第三方 lib 插件编好后同样把 DLL 放进宿主 `plugins/`，
+**不要**拷进 `bin/` —— 那是运行时目录，混入插件会污染宿主安装，也会破坏"插件目录里
+只应出现插件自己的 DLL"这条约束（同一进程出现两份库会导致类型信息、全局状态与内存
+分配器割裂）。
 
 ## debug 变体（重要）
 
