@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "session_control.main",
+      "name": "Session Control",
+      "version": "0.1.0",
+      "description": "Linux/Wayland 的截屏触发入口：在会话总线暴露 org.pluginshot.Control，把 D-Bus 方法翻译成事件总线主题（替代 Wayland 下无法注册的全局热键）",
+      "interfaces": ["shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}
