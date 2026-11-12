@@ -4,11 +4,20 @@
 //  include/long_capture.h —— 长截图插件主体（平台无关的编排层）
 //
 //  职责划分（STYLE.md §6.6 / §6.8）：
-//    · 本类：生命周期、配置项、事件订阅、触发键、会话线程与命令标志；
-//    · long_capture_session.cpp：一次会话（找窗口 → HUD/气泡 → 连续抓帧 → 拼接
-//      → 保存或取消）；
-//    · stitch_canvas / scroll_stitcher / frame_loader / long_image_saver：纯算法；
-//    · hud / global_keys / tray_hint / window_target 的 *_windows.cpp：平台实现。
+//    · 本类：生命周期、配置项、事件订阅、会话线程与命令标志；
+//    · long_capture_session.cpp：一次会话（等用户选目标 → HUD/气泡 → 自带采集
+//      → 拼接 → 保存或取消）；
+//    · capture_windows：Windows GDI 采集层（BitBlt 目标区域，不落盘、不发事件）；
+//    · stitch_canvas / scroll_stitcher / long_image_saver：纯算法；
+//    · hud / global_keys / tray_hint 的 *_windows.cpp：平台实现。
+//
+//  触发与目标选择（本版核心变化）：
+//    · 托盘命令 / hotkey 插件发来的 long_capture.start 只表示"想开始"；
+//    · 本类发布 region.select.request {"purpose":"long_capture"}，由 region_selector
+//      进入选择模式；用户点选窗口或拖出区域后回 region.selected
+//      {"purpose":"long_capture","region":{x,y,width,height}}（虚拟桌面物理像素）；
+//    · 只有 purpose 匹配才启动会话；60 秒没选或用户取消就回到空闲并提示；
+//    · 不再用 GetForegroundWindow() 猜目标（点击托盘时前台是托盘菜单/开始菜单）。
 //
 //  线程模型：
 //    · 宿主 main 线程：create/destroy、set_config、事件回调（只置标志 + 唤醒）；
@@ -23,11 +32,9 @@
 #include <string>
 #include <thread>
 
-#include "capture_frame.h"
 #include "long_capture_config.h"
 #include "plugin_api.h"
 #include "screen_rect.h"
-#include "window_target.h"
 
 namespace shot {
 class I18n;  // 多语言：定义在 shot_plugin_helpers/shot_i18n.h，只在本类 .cpp 里用完整类型
@@ -40,7 +47,7 @@ class StitchCanvas;
 class TrayHint;
 
 /**
- * @brief 长截图插件状态：配置、订阅、触发键与唯一的会话线程。
+ * @brief 长截图插件状态：配置、订阅、会话线程与唯一的会话。
  *
  * 一次只能有一个会话（再按触发键/托盘项在会话期间会被忽略）。会话线程常驻，
  * 空闲时阻塞在条件变量上；保存/取消/退出通过原子语义的标志 + notify 打断，
@@ -63,7 +70,7 @@ public:
     LongCapture& operator=(const LongCapture&) = delete;
 
     /**
-     * @brief 挂上宿主服务：加载语言表、订阅事件、发布托盘命令、注册触发键、起会话线程。
+     * @brief 挂上宿主服务：加载语言表、订阅事件、发布托盘命令与 hotkey_list、起会话线程。
      *
      * 本插件没有 ui_provider 的 init/deinit，create(index, host) 是唯一能拿到宿主
      * 服务表的时机，所以由 plugin_entry.cpp 在状态建好后调用一次。
@@ -75,7 +82,7 @@ public:
      */
     bool start(const ShotHostServices* host);
 
-    /** @brief 停止会话、注销热键、销毁窗口/窗口类、退订事件总线并 join 全部线程；可重复调用。 */
+    /** @brief 停止会话、销毁窗口/窗口类、退订事件总线并 join 全部线程；可重复调用。 */
     void stop();
 
     /**
@@ -99,25 +106,15 @@ public:
     std::int32_t getConfig(const char* key, char* buf, std::uint32_t bufSize) const;
 
     /**
-     * @brief 写一个配置项；hotkey 变化时立即按新值重注册触发键。
+     * @brief 写一个配置项。
      * @return 0 = 已生效；负值 = key 不认识或值非法。
      */
     std::int32_t setConfig(const char* key, const char* value);
 
 private:
-    /** @brief 一次 capture.done / capture.failed 的结果（会话线程取走）。 */
-    struct CaptureResult {
-        bool ready = false;   /**< 已收到本次请求的结果。 */
-        bool failed = false;  /**< true = capture.failed；false = capture.done。 */
-        std::string path;     /**< capture.done 的 path；失败时为空。 */
-        std::string reason;   /**< capture.failed 的 reason（宿主已本地化）。 */
-    };
-
     /** @brief 事件总线回调（宿主 main 线程执行；只解析/拷贝 + notify）。 */
     static void onBusEvent(void* user, const char* topic, const void* data, std::uint32_t len);
 
-    /** @brief 全局触发键回调（按键线程执行；只置标志 + notify）。 */
-    static void onTriggerKey(void* user);
     /** @brief 会话内 Enter 回调（按键线程执行；只置标志 + notify）。 */
     static void onSaveKey(void* user);
     /** @brief 会话内 Esc 回调（按键线程执行；只置标志 + notify）。 */
@@ -133,26 +130,19 @@ private:
     /** @brief 处理一条事件（宿主 main 线程）。 */
     void handleBusEvent(const char* topic, const char* data, std::uint32_t len);
 
+    /**
+     * @brief 处理 region.selected（宿主 main 线程）：purpose 匹配才接收。
+     * @param[in] data 负载字节（不一定以 NUL 结尾）。
+     * @param[in] len  负载长度。
+     */
+    void handleRegionSelected(const char* data, std::uint32_t len);
+
     /** @brief 请求开始一次会话（会话进行中则忽略）。 */
     void requestStart();
     /** @brief 请求保存当前会话画布。 */
     void requestSave();
     /** @brief 请求取消当前会话（丢弃画布，不落盘）。 */
     void requestCancel();
-
-    /** @brief 唤醒会话线程（所有命令都走这一条；不持业务锁）。 */
-    void wake();
-
-    /**
-     * @brief 等本次抓帧的结果，或等保存/取消/退出命令。
-     * @param[out] result  成功等到 capture.* 时填入。
-     * @param[in]  timeoutMs 超时毫秒数；超时按失败处理。
-     * @return true = 收到了 capture.* 结果；false = 超时或被命令打断。
-     */
-    bool waitCapture(CaptureResult& result, int timeoutMs);
-
-    /** @brief 把抓帧结果清空（发请求前调用，避免上一帧的结果被当成这一帧）。 */
-    void clearCaptureResult();
 
     /**
      * @brief 等一段时间，但保存/取消/退出会提前唤醒。
@@ -162,30 +152,30 @@ private:
     bool waitCommand(int timeoutMs);
 
     /**
-     * @brief 跑一次完整会话（找窗口 → HUD/气泡 → 抓帧拼接 → 保存/取消）。
+     * @brief 发布 region.select.request 并等用户选好目标区域。
      *
-     * 声明在本类里是因为它读写本类的命令标志与抓帧结果；实现拆在
+     * 负载固定 {"purpose":"long_capture"}；region.selected 的 purpose 必须匹配。
+     * 超时（60 秒）、用户取消、宿主退出都返回 false，并给出中文原因。
+     *
+     * @param[out] region 成功时是目标内容区（**绝对屏幕坐标、物理像素**）。
+     * @param[out] error  失败时的中文原因（给托盘气泡提示用）。
+     * @return true = 用户已选好目标区域。
+     */
+    bool awaitSelection(ScreenRect& region, std::string& error);
+
+    /** @brief 发布 region.select.request {"purpose":"long_capture"}。 */
+    bool publishSelectRequest() const;
+
+    /**
+     * @brief 跑一次完整会话（等选择 → HUD/气泡 → 自带采集 → 拼接 → 保存/取消）。
+     *
+     * 声明在本类里是因为它读写本类的命令标志；实现拆在
      * long_capture_session.cpp，按"一次会话"这个关注点单独成文件。
      */
     void runSession();
 
     /**
-     * @brief 取一次要截图的窗口（客户区物理像素）。
-     * @param[out] target 目标窗口。
-     * @param[out] reason 失败时的中文原因。
-     * @return true = 成功。
-     */
-    bool resolveTarget(TargetWindow& target, std::string& reason) const;
-
-    /**
-     * @brief 发布一条带 region 的 capture.request。
-     * @param[in] client 目标窗口客户区（系统屏幕坐标）。
-     * @return true = 已入队；false = 宿主没有事件总线或队列满。
-     */
-    bool publishCaptureRequest(const ScreenRect& client) const;
-
-    /**
-     * @brief 保存画布为长图并发布 capture.done。
+     * @brief 保存画布为长图并发布**唯一一条** capture.done。
      * @param[in]  canvas 已定稿的画布。
      * @param[out] path   成功时的 UTF-8 绝对路径。
      * @param[out] error  失败时的中文原因。
@@ -208,7 +198,7 @@ private:
     std::string localized(const char* key, const char* fallback) const;
 
     /**
-     * @brief 用托盘气泡提示一句话（HUD 不可用/会话开始提示/失败提示都走这里）。
+     * @brief 用托盘气泡提示一句话（HUD 不可用/选择提示/失败提示都走这里）。
      * @param[in] titleKey    标题语言 key。
      * @param[in] titleFallback 标题兜底。
      * @param[in] textKey     正文语言 key。
@@ -218,22 +208,23 @@ private:
                       const char* textFallback) const;
 
     const ShotHostServices* m_host = nullptr; /**< 宿主服务表；生命周期覆盖插件实例。 */
-    LongCaptureConfig m_config;               /**< 两个配置项（线程安全读写）。 */
+    LongCaptureConfig m_config;               /**< 配置项（线程安全读写）。 */
     std::unique_ptr<shot::I18n> m_i18n;       /**< 多语言：start() 构造，stop() 释放。 */
-    std::unique_ptr<GlobalKeys> m_keys;       /**< 全局按键：start() 起线程，stop() 收干净。 */
+    std::unique_ptr<GlobalKeys> m_keys;       /**< 会话按键：start() 起线程，stop() 收干净。 */
     mutable std::unique_ptr<TrayHint> m_trayHint; /**< HUD 不可用时的托盘气泡；可重复 show()。 */
     bool m_busSubscribed = false;             /**< 是否已订阅事件总线（stop 时按它退订）。 */
 
     std::thread m_worker;         /**< 会话线程；joinable 表示 start 成功过。 */
-    mutable std::mutex m_mutex;   /**< 保护下面全部命令/结果状态。 */
-    std::condition_variable m_cv; /**< 命令与抓帧结果共用的唤醒点。 */
+    mutable std::mutex m_mutex;   /**< 保护下面全部命令/选择状态。 */
+    std::condition_variable m_cv; /**< 命令与选择结果共用的唤醒点。 */
     bool m_running = false;       /**< 会话线程是否继续等待新会话。 */
     bool m_startPending = false;  /**< 有一次"开始"还没被会话线程取走。 */
-    bool m_sessionActive = false; /**< 当前是否正在会话中。 */
+    bool m_sessionActive = false; /**< 当前是否正在会话中（含等待用户选择）。 */
     bool m_saveRequested = false; /**< 会话内用户按了保存。 */
     bool m_cancelRequested = false; /**< 会话内用户按了取消/退出。 */
-    bool m_captureReady = false;  /**< 本次抓帧的结果已到达。 */
-    CaptureResult m_capture;      /**< 最近一次抓帧结果；只在 m_mutex 下读写。 */
+    bool m_selectionReady = false;  /**< 用户已选好目标区域。 */
+    bool m_selectionCancelled = false; /**< region_selector 回报用户取消。 */
+    ScreenRect m_selectedRegion;  /**< 目标内容区（绝对屏幕坐标、物理像素）。 */
 };
 
 }  // namespace long_capture

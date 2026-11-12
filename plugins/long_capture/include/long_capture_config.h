@@ -1,15 +1,19 @@
 #pragma once
 
 // ============================================================================
-//  include/long_capture_config.h —— 本插件的两个配置项
+//  include/long_capture_config.h —— 本插件的配置项
 //
 //  值一律按契约用字符串表达（跨边界不需要宽度/对齐约定），这里负责字符串与内部
 //  类型的校验转换：非法值安静回退默认、不认识的 key 返回负值，宿主升级后多传一项
 //  也不会坏（document/ABI_POLICY.md §5）。
 //
+//  触发热键不再由本插件声明：hotkey 插件改成读取 hotkey_list 的 provider 之后，
+//  本插件在 create 时贡献一条 hotkey_list（id=start、event=long_capture.start），
+//  热键的注册/改键/停用全部由 hotkey 插件负责。这里只剩长图高度上限。
+//
 //  label / tooltip 写的是语言表 key，不是中文：设置页按
 //  display(owner, key) = i18n_list[(owner, key)] ?? key 解析，文案本体在
-//  long_capture.cpp 的 kLangTables 里（两边的 key 拼写必须严格一致）。
+//  long_capture_i18n.cpp 里（两边的 key 拼写必须严格一致）。
 // ============================================================================
 
 #include <cstdint>
@@ -21,7 +25,7 @@
 namespace long_capture {
 
 /**
- * @brief 长截图插件的配置：触发热键 + 画布高度上限。
+ * @brief 长截图插件的配置：长图高度上限。
  *
  * @note set_config 可能来自宿主 main 线程（设置页应用 / 启动回灌），而会话线程
  *       每帧读一次快照；两处用同一把互斥锁串起来，持锁期间只做字符串拷贝，
@@ -31,11 +35,10 @@ class LongCaptureConfig {
 public:
     /** @brief 配置快照：一次会话开始时取一次，会话中途改配置只影响下一次。 */
     struct Snapshot {
-        std::string hotkey;      /**< 触发组合键文本，如 "Ctrl+Alt+L"；空串 = 不用热键触发。 */
-        int maxHeight = 30000;   /**< 长图高度上限（像素），画布达到后停止继续拼接。 */
+        int maxHeight = 30000; /**< 长图高度上限（像素），画布达到后停止继续拼接。 */
     };
 
-    /** @brief 构造：两个配置项取默认值。 */
+    /** @brief 构造：配置项取默认值。 */
     LongCaptureConfig();
 
     /** @brief 不可拷贝：内部持有互斥锁。 */
@@ -44,7 +47,7 @@ public:
     LongCaptureConfig& operator=(const LongCaptureConfig&) = delete;
 
     /**
-     * @brief 返回配置项个数；当前固定为 2。
+     * @brief 返回配置项个数；当前固定为 1。
      * @return 配置项个数，用于 ShotConfigurableV1::get_config_count。
      */
     static std::uint32_t itemCount() noexcept;

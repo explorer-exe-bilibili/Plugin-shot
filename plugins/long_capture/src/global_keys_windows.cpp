@@ -1,11 +1,13 @@
-// 全局按键的 Windows 实现：隐藏消息窗口 + 一条消息线程 + RegisterHotKey / 低级键盘钩子。
+// 会话内按键的 Windows 实现：隐藏消息窗口 + 一条消息线程 + RegisterHotKey / 低级键盘钩子。
 //
 // 为什么所有注册都在一条专用消息线程上做：
 //   · RegisterHotKey(NULL, ...) 把热键绑在"调用线程的消息队列"上，WM_HOTKEY 只会投给
 //     那个线程；UnregisterHotKey 也要求由注册它的线程撤销。把注册、撤销、消息循环放在
 //     同一个线程，跨线程撤销的失败与竞态就都不存在；
-//   · 触发键（配置项 hotkey）常驻，会话期间再额外注册 Enter / Esc；会话结束立刻注销，
+//   · 本插件只注册**会话按键**（Enter 保存 / Esc 取消），会话开始才注册、结束立刻注销，
 //     不让"Enter 被全局吃掉"的影响延续到会话之外；
+//   · 长期触发键（Ctrl+Alt+L）不在这里注册：hotkey 插件读取 long_capture 贡献的
+//     hotkey_list 后统一管理，本文件不再有 trigger 相关代码；
 //   · RegisterHotKey 失败（被别的程序占用 / 系统策略）时退回 WH_KEYBOARD_LL：低级键盘
 //     钩子同样只在本线程上安装和拆除，回调里只置原子标志 + 唤醒会话线程。
 //
@@ -21,7 +23,6 @@
 #include <cstddef>
 #include <mutex>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -41,205 +42,29 @@ constexpr wchar_t kWindowClass[] = L"PluginShotLongCaptureKeys";
 /** @brief 隐藏窗口标题：只排障用，不显示给用户，故不进 i18n。 */
 constexpr wchar_t kWindowTitle[] = L"Plugin-shot 长截图按键";
 
-/** @brief 线程消息：按当前配置重注册触发键。 */
-constexpr UINT kMsgApplyTrigger = WM_APP + 1;
 /** @brief 线程消息：开始会话（注册 Enter / Esc，失败装低级钩子）。 */
-constexpr UINT kMsgBeginSession = WM_APP + 2;
+constexpr UINT kMsgBeginSession = WM_APP + 1;
 /** @brief 线程消息：结束会话（注销 Enter / Esc，拆钩子）。 */
-constexpr UINT kMsgEndSession = WM_APP + 3;
+constexpr UINT kMsgEndSession = WM_APP + 2;
 /** @brief 线程消息：退出消息循环。 */
-constexpr UINT kMsgQuit = WM_APP + 4;
+constexpr UINT kMsgQuit = WM_APP + 3;
 
-/** @brief 热键 id：触发键 / 保存 / 取消，同一线程内唯一。 */
-constexpr int kTriggerHotkeyId = 1;
-constexpr int kSaveHotkeyId = 2;
-constexpr int kCancelHotkeyId = 3;
+/** @brief 热键 id：保存 / 取消，同一线程内唯一。 */
+constexpr int kSaveHotkeyId = 1;
+constexpr int kCancelHotkeyId = 2;
 
 /** @brief Win32 VK_RETURN / VK_ESCAPE：契约头不包含 <windows.h>，这里用数值表达。 */
 constexpr std::uint32_t kVkReturn = 0x0Du;
 constexpr std::uint32_t kVkEscape = 0x1Bu;
 
-/** @brief F1 的 VK 数值：F1..F12 = 0x70..0x7B。 */
-constexpr std::uint32_t kVkF1 = 0x70u;
-
-/** @brief 语法只接受 F1..F12。 */
-constexpr int kMaxFunctionKey = 12;
-
-/** @brief 去掉两端空白；返回原字符串的子串视图（不分配内存）。 */
-std::string_view trim(std::string_view text) {
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) {
-        text.remove_suffix(1);
-    }
-    return text;
-}
-
-/** @brief ASCII 小写化一个字符；非字母原样返回。 */
-char asciiLower(char c) {
-    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-}
-
-/** @brief ASCII 小写化整段文本。 */
-std::string asciiLowerCopy(std::string_view text) {
-    std::string result;
-    result.reserve(text.size());
-    for (const char c : text) {
-        result.push_back(asciiLower(c));
-    }
-    return result;
-}
-
-/** @brief 解析主键：单个字母 A-Z、单个数字 0-9 或 F1..F12。 */
-bool parseMainKey(std::string_view token, std::uint32_t& virtualKey, std::string& label) {
-    if (token.size() == 1) {
-        const char c = token.front();
-        if (c >= 'a' && c <= 'z') {
-            virtualKey = static_cast<std::uint32_t>(c - 'a' + 'A');  // VK 与 ASCII 大写一致
-            label.assign(1, static_cast<char>(c - 'a' + 'A'));
-            return true;
-        }
-        if (c >= '0' && c <= '9') {
-            virtualKey = static_cast<std::uint32_t>(c);  // VK_0..VK_9 = '0'..'9'
-            label.assign(1, c);
-            return true;
-        }
-        return false;
-    }
-    if (token.size() < 2 || token.size() > 3 || token.front() != 'f') {
-        return false;
-    }
-    int number = 0;
-    for (std::size_t index = 1; index < token.size(); ++index) {
-        const char c = token[index];
-        if (c < '0' || c > '9') {
-            return false;
-        }
-        number = number * 10 + (c - '0');
-    }
-    if (number < 1 || number > kMaxFunctionKey) {
-        return false;
-    }
-    virtualKey = kVkF1 + static_cast<std::uint32_t>(number - 1);
-    label = "F" + std::to_string(number);
-    return true;
-}
-
-/** @brief 按固定顺序拼出规范化显示名。 */
-std::string buildLabel(std::uint32_t modifiers, const std::string& mainLabel) {
-    std::string label;
-    if ((modifiers & kKeyModCtrl) != 0) {
-        label += "Ctrl+";
-    }
-    if ((modifiers & kKeyModAlt) != 0) {
-        label += "Alt+";
-    }
-    if ((modifiers & kKeyModShift) != 0) {
-        label += "Shift+";
-    }
-    if ((modifiers & kKeyModWin) != 0) {
-        label += "Win+";
-    }
-    label += mainLabel;
-    return label;
-}
-
-/** @brief 把插件内的修饰键位掩码转成 Win32 的 MOD_*；extra 用来附加 MOD_NOREPEAT。 */
-DWORD toWin32Modifiers(std::uint32_t modifiers, DWORD extra) {
-    DWORD result = extra;
-    if ((modifiers & kKeyModCtrl) != 0) {
-        result |= MOD_CONTROL;
-    }
-    if ((modifiers & kKeyModAlt) != 0) {
-        result |= MOD_ALT;
-    }
-    if ((modifiers & kKeyModShift) != 0) {
-        result |= MOD_SHIFT;
-    }
-    if ((modifiers & kKeyModWin) != 0) {
-        result |= MOD_WIN;
-    }
-    return result;
-}
-
 }  // namespace
 
-bool parse_key_combo(const char* text, KeyCombo& out, std::string& error) {
-    out = KeyCombo{};
-    error.clear();
-    if (text == nullptr) {
-        error = "快捷键为空";
-        return false;
-    }
-    const std::string_view input = trim(std::string_view(text));
-    if (input.empty()) {
-        error = "快捷键为空";
-        return false;
-    }
-
-    std::uint32_t modifiers = 0;
-    std::uint32_t virtualKey = 0;
-    std::string mainLabel;
-    bool haveMainKey = false;
-
-    // 按 '+' 切分：修饰键可任意顺序、可重复；主键必须恰好一个。
-    std::size_t start = 0;
-    for (;;) {
-        const std::size_t plus = input.find('+', start);
-        const std::string_view token =
-            trim(input.substr(start, plus == std::string_view::npos ? std::string_view::npos
-                                                                    : plus - start));
-        if (token.empty()) {
-            error = "存在空的键位（多余的 +）";
-            return false;
-        }
-        const std::string lower = asciiLowerCopy(token);
-        if (lower == "ctrl" || lower == "control") {
-            modifiers |= kKeyModCtrl;
-        } else if (lower == "alt") {
-            modifiers |= kKeyModAlt;
-        } else if (lower == "shift") {
-            modifiers |= kKeyModShift;
-        } else if (lower == "win" || lower == "windows") {
-            modifiers |= kKeyModWin;
-        } else {
-            std::uint32_t candidateKey = 0;
-            std::string candidateLabel;
-            if (!parseMainKey(lower, candidateKey, candidateLabel)) {
-                error = "不认识的键位 \"" + std::string(token) + "\"";
-                return false;
-            }
-            if (haveMainKey) {
-                error = "只能有一个主键";
-                return false;
-            }
-            virtualKey = candidateKey;
-            mainLabel = std::move(candidateLabel);
-            haveMainKey = true;
-        }
-        if (plus == std::string_view::npos) {
-            break;
-        }
-        start = plus + 1;
-    }
-
-    if (!haveMainKey) {
-        error = "缺少主键（A-Z / 0-9 / F1..F12）";
-        return false;
-    }
-    out.modifiers = modifiers;
-    out.virtualKey = virtualKey;
-    out.label = buildLabel(modifiers, mainLabel);
-    return true;
-}
-
 /**
- * @brief GlobalKeys 的实现：隐藏窗口、消息线程、热键与低级钩子的全部状态。
+ * @brief GlobalKeys 的实现：隐藏窗口、消息线程、会话热键与低级钩子的全部状态。
  *
- * 线程模型：start() 起线程并等窗口就绪；registerTrigger / beginSession / endSession
- * 可以在任意线程调用，只改期望状态 + PostMessage；真正的 RegisterHotKey /
- * UnregisterHotKey / SetWindowsHookEx 全部在消息线程上执行。
+ * 线程模型：start() 起线程并等窗口就绪；beginSession / endSession 可以在任意线程
+ * 调用，只改期望状态 + PostMessage；真正的 RegisterHotKey / UnregisterHotKey /
+ * SetWindowsHookEx 全部在消息线程上执行。
  */
 struct GlobalKeys::Impl {
     const ShotHostServices* host = nullptr; /**< 只用于日志，可为 nullptr。 */
@@ -250,11 +75,6 @@ struct GlobalKeys::Impl {
     bool failed = false;                    /**< 建窗失败。 */
     bool accepting = false;                 /**< stop() 开始后拒绝新投递。 */
     HWND hwnd = nullptr;                    /**< 隐藏消息窗口。 */
-
-    std::string triggerText; /**< 期望的触发键文本（空串 = 不注册）。 */
-    bool triggerRegistered = false;
-    Callback triggerCallback = nullptr;
-    void* triggerUser = nullptr;
 
     Callback saveCallback = nullptr;    /**< 会话内 Enter 回调。 */
     Callback cancelCallback = nullptr;  /**< 会话内 Esc 回调。 */
@@ -267,15 +87,12 @@ struct GlobalKeys::Impl {
 
     void run();
     void messageLoop();
-    void applyTrigger();
     void beginSessionOnThread();
     void endSessionOnThread();
     void unregisterSessionKeys();
-    void unregisterTrigger();
     bool installKeyboardHook();
     void removeKeyboardHook();
     void handleHotkey(int id);
-    static void invoke(Callback callback, void* user);
 
     bool registerWindowClass(HINSTANCE instance);
     bool ensureWindowClass(HINSTANCE instance);
@@ -286,12 +103,6 @@ struct GlobalKeys::Impl {
 };
 
 GlobalKeys::Impl* GlobalKeys::Impl::s_active = nullptr;
-
-void GlobalKeys::Impl::invoke(Callback callback, void* user) {
-    if (callback != nullptr) {
-        callback(user);
-    }
-}
 
 bool GlobalKeys::Impl::registerWindowClass(HINSTANCE instance) {
     WNDCLASSEXW windowClass{};
@@ -353,26 +164,19 @@ void GlobalKeys::Impl::run() {
             ok = false;
         }
     }
-
     if (ok) {
         {
             std::lock_guard<std::mutex> lock(mutex);
             hwnd = wnd;
-        }
-        applyTrigger();
-        {
-            std::lock_guard<std::mutex> lock(mutex);
             ready = true;
         }
         readyCv.notify_all();
-        shot::Logger(host).info("[long_capture] 全局按键线程就绪");
+        shot::Logger(host).info("[long_capture] 会话按键线程就绪（Enter/Esc 只在会话期间注册）");
         messageLoop();
     }
-
-    // 消息循环退出（stop）：注销全部热键/钩子、销毁窗口、注销窗口类，保证 DLL 被
+    // 消息循环退出（stop）：注销会话热键/钩子、销毁窗口、注销窗口类，保证 DLL 被
     // FreeLibrary 后进程里不残留指向本模块代码的 WndProc / 钩子。
     unregisterSessionKeys();
-    unregisterTrigger();
     removeKeyboardHook();
     if (wnd != nullptr) {
         DestroyWindow(wnd);
@@ -391,7 +195,7 @@ void GlobalKeys::Impl::run() {
         readyCv.notify_all();
     }
     Impl::s_active = nullptr;
-    shot::Logger(host).info("[long_capture] 全局按键线程已退出，窗口类与热键都已释放");
+    shot::Logger(host).info("[long_capture] 会话按键线程已退出，窗口类与热键都已释放");
 }
 
 void GlobalKeys::Impl::messageLoop() {
@@ -418,11 +222,9 @@ void GlobalKeys::Impl::handleHotkey(int id) {
     {
         std::lock_guard<std::mutex> lock(mutex);
         if (!sessionActive) {
-            if (id == kTriggerHotkeyId) {
-                callback = triggerCallback;
-                user = triggerUser;
-            }
-        } else if (id == kSaveHotkeyId) {
+            return;  // 会话外的 WM_HOTKEY（迟到消息）：不回调
+        }
+        if (id == kSaveHotkeyId) {
             callback = saveCallback;
             user = sessionUser;
         } else if (id == kCancelHotkeyId) {
@@ -430,50 +232,8 @@ void GlobalKeys::Impl::handleHotkey(int id) {
             user = sessionUser;
         }
     }
-    invoke(callback, user);
-}
-
-void GlobalKeys::Impl::applyTrigger() {
-    std::string text;
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        text = triggerText;
-    }
-    unregisterTrigger();
-    if (text.empty()) {
-        shot::Logger(host).info("[long_capture] 触发快捷键为空，只用托盘菜单启动");
-        return;
-    }
-    KeyCombo combo;
-    std::string error;
-    if (!parse_key_combo(text.c_str(), combo, error)) {
-        shot::Logger(host).warn("[long_capture] 触发快捷键配置非法（" + text + "）：" + error +
-                                "，改用托盘菜单启动");
-        return;
-    }
-    const DWORD modifiers = toWin32Modifiers(combo.modifiers, MOD_NOREPEAT);
-    if (RegisterHotKey(nullptr, kTriggerHotkeyId, modifiers, combo.virtualKey) == FALSE) {
-        shot::Logger(host).warn("[long_capture] 注册触发快捷键 " + combo.label +
-                                " 失败（错误码 " + std::to_string(GetLastError()) +
-                                "），可能被其它程序占用；改用托盘菜单启动");
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        triggerRegistered = true;
-    }
-    shot::Logger(host).info("[long_capture] 已注册触发快捷键 " + combo.label);
-}
-
-void GlobalKeys::Impl::unregisterTrigger() {
-    bool registered = false;
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        registered = triggerRegistered;
-        triggerRegistered = false;
-    }
-    if (registered) {
-        UnregisterHotKey(nullptr, kTriggerHotkeyId);
+    if (callback != nullptr) {
+        callback(user);
     }
 }
 
@@ -481,8 +241,7 @@ void GlobalKeys::Impl::beginSessionOnThread() {
     unregisterSessionKeys();
     // 需求约定：会话期间 RegisterHotKey(NULL, id, 0, VK_RETURN / VK_ESCAPE)。
     // 两个键都注册成功才走热键路径；任何一个失败就把另一个也撤掉，
-    // 整体退回低级钩子，
-    // 否则会出现"Enter 走热键、Esc 走钩子"的双路径，容易重复触发。
+    // 整体退回低级钩子，否则会出现"Enter 走热键、Esc 走钩子"的双路径，容易重复触发。
     const bool saveOk = RegisterHotKey(nullptr, kSaveHotkeyId, 0, kVkReturn) != FALSE;
     const DWORD saveError = saveOk ? ERROR_SUCCESS : GetLastError();
     const bool cancelOk = RegisterHotKey(nullptr, kCancelHotkeyId, 0, kVkEscape) != FALSE;
@@ -571,9 +330,6 @@ LRESULT CALLBACK GlobalKeys::Impl::windowProc(HWND wnd, UINT msg, WPARAM wparam,
     }
     try {
         switch (msg) {
-            case kMsgApplyTrigger:
-                self->applyTrigger();
-                return 0;
             case kMsgBeginSession:
                 self->beginSessionOnThread();
                 return 0;
@@ -655,7 +411,6 @@ bool GlobalKeys::start(const ShotHostServices* host) {
         m_impl->failed = false;
         m_impl->accepting = true;
         m_impl->hwnd = nullptr;
-        m_impl->triggerRegistered = false;
         m_impl->saveRegistered = false;
         m_impl->cancelRegistered = false;
         m_impl->sessionActive = false;
@@ -665,7 +420,7 @@ bool GlobalKeys::start(const ShotHostServices* host) {
     } catch (...) {
         std::lock_guard<std::mutex> lock(m_impl->mutex);
         m_impl->accepting = false;
-        shot::Logger(host).warn("[long_capture] 创建全局按键线程失败，快捷键不可用");
+        shot::Logger(host).warn("[long_capture] 创建会话按键线程失败，Enter/Esc 不可用");
         return false;
     }
 
@@ -696,40 +451,10 @@ void GlobalKeys::stop() {
         m_impl->hwnd = nullptr;
         m_impl->ready = false;
         m_impl->failed = false;
-        m_impl->triggerRegistered = false;
         m_impl->saveRegistered = false;
         m_impl->cancelRegistered = false;
         m_impl->keyboardHook = nullptr;
     }
-}
-
-bool GlobalKeys::registerTrigger(const char* comboText) {
-    if (!m_impl) {
-        return false;
-    }
-    std::string text = (comboText != nullptr) ? comboText : "";
-    HWND wnd = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(m_impl->mutex);
-        m_impl->triggerText = text;
-        wnd = m_impl->hwnd;
-        if (!m_impl->accepting) {
-            return false;
-        }
-    }
-    if (wnd != nullptr) {
-        PostMessageW(wnd, kMsgApplyTrigger, 0, 0);
-    }
-    return true;
-}
-
-void GlobalKeys::setTriggerCallback(Callback callback, void* user) {
-    if (!m_impl) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    m_impl->triggerCallback = callback;
-    m_impl->triggerUser = user;
 }
 
 void GlobalKeys::beginSession(Callback onSave, Callback onCancel, void* user) {

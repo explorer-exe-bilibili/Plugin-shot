@@ -1,36 +1,27 @@
-// 一次长截图会话：找窗口 → HUD/气泡 → 连续抓帧 → 在线拼接 → 保存或取消。
+// 一次长截图会话：等用户选目标 → HUD/气泡 → 自带采集 → 在线拼接 → 保存或取消。
 //
-// 采集路径（需求约定的 P1 方案）：
-//   每帧发布一条带 region 的 capture.request，等宿主流水线回 capture.done，再用
-//   FrameLoader 从落盘文件解码。这样做的好处是完全复用宿主的采集/保存链路；
-//   代价是每帧都会在 image_saver 的目录里产生一个临时文件（读完立即删除），并且
-//   每帧的 capture.done 也会被其它订阅者（notify/clipboard）看到——见 README 的
-//   "已知问题"，后续如果要彻底解决，需要插件自带的采集层（直接调用 screen_capture）。
+// 采集路径（本版核心变化）：
+//   用户先在 region_selector 里点选窗口/拖出区域，本插件收到 region.selected 后
+//   用 ScreenGrabber 直接 BitBlt 目标区域。帧数据只进 ScrollStitcher/StitchCanvas，
+//   **不再每帧发 capture.request、不再每帧落 PNG、不再每帧发 capture.done**；
+//   只有最终保存时 saveCanvas() 才写一张 PNG 并发布一条 capture.done。
 //
-// 串行节流：相邻两帧至少间隔 kFrameIntervalMs（60ms）。宿主流水线本身是串行的，
-// 这个间隔足够 5Hz HUD 刷新与正常滚动速度，同时避免把 CPU 花在抓屏/编码/解码上。
-//
-// TODO: 改成插件自带采集层（直接调用 screen_capture 能力）以消除"每帧临时文件"与
-//       "每帧 capture.done 被 notify/clipboard 看到"这两个副作用；那需要新增一个
-//       私有事件或直接读像素，不在本期 P1 范围。
+// 串行节流：相邻两帧至少间隔 kFrameIntervalMs（60ms）。这个间隔足够 5Hz HUD 刷新与
+// 正常滚动速度，同时避免把 CPU 花在抓屏/拼接上。
 //
 // 线程：本文件所有函数都只在 LongCapture 的会话线程上执行；HUD/按键/事件回调都只
 // 置标志 + 唤醒，不在这里直接跨线程调用窗口 API。
 
 #include "long_capture.h"
 
-#include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <system_error>
-#include <utility>
 #include <vector>
 
-#include "frame_loader.h"
+#include "capture_windows.h"
 #include "global_keys.h"
 #include "hud.h"
 #include "scroll_stitcher.h"
@@ -42,11 +33,8 @@ namespace {
 
 // 只服务本文件的辅助函数与常量（STYLE.md §6.7）。
 
-/** @brief 抓帧结果的最长等待：5 秒还没结果说明流水线卡住或缺少采集/保存插件。 */
-constexpr int kCaptureTimeoutMs = 5000;
-
-/** @brief 连续超时次数上限：达到后结束会话并提示。 */
-constexpr int kMaxCaptureTimeouts = 3;
+/** @brief 连续抓帧失败次数上限：达到后结束会话并提示。 */
+constexpr int kMaxCaptureFailures = 3;
 
 /** @brief 相邻两帧的最小间隔（毫秒）：串行节流，满足 5Hz HUD 与正常滚动速度。 */
 constexpr int kFrameIntervalMs = 60;
@@ -68,43 +56,13 @@ std::string replaceToken(std::string text, const char* token, const std::string&
     return text;
 }
 
-/** @brief 把 UTF-8 文本转成 filesystem::path（Windows 上内部转宽字符）。 */
-std::filesystem::path fromUtf8Path(const std::string& utf8) {
-    if (utf8.empty()) {
-        return {};
-    }
-    const std::u8string text(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
-    return std::filesystem::path(text);
-}
-
-/**
- * @brief 删除本帧的临时截图文件（读完后立即调用）。
- *
- * 为什么删：P1 走宿主流水线，每帧都会在 image_saver 配置的目录里落一个文件；
- * 不删的话一次长会话会在用户目录里留下几十上百张中间帧。删除失败只记 DEBUG：
- * 文件可能被别的消费者（notify/clipboard）短暂占用，下一次会话不影响功能。
- *
- * @param[in] utf8Path capture.done 给出的路径。
- * @param[in] host     宿主服务表，只用于日志；可为 nullptr。
- */
-void removeTemporaryFile(const std::string& utf8Path, const ShotHostServices* host) {
-    if (utf8Path.empty()) {
-        return;
-    }
-    std::error_code error;
-    std::filesystem::remove(fromUtf8Path(utf8Path), error);
-    if (error) {
-        shot::Logger(host).debug("[long_capture] 删除临时帧文件失败：" + utf8Path);
-    }
-}
-
 /**
  * @brief 会话期间的按键 RAII：任何提前返回/异常都要注销 Enter/Esc。
  *
  * 不用 std::scope_exit 是为了不引入 C++23 之外的库；结构很小，够用即可。
  */
 struct SessionKeysGuard {
-    GlobalKeys* keys = nullptr; /**< 可能为 nullptr（全局按键初始化失败）。 */
+    GlobalKeys* keys = nullptr; /**< 可能为 nullptr（会话按键初始化失败）。 */
 
     ~SessionKeysGuard() {
         if (keys != nullptr) {
@@ -120,20 +78,21 @@ void LongCapture::runSession() {
     const shot::Logger log(m_host);
     std::string error;
 
-    TargetWindow target;
-    if (!resolveTarget(target, error)) {
-        log.warn("[long_capture] 开始失败：" + error);
-        showTrayHint("long.tray.failed_title", "长截图未能开始", nullptr, error.c_str());
+    ScreenRect content;
+    if (!awaitSelection(content, error)) {
+        // 超时/取消的提示已经在 awaitSelection 里发过；宿主退出时只记日志。
+        log.info("[long_capture] 未开始会话：" + error);
         return;
     }
-    log.info("[long_capture] 开始会话：客户区 " + std::to_string(target.client.width) + "x" +
-             std::to_string(target.client.height) + " @" + std::to_string(target.client.x) + "," +
-             std::to_string(target.client.y));
+    log.info("[long_capture] 开始会话：内容区 " + std::to_string(content.width) + "x" +
+             std::to_string(content.height) + " @" + std::to_string(content.x) + "," +
+             std::to_string(content.y));
 
     Hud hud;
-    const bool hudReady =
-        hud.start(m_host, m_i18n.get(), target.client, target.handle, &LongCapture::onHudSave,
-                  &LongCapture::onHudCancel, this);
+    // targetHwnd = 0：选择结果只有区域，没有窗口句柄；HUD 的滚轮转发会自动跳过。
+    // HUD 仍摆在内容区之外，放不下就不显示（由 Hud::start 内部判断）。
+    const bool hudReady = hud.start(m_host, m_i18n.get(), content, 0, &LongCapture::onHudSave,
+                                    &LongCapture::onHudCancel, this);
     if (hudReady) {
         hud.setStatus(localized("long.hud.waiting", "等待画面…"), "");
     } else {
@@ -153,7 +112,7 @@ void LongCapture::runSession() {
     int frameCount = 0;
     int gapCount = 0;
     int duplicateCount = 0;
-    int timeoutCount = 0;
+    int failureCount = 0;
     bool failed = false;
     bool limitReached = false;
     auto lastHudRefresh = std::chrono::steady_clock::now() - std::chrono::milliseconds(kHudRefreshMs);
@@ -184,6 +143,7 @@ void LongCapture::runSession() {
             warning += duplicates;
         }
         hud.setStatus(status, warning);
+        // 缩略图来自自带采集拼出的画布（不再读流水线落盘的 PNG）；5Hz 刷新。
         std::vector<std::uint8_t> preview;
         int previewWidth = 0;
         int previewHeight = 0;
@@ -200,59 +160,35 @@ void LongCapture::runSession() {
             }
         }
 
-        clearCaptureResult();
-        if (!publishCaptureRequest(target.client)) {
-            error = "发布采集请求失败（宿主事件队列满？）";
-            failed = true;
-            break;
-        }
-
-        CaptureResult result;
-        if (!waitCapture(result, kCaptureTimeoutMs)) {
-            bool command = false;
-            {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                command = m_saveRequested || m_cancelRequested || !m_running;
-            }
-            if (command) {
+        const auto frameStart = std::chrono::steady_clock::now();
+        CaptureFrame frame;
+        std::string captureError;
+        if (!ScreenGrabber::capture(content, frame, captureError)) {
+            frame.release();
+            ++failureCount;
+            log.warn("[long_capture] 抓帧失败（" + std::to_string(failureCount) + "/" +
+                     std::to_string(kMaxCaptureFailures) + "）：" + captureError);
+            if (failureCount >= kMaxCaptureFailures) {
+                error = "连续抓帧失败：" + captureError;
+                failed = true;
                 break;
             }
-            ++timeoutCount;
-            log.warn("[long_capture] 等待抓帧结果超时（" + std::to_string(timeoutCount) + "/" +
-                     std::to_string(kMaxCaptureTimeouts) + "）");
-            if (timeoutCount >= kMaxCaptureTimeouts) {
-                error = "等待抓帧结果超时：请确认 screen_capture / image_saver 插件已启用";
-                failed = true;
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - frameStart);
+            const int remaining = kFrameIntervalMs - static_cast<int>(elapsed.count());
+            if (remaining > 0 && waitCommand(remaining)) {
                 break;
             }
             continue;
         }
-        timeoutCount = 0;
-
-        if (result.failed) {
-            error = result.reason.empty() ? "采集失败（宿主未给出原因）" : result.reason;
-            failed = true;
-            break;
-        }
-
-        const auto frameStart = std::chrono::steady_clock::now();
-        CaptureFrame frame;
-        std::string loadError;
-        const bool loaded = FrameLoader::load(result.path, frame, loadError);
-        // 无论解码成功与否，读完就删：中间帧不属于用户的截图结果。
-        removeTemporaryFile(result.path, m_host);
-        if (!loaded) {
-            error = loadError;
-            failed = true;
-            break;
-        }
+        failureCount = 0;
         ++frameCount;
 
         if (!canvas) {
             canvas = std::make_unique<StitchCanvas>(frame.width, config.maxHeight);
         }
         if (frame.width != canvas->width()) {
-            error = "目标窗口宽度变化（" + std::to_string(canvas->width()) + " → " +
+            error = "目标区域宽度变化（" + std::to_string(canvas->width()) + " → " +
                     std::to_string(frame.width) + "），长截图已停止";
             failed = true;
             frame.release();
@@ -366,8 +302,9 @@ void LongCapture::runSession() {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_saveRequested = false;
         m_cancelRequested = false;
-        m_captureReady = false;
-        m_capture = CaptureResult{};
+        m_selectionReady = false;
+        m_selectionCancelled = false;
+        m_selectedRegion = ScreenRect{};
     }
 }
 

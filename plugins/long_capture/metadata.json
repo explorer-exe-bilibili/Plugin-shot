@@ -6,7 +6,7 @@
       "id": "long_capture.main",
       "name": "Long Capture",
       "version": "0.1.0",
-      "description": "手动滚动长截图：连续抓帧 + 行指纹在线拼接 + Enter 保存（Windows GDI HUD / 全局按键）",
+      "description": "手动滚动长截图：先点选目标窗口/区域，再用自带 GDI 采集连续抓帧 + 行指纹在线拼接，Enter 保存（Windows）",
       "interfaces": ["shot.configurable"],
       "requires": ["core>=0.1.0"],
       "provides": []

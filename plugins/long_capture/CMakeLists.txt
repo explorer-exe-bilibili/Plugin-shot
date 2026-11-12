@@ -1,15 +1,16 @@
 # ============================================================================
 #  long_capture —— 手动滚动长截图插件（"shot.configurable"）
 #
-#  用户自己滚动目标窗口，插件按固定间隔发 capture.request（带 region）连续抓帧，
-#  在内存里按行指纹匹配做在线拼接，Enter / HUD 按钮保存成一张长 PNG 并发布
+#  用户先在 region_selector 里点选目标窗口/拖出区域（region.select.request →
+#  region.selected 握手），插件再用自带的 GDI 采集层按目标区域连续抓帧，在内存里
+#  按行指纹匹配做在线拼接，Enter / HUD 按钮保存成一张长 PNG 并发布**一条**
 #  capture.done；Esc / HUD 按钮取消。
 #
-#  核心（画布 / 行指纹拼接 / PNG 编解码）只用标准库 + stb，放在
-#  stitch_canvas.cpp / scroll_stitcher.cpp / frame_loader.cpp / long_image_saver.cpp，
-#  不包含任何平台头；HUD、全局按键、前台窗口查询、托盘气泡是 Win32 实现
-#  （hud_windows.cpp / global_keys_windows.cpp / window_target_windows.cpp /
-#  tray_hint_windows.cpp），非 Windows 平台直接跳过整个插件，不产出伪实现。
+#  核心（画布 / 行指纹拼接 / PNG 编码）只用标准库 + stb，放在
+#  stitch_canvas.cpp / scroll_stitcher.cpp / long_image_saver.cpp，不包含任何平台头；
+#  自带采集层（capture_windows.cpp）、HUD、会话按键、托盘气泡是 Win32 实现
+#  （hud_windows.cpp / global_keys_windows.cpp / tray_hint_windows.cpp），
+#  非 Windows 平台直接跳过整个插件，不产出伪实现。
 #
 #  构建方式一（宿主仓库内）：
 #    根 CMakeLists 用 file(GLOB plugins/*/CMakeLists.txt) 自动纳入本工程，
@@ -22,19 +23,19 @@
 
 set(SHOT_PLUGIN_NAME long_capture)
 
-# 本插件是 Windows 实现（前台窗口客户区 + GDI HUD + RegisterHotKey）：
+# 本插件是 Windows 实现（GDI 采集 + GDI HUD + RegisterHotKey 会话按键）：
 # 非 Windows 平台直接跳过，不留一份跑不起来的 stub。被宿主 add_subdirectory 时
 # 用 PARENT_SCOPE 告诉根工程"这个插件被跳过了"（根 CMakeLists 据此打印提示）。
 #
-# TODO: 其它平台需要各自的前台窗口/客户区查询、HUD 绘制与全局按键实现
-#       （macOS：AXUIElement + NSWindow + RegisterEventHotKey；Linux：X11 的
-#       _NET_ACTIVE_WINDOW + XGrabKey，Wayland 下没有等价能力）。在补齐之前
+# TODO: 其它平台需要各自的采集/客户区查询、HUD 绘制与会话按键实现
+#       （macOS：CGWindowListCreateImage + NSWindow + RegisterEventHotKey；
+#       Linux：X11 的 XGetImage + XGrabKey，Wayland 下没有等价能力）。在补齐之前
 #       非 Windows 平台一直走下面的 return() 跳过整个插件。
 if(NOT WIN32)
     if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         set(SHOT_PLUGIN_SKIPPED TRUE PARENT_SCOPE)
     endif()
-    message(STATUS "long_capture：仅 Windows（前台窗口客户区 + GDI HUD + 全局按键），当前平台跳过")
+    message(STATUS "long_capture：仅 Windows（GDI 采集 + GDI HUD + 会话按键），当前平台跳过")
     return()
 endif()
 
@@ -58,10 +59,10 @@ endif()
 # stb 是 header-only：vcpkg 的 FindStb.cmake 只负责找到 Stb_INCLUDE_DIR，
 # 没有导入目标、也没有要链接的库（与 image_saver / clipboard 同一写法）。
 find_package(Stb REQUIRED)
-# nlohmann-json：capture.done/failed 与 config_list 的 JSON 解析、语言表解析（header-only）。
+# nlohmann-json：capture.done 与 config_list 的 JSON 解析、语言表解析（header-only）。
 find_package(nlohmann_json CONFIG REQUIRED)
 
-# 平台库：user32（窗口/热键/鼠标）、gdi32（HUD 绘制与 StretchBlt）、
+# 平台库：user32（会话热键/鼠标/HUD 窗口）、gdi32（自带采集与 HUD 绘制）、
 # shell32（托盘气泡的 Shell_NotifyIconW）。
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
@@ -69,11 +70,12 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  src/long_capture.cpp
                  src/long_capture_session.cpp
                  src/long_capture_config.cpp
+                 src/long_capture_i18n.cpp
+                 src/long_capture_output.cpp
                  src/stitch_canvas.cpp
                  src/scroll_stitcher.cpp
-                 src/frame_loader.cpp
                  src/long_image_saver.cpp
-                 src/window_target_windows.cpp
+                 src/capture_windows.cpp
                  src/hud_windows.cpp
                  src/global_keys_windows.cpp
                  src/tray_hint_windows.cpp

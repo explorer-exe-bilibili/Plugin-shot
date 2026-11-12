@@ -17,7 +17,7 @@ namespace long_capture {
 /**
  * @brief 一帧解码后的截屏：紧凑行，每像素 4 字节（R、G、B、A）。
  *
- * @note 一帧由 FrameLoader 从 capture.done 的 PNG/JPEG 路径读出来；贴进画布后
+ * @note 一帧由 ScreenGrabber（Windows GDI）直接抓进内存，不经过任何落盘文件；贴进画布后
  *       必须立刻 release()，否则 60ms 一帧会在内存里堆叠几十 MB。
  */
 struct CaptureFrame {

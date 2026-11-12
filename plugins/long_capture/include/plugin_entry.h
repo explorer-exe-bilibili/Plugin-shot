@@ -28,7 +28,7 @@ struct PluginEntry {
     const ShotIfaceEntry* ifaces;  /**< 能力目录，必须以 { nullptr, 0, nullptr } 结尾。 */
 };
 
-/** @brief 插件 long_capture.main 的静态描述：只声明 shot.configurable + 两个配置项。 */
+/** @brief 插件 long_capture.main 的静态描述：只声明 shot.configurable + 一个配置项。 */
 extern const PluginEntry kLongCapture;
 
 /**

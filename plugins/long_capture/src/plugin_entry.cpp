@@ -77,7 +77,7 @@ const ShotIfaceEntry kIfaces[] = {
 
 }  // namespace
 
-/** @brief 插件 long_capture.main 的静态描述：只声明 shot.configurable + 两个配置项。 */
+/** @brief 插件 long_capture.main 的静态描述：只声明 shot.configurable + 一个配置项。 */
 const PluginEntry kLongCapture = {
     .id      = "long_capture.main",
     .name    = "Long Capture",
@@ -124,7 +124,7 @@ void* create_instance(std::uint32_t index, const ShotHostServices* host) {
         try {
             if (!static_cast<long_capture::LongCapture*>(instance->state)->start(host)) {
                 // 会话线程创建失败时实例仍可当纯配置插件用；
-                // 设置页仍能改 hotkey/max_height。
+                // 设置页仍能改 max_height。
                 shot::Logger(host).warn("[long_capture] 插件初始化不完整，长截图功能不可用");
             }
         } catch (...) {
