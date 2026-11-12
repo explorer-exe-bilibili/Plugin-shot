@@ -28,7 +28,8 @@ namespace screen_capture {
  *
  * 宿主 create 一次、destroy 一次，只拿一个不透明指针。抓屏在流水线 worker 线程
  * 同步执行，set_config 在宿主 main 线程执行，两者只通过 CaptureSettings 内部的
- * atomic 通信；ScreenCapture 自身没有跨调用状态，GDI 句柄都在单次抓屏内释放。
+ * atomic 通信。Windows 实现的 GDI 句柄都在单次抓屏内释放；Linux/Wayland 实现持有
+ * 门户会话与两个后台线程，由 ScreenCapture 析构时停流、结束会话并 join。
  */
 struct ScreenCaptureState {
     /**

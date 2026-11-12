@@ -45,19 +45,24 @@ using screen_capture::PluginInstance;
 const ShotHostServices* g_hostServices = nullptr;
 
 // 用户可见文案的语言表（每个语言一张 JSON 对象，@meta 是 BCP-47 语言标签）：
-// 本插件没有自绘 UI，用户可见文案只有 include_cursor 的 label/tooltip，所以表里
-// 只有这两个 key。capture_settings.cpp 的 kConfig 存的就是这里的 key，两处拼写
+// 本插件没有自绘 UI，用户可见文案只有配置项的 label/tooltip，所以表里只有
+// 这几组 key。capture_settings.cpp 的 kConfig 存的就是这里的 key，两处拼写
 // 必须严格一致（设置页按 display(owner, key) = i18n_list[(owner, key)] ?? key 解析，
 // 拼错就显示 key 本身）。单张表超过 120 列，所以拆成相邻字符串字面量：编译期拼成
 // 一条 JSON，JSON 字符串内部没有裸换行。日志不进这张表（保持中文，e2e 按中文日志断言）。
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
     R"json("config.include_cursor.label":"合成鼠标光标",)json"
-    R"json("config.include_cursor.tooltip":"抓屏后把当前鼠标光标画进截图；关闭后截图不含光标"})json",
+    R"json("config.include_cursor.tooltip":"Windows：抓屏后把当前鼠标光标画进截图，关闭后不含光标；Wayland 下光标由合成器决定",)json"
+    R"json("config.source.label":"共享类型",)json"
+    R"json("config.source.tooltip":"Wayland：共享整个输出（monitor）或单个窗口（window）；默认整个输出"})json",
     R"json({"@meta":"en-US",)json"
     R"json("config.include_cursor.label":"Include mouse cursor",)json"
     R"json("config.include_cursor.tooltip":)json"
-    R"json("Draws the current mouse cursor into the screenshot; off gives a clean desktop without it"})json",
+    R"json("Windows: draws the cursor into the screenshot; off omits it. On Wayland the compositor decides",)json"
+    R"json("config.source.label":"Share source",)json"
+    R"json("config.source.tooltip":)json"
+    R"json("Wayland: share the whole output (monitor) or a single window (window); default is the whole output"})json",
 };
 
 void* create_instance(std::uint32_t index, const ShotHostServices* host) {
@@ -209,6 +214,10 @@ std::int32_t describe_screen(void* self, ShotCaptureInfo* out) {
     if (state == nullptr) {
         return 2;
     }
+#if !defined(_WIN32)
+    // source 是 Wayland 专用配置：把当前快照交给采集层；值变了会让它重建门户会话。
+    state->capture.setCaptureWindow(state->settings.captureWindow());
+#endif
     try {
         return state->capture.describe(out);
     } catch (...) {
@@ -223,6 +232,9 @@ std::int32_t capture_screen(void* self, ShotImage* dst) {
     if (state == nullptr) {
         return 2;
     }
+#if !defined(_WIN32)
+    state->capture.setCaptureWindow(state->settings.captureWindow());
+#endif
     try {
         // 配置快照在这里读一次：抓屏期间用户再改 include_cursor 也只影响下一张图。
         return state->capture.capture(dst, state->settings.includeCursor());
@@ -236,7 +248,7 @@ const ShotScreenCaptureV1 kScreenOps = SHOT_OPS(ShotScreenCaptureV1,
                                                 .describe = &describe_screen,
                                                 .capture  = &capture_screen);
 
-// 配置能力：声明 include_cursor，宿主据此生成设置页条目并在启动时回灌已存值。
+// 配置能力：声明 include_cursor 与 source，宿主据此生成设置页条目并在启动时回灌已存值。
 // 回调实现与配置描述在 capture_settings.cpp（一个能力一个 .cpp）。
 const ShotConfigurableV1 kConfigOps = SHOT_OPS(ShotConfigurableV1,
                                                .get_config_count = &capture_config_count,

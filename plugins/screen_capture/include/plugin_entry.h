@@ -23,7 +23,7 @@ struct PluginEntry {
     const ShotIfaceEntry* ifaces;  /**< 能力目录，必须以 { nullptr, 0, nullptr } 结尾。 */
 };
 
-/** @brief 插件 screen_capture.main 的静态描述：GDI 抓取整个虚拟桌面。 */
+/** @brief 插件 screen_capture.main 的静态描述：抓取屏幕（Windows GDI / Linux Wayland 门户）。 */
 extern const PluginEntry kScreenCapture;
 
 /**

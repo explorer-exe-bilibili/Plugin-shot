@@ -1,11 +1,16 @@
 # ============================================================================
 #  screen_capture —— 屏幕采集插件（"shot.screen_capture" + "shot.configurable"）
 #
-#  两段式能力：describe 报告整个虚拟桌面的几何，capture 把 BGRA8 像素写进
-#  宿主自己分配的缓冲——插件因此从不分配图像内存，也没有跨 DLL 的所有权问题。
-#  另声明一个配置项 include_cursor（是否把鼠标光标合成进截图）。
-#  实现全部是 Windows GDI（GetDC + BitBlt + GetDIBits + DrawIconEx），所以只在
-#  Windows 上构建。
+#  两段式能力：describe 报告几何，capture 把 BGRA8 像素写进宿主自己分配的缓冲——
+#  插件因此从不分配图像内存，也没有跨 DLL 的所有权问题。
+#  另声明两个配置项：include_cursor（Windows 是否合成鼠标光标）与 source
+#  （Wayland 共享整个输出还是单个窗口）。
+#
+#  平台实现（源文件按平台二选一，互不参与对方编译）：
+#    Windows：GDI（GetDC + BitBlt + GetDIBits + DrawIconEx）。
+#    Linux/Wayland：只能走 xdg-desktop-portal 的 ScreenCast 门户 + PipeWire
+#      （Ubuntu 24.04 是 Wayland 会话，Wayland 不允许应用直接读屏幕）。
+#    macOS：尚未实现，构建时跳过整个插件。
 #
 #  构建方式一（宿主仓库内）：
 #    根 CMakeLists 用 file(GLOB plugins/*/CMakeLists.txt) 自动纳入本工程，
@@ -18,13 +23,15 @@
 
 set(SHOT_PLUGIN_NAME screen_capture)
 
-# 本插件是 Windows GDI 实现：非 Windows 平台直接跳过，不产出伪实现。
-# 被宿主 add_subdirectory 时用 PARENT_SCOPE 告诉根工程"这个插件被跳过了"。
-if(NOT WIN32)
+# macOS 用 CGDisplayCreateImage / ScreenCaptureKit 实现，尚未补齐；在补齐之前直接
+# 跳过整个插件，而不是留一份跑不起来的 stub。被宿主 add_subdirectory 时用
+# PARENT_SCOPE 告诉根工程"这个插件被跳过了"（根 CMakeLists 据此打印提示）。
+#  TODO: macOS 用 ScreenCaptureKit 实现，并在 CMake 里加 APPLE 源与对应 framework。
+if(APPLE)
     if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         set(SHOT_PLUGIN_SKIPPED TRUE PARENT_SCOPE)
     endif()
-    message(STATUS "screen_capture：仅 Windows（GDI 抓屏），当前平台跳过")
+    message(STATUS "screen_capture：macOS（ScreenCaptureKit）待补，当前平台跳过")
     return()
 endif()
 
@@ -45,21 +52,90 @@ if(NOT COMMAND shot_add_plugin)
     include(ShotPlugin)
 endif()
 
-# 系统库两个 + header-only 的 nlohmann-json（i18n 语言表解析）；
-# 插件不链接 spdlog（日志走宿主服务）。
-#   gdi32  —— BitBlt / CreateCompatibleDC / GetDIBits / DeleteObject 等 GDI 对象
-#   user32 —— GetDC / GetSystemMetrics / GetCursorInfo / GetIconInfo / DrawIconEx
+# header-only 的 nlohmann-json：解析 i18n 语言表；插件不链接 spdlog（日志走宿主服务）。
 find_package(nlohmann_json CONFIG REQUIRED)
+
+# 平台相关的源文件与系统库。Windows 的 GDI 源保持原样；Linux 追加 Wayland 的
+# 门户 / PipeWire / 帧缓冲实现。
+set(_screen_capture_sources)
+set(_screen_capture_libraries nlohmann_json::nlohmann_json)
+set(_screen_capture_include_dirs)
+
+if(WIN32)
+    set(_screen_capture_sources
+        src/plugin_entry.cpp
+        src/screen_capture.cpp
+        src/capture_settings.cpp
+        src/gdi_desktop_capture.cpp
+    )
+    #   gdi32  —— BitBlt / CreateCompatibleDC / GetDIBits / DeleteObject 等 GDI 对象
+    #   user32 —— GetDC / GetSystemMetrics / GetCursorInfo / GetIconInfo / DrawIconEx
+    list(APPEND _screen_capture_libraries gdi32 user32)
+elseif(UNIX AND NOT APPLE)
+    # X11 不允许直接读屏幕，Wayland 更不允许；唯一通用路径是桌面门户。
+    #   libportal-1.0      —— ScreenCast 门户的异步封装（CreateSession/SelectSources/Start）
+    #   libpipewire-0.3    —— 接收门户打开的视频流（BGRx/RGBx，MemFd）
+    # 缺一个就配置失败并给出 Ubuntu 包名，而不是让插件在运行期静默不可用。
+    # 不用 pkg_check_modules(... REQUIRED ...)：它的默认报错只说"找不到模块"，
+    # 不会告诉用户装哪个包；先 QUIET 查一次再自己 FATAL_ERROR 信息更可执行。
+    find_package(PkgConfig REQUIRED)
+    # 模块名在不同发行版里不一样：Ubuntu 24.04 的 libportal-dev 提供 libportal.pc，
+    # 上游/其它发行版可能是 libportal-1.0.pc，所以用 pkg_search_module 两个都试。
+    pkg_search_module(LIBPORTAL QUIET libportal libportal-1.0)
+    if(NOT LIBPORTAL_FOUND)
+        message(FATAL_ERROR
+            "screen_capture：缺少 libportal（Wayland 的 ScreenCast 门户依赖）。\n"
+            "  Ubuntu/Debian 安装：sudo apt install libportal-dev libpipewire-0.3-dev\n"
+            "  （试过的 pkg-config 模块：libportal / libportal-1.0）")
+    endif()
+    pkg_check_modules(PIPEWIRE QUIET libpipewire-0.3)
+    if(NOT PIPEWIRE_FOUND)
+        message(FATAL_ERROR
+            "screen_capture：缺少 PipeWire 开发文件（Wayland 视频流依赖）。\n"
+            "  Ubuntu/Debian 安装：sudo apt install libportal-dev libpipewire-0.3-dev\n"
+            "  （缺失的 pkg-config 模块：libpipewire-0.3）")
+    endif()
+
+    find_package(Threads REQUIRED)
+
+    set(_screen_capture_sources
+        src/plugin_entry.cpp
+        src/screen_capture_wayland.cpp
+        src/capture_settings.cpp
+        src/wayland_capture.cpp
+        src/wayland_portal_session.cpp
+        src/wayland_portal_callbacks.cpp
+        src/wayland_pipewire_stream.cpp
+        src/wayland_frame_buffer.cpp
+    )
+    list(APPEND _screen_capture_libraries
+        ${LIBPORTAL_LINK_LIBRARIES}
+        ${PIPEWIRE_LINK_LIBRARIES}
+        Threads::Threads
+    )
+    set(_screen_capture_include_dirs ${LIBPORTAL_INCLUDE_DIRS} ${PIPEWIRE_INCLUDE_DIRS})
+else()
+    message(FATAL_ERROR "screen_capture：当前平台既不是 Windows 也不是 Linux/UNIX，尚未实现")
+endif()
 
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
-    SOURCES      src/plugin_entry.cpp
-                 src/screen_capture.cpp
-                 src/capture_settings.cpp
-                 src/gdi_desktop_capture.cpp
-    INCLUDE_DIRS include
+    SOURCES      ${_screen_capture_sources}
+    INCLUDE_DIRS include ${_screen_capture_include_dirs}
     LINK_LIBRARIES
-                 nlohmann_json::nlohmann_json
-                 gdi32
-                 user32
+                 ${_screen_capture_libraries}
 )
+
+if(UNIX AND NOT APPLE)
+    # pkg-config 的库目录不在链接器默认搜索路径时（自定义 prefix / 交叉编译）显式
+    # 告诉链接器；发行版默认装在 /usr/lib 时这两个变量是空串，等于没有影响。
+    target_link_directories(${SHOT_PLUGIN_NAME} PRIVATE
+        ${LIBPORTAL_LIBRARY_DIRS}
+        ${PIPEWIRE_LIBRARY_DIRS}
+    )
+endif()
+
+# 新插件要求 /W4 干净；不加 /WX，避免不同 MSVC 小版本的第三方头差异卡死构建。
+if(MSVC)
+    target_compile_options(${SHOT_PLUGIN_NAME} PRIVATE /W4)
+endif()

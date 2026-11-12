@@ -11,9 +11,9 @@
 //  映射成返回码、写日志；GdiDesktopCapture（gdi_desktop_capture.cpp）只做系统调用。
 // ============================================================================
 
-// TODO: 非 Windows 平台（X11 的 XGetImage、macOS 的 CGDisplayCreateImage）还没有实现：
-// CMake 目前在非 Windows 上直接跳过整个工程，不保留未验证的编译分支。以后补平台层时
-// 照着 GdiDesktopCapture 的两个公开函数实现即可，公共头、ABI 胶水与 metadata 都不用动。
+// 本头只服务 Windows GDI 实现。Linux/Wayland 的平台层在 wayland_capture.h 与
+// wayland_*.cpp（xdg-desktop-portal ScreenCast + PipeWire），两条实现由 CMake
+// 按平台二选一，互不参与对方编译；公共头、ABI 胶水与 metadata 都不用动。
 
 #include <cstdint>
 

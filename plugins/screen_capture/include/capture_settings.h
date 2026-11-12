@@ -8,7 +8,7 @@
 namespace screen_capture {
 
 /**
- * @brief 采集插件的配置状态（`shot.configurable`），目前只有 include_cursor 一项。
+ * @brief 采集插件的配置状态（`shot.configurable`）：include_cursor 与 source 两项。
  *
  * 抓屏在流水线 worker 线程、配置写入在宿主 main 线程（设置页"应用"/启动回灌），
  * 两边并发访问同一个插件实例，所以这里用 std::atomic 保存：一次抓屏只在开头读
@@ -19,11 +19,11 @@ namespace screen_capture {
  */
 class CaptureSettings {
 public:
-    /** @brief 构造：include_cursor 默认开启，与配置描述符里的 default_value = "1" 一致。 */
+    /** @brief 构造：include_cursor 默认开启、source 默认 monitor（抓整个输出）。 */
     CaptureSettings() noexcept = default;
 
     /**
-     * @brief 本次抓屏是否要把鼠标光标画进截图。
+     * @brief 本次抓屏是否要把鼠标光标画进截图（仅 Windows 有可执行语义）。
      * @return true = 合成光标；false = 只要干净桌面图。
      * @note 流水线 worker 线程读；单次抓屏只读一次，取到的是调用瞬间的值。
      */
@@ -40,8 +40,27 @@ public:
         m_includeCursor.store(enabled, std::memory_order_relaxed);
     }
 
+    /**
+     * @brief Wayland 门户要共享的类型：true = 单个窗口，false = 整个输出（monitor）。
+     * @return true = 共享一个窗口；false = 共享整个输出。
+     * @note 只影响下一次建立/重建门户会话；Windows 实现忽略它。
+     */
+    bool captureWindow() const noexcept {
+        return m_captureWindow.load(std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief 覆盖 source 的值（"monitor" → false，"window" → true）。
+     * @param[in] window true = 共享单个窗口。
+     * @note 可能在宿主 main 线程上调用；Wayland 采集层在下一次调用时比较并重建会话。
+     */
+    void setCaptureWindow(bool window) noexcept {
+        m_captureWindow.store(window, std::memory_order_relaxed);
+    }
+
 private:
     std::atomic<bool> m_includeCursor{true};  /**< 为什么要 atomic：见类注释的线程模型。 */
+    std::atomic<bool> m_captureWindow{false}; /**< 为什么是 atomic：set_config 与采集线程并发。 */
 };
 
 // ---------------------------------------------------------------------------
@@ -56,7 +75,7 @@ private:
 /**
  * @brief 配置项个数（`get_config_count`）。
  * @param[in] self 插件实例；忽略：配置项数量与实例无关。
- * @return 配置项个数（当前为 1）。
+ * @return 配置项个数（当前为 2）。
  */
 std::uint32_t capture_config_count(void* self);
 

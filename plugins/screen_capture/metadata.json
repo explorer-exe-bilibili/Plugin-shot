@@ -6,7 +6,7 @@
       "id": "screen_capture.main",
       "name": "Screen Capture",
       "version": "0.2.0",
-      "description": "用 Windows GDI 抓取整个虚拟桌面（可合成鼠标光标），把 BGRA8 像素写进宿主分配的缓冲",
+      "description": "抓取屏幕（Windows GDI / Linux Wayland 门户 + PipeWire），把 BGRA8 像素写进宿主分配的缓冲",
       "interfaces": ["shot.screen_capture", "shot.configurable"],
       "requires": ["core>=0.1.0"],
       "provides": []
