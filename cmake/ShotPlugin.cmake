@@ -88,8 +88,17 @@ function(shot_add_plugin _target)
     # Ninja：把插件的链接（连同挂在链接上的 POST_BUILD 剪枝）放进单并发池。
     # 链接器会把 *.ilk 临时写到 dll 旁边，多个插件并行链接时，一个插件的剪枝会
     # 扫到另一个插件"刚生成、还没被它自己的剪枝删掉"的 ilk，误报"清理后仍存在违规文件"。
-    # 池在根 CMakeLists.txt 的「12.1 Ninja 链接池」里定义（shot_link=1）。
+    # 池在根 CMakeLists.txt 的「12.1 Ninja 链接池」里定义（shot_link=1）。独立 SDK 工程
+    # 没有宿主根 CMakeLists，这里兜底定义，否则 Ninja 报 "unknown pool name 'shot_link'"，
+    # 离线 SDK 的插件构建会直接失败（ValidatePluginMeta/AppendPluginMeta 都跑不到）。
     if(CMAKE_GENERATOR MATCHES "Ninja")
+        if(NOT CMAKE_JOB_POOLS MATCHES "(^|;)shot_link=")
+            if(DEFINED CMAKE_JOB_POOLS AND NOT CMAKE_JOB_POOLS STREQUAL "")
+                set(CMAKE_JOB_POOLS "${CMAKE_JOB_POOLS};shot_link=1" PARENT_SCOPE)
+            else()
+                set(CMAKE_JOB_POOLS "shot_link=1" PARENT_SCOPE)
+            endif()
+        endif()
         set_property(TARGET ${_target} PROPERTY JOB_POOL_LINK shot_link)
     endif()
 

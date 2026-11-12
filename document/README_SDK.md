@@ -25,7 +25,9 @@
 > 后者用 header-only 的 **nlohmann-json** 解析多语言表（`document/I18N.md`）。用本 SDK
 > 的插件工程需要自己提供 nlohmann-json（vcpkg 清单加 `"nlohmann-json"`，或把
 > `single_include/nlohmann/json.hpp` 放进 include 路径）。宿主仓库内的插件已由根
-> `vcpkg.json` 提供。
+> `vcpkg.json` 提供。如果插件要落盘 PNG/JPEG（例如 `image_saver`），还需要
+> **stb**（vcpkg 的 `"stb"` 端口，或把 `stb_image.h` / `stb_image_write.h` 放进 include
+> 路径）；SDK 不内置这两个第三方头，和 nlohmann-json 一样由插件工程自备。
 
 最省事的方式是用 SDK 自带的构建模块（宿主仓库的 `plugins/example_processor` 就是完整样板）：
 
