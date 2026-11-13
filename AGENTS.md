@@ -54,7 +54,7 @@ plugins/            13 个插件工程，各自独立 CMakeLists + metadata.json
   image_saver        shot.image_saver（PNG/JPEG，stb）
   settings_ui        设置页（ImGui + GLFW + OpenGL3，跨平台）
   translator         外部语言包（Generic；扫描官方/用户目录，跨平台代码，Windows 已验证）
-  tray               托盘（图标 + 数据驱动菜单，Windows）
+  tray               托盘（图标 + 数据驱动菜单；Windows Win32 托盘 + Linux StatusNotifierItem，Linux 已编译、真机未验证）
   region_selector    区域框选覆盖层（Windows 完整交互；Wayland 门户定格图 + 拖选；X11 GLFW 覆盖层 + XGetImage 快照，均已编译、真机未验证）
   hotkey             全局热键（Windows 用 RegisterHotKey；Linux 用 X11 XGrabKey，纯 Wayland 运行期降级为不注册）
   session_control    Linux Wayland 的 D-Bus 触发入口（Generic；代替全局热键；已随 Linux 构建通过）
@@ -78,6 +78,8 @@ STYLE.md            ★ 代码风格与工程约定（硬约定）
 > PipeWire 抓屏、门户定格图 + B 方案框选、`session_control` 的 D-Bus 触发入口）与 **X11 分支**
 > （`screen_capture` 的 XShm/XGetImage + XFixes、`region_selector` 的 GLFW 覆盖层、`hotkey` 的
 > `XGrabKey`）都已实现并随 Linux 全量构建通过（WSL configure/build exit 0），**都没有在真机验证**；
+> 托盘（StatusNotifierItem + dbusmenu，会话总线协议，Wayland/X11 都适用）同样已实现并编译通过，
+> 依赖 GNOME 的 Ubuntu AppIndicators 扩展（Ubuntu 默认自带，纯净 GNOME 需手动装）；
 > `hotkey` 在 Linux 用 X11 `XGrabKey`，纯 Wayland（取不到 X11 Display）运行期降级为只提供列表与
 > 配置项、不注册并 WARN 指向 `session_control`；`long_capture` 已随 Windows 构建通过，**交互待
 > 真机验证**；macOS 尚未成功构建。改平台相关代码、CMake 跳过条件或根 README 平台段前先看矩阵。

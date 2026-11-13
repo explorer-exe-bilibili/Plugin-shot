@@ -453,10 +453,10 @@ cmake --build build/Linux --target region_selector
 
 ### 8.2 触发方式
 
-和其它平台一样由事件总线主题 `capture.request` 触发（负载 `{"mode":"region"}`）。Linux 上
-没有托盘/全局热键插件，入口来自其它通用插件（例如工作区里的 `session_control` 草稿把
-D-Bus `CaptureRegion()` 翻译成这条事件）或桌面自定义快捷键调用对应入口。本插件不自己
-注册全局快捷键。
+和其它平台一样由事件总线主题 `capture.request` 触发（负载 `{"mode":"region"}`）。
+Linux 的入口来自：托盘菜单（`tray` 的 SNI/dbusmenu）、短按 `hotkey` 在 X11 下注册的
+`Ctrl+Alt+A`、`session_control` 的 D-Bus `CaptureRegion()`，或桌面自定义快捷键调用对应
+入口。本插件不自己注册全局快捷键。
 
 ### 8.3 窗口、坐标与产出
 

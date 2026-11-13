@@ -37,7 +37,7 @@ Windows-only）。在那之前，`Capture()` 能成功发布事件并回复 `(tr
 | 方法 | 发布的事件 | 负载 | 说明 |
 | --- | --- | --- | --- |
 | `Capture()` | `capture.request` | 空 | 整屏截图请求（与托盘「截屏」、hotkey 的截屏项完全相同） |
-| `CaptureRegion()` | `capture.request` | `{"mode":"region"}` | “请开始框选”：流水线忽略、不采集；由区域选择插件消费（当前仅 Windows 有） |
+| `CaptureRegion()` | `capture.request` | `{"mode":"region"}` | “请开始框选”：流水线忽略、不采集；由区域选择插件消费（Windows / Wayland / X11 均已实现，Linux 真机未验证） |
 | `OpenSettings()` | `settings.open` | 空 | 打开设置页（`plugins/settings_ui` 消费） |
 | `CaptureLong()` | `long_capture.start` | 空 | 滚动长图能力的预留入口；当前没有订阅者，成功发布但无效果 |
 

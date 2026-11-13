@@ -19,6 +19,21 @@
 - 离线插件 SDK（`export_sdk` 目标）。
 - 真机验证脚本：采集、光标合成、设置页、热键、剪贴板、区域框选、多语言。
 
+### Linux（已实现、已编译，真机未验证）
+
+0.1.0 仍只提供 Windows 构建；以下为 Linux 侧代码状态，尚未在真机验证。
+
+- 托盘插件新增 Linux 后端：StatusNotifierItem + `com.canonical.dbusmenu`（GDBus / 系统
+  `gio-2.0`，Ubuntu 需 `libglib2.0-dev`，不新增 vcpkg 依赖）；Windows 后端不变，macOS 仍跳过。
+  Ubuntu GNOME 需要 Ubuntu AppIndicators 扩展（Ubuntu 默认自带；纯净 GNOME 需手动安装）；
+  找不到 `org.kde.StatusNotifierWatcher` 时只 WARN 一次、不崩不重试；菜单数据仍来自
+  `tray_command_list`，`lists.changed` 后重建。
+- 区域框选修复 Wayland 隐藏/编码时序：隐藏覆盖层后先 `glfwPollEvents` 再编码，PNG 编码/写盘
+  移入工作线程；portal 超时 120s → 30s 并每 5s 打印进度；失败分级日志（用户取消静默、其它
+  失败记 WARN）；显示后校验 `GLFW_VISIBLE`。Windows / X11 行为不变（X11 也补了隐藏后 poll）。
+- Linux X11 三插件分支：`screen_capture`（XShm/XGetImage + XFixes）、`region_selector`
+  （GLFW 覆盖层 + `XGetImage` 快照）、`hotkey`（`XGrabKey`）；随 Linux 全量构建通过，真机未验证。
+
 ### 变更
 
 - 项目品牌统一为 **Plugin-shot**；配置与日志目录改为 `%LOCALAPPDATA%\plugin-shot`。
