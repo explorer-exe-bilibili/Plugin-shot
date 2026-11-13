@@ -136,6 +136,9 @@ void ScrollStitcher::reset() {
     m_bandsLocked = false;
     m_staticTop = 0;
     m_staticBottom = 0;
+    clearAltReference();
+    m_refTrusted = false;
+    m_altDropped = false;
 }
 
 ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& canvas) {
@@ -143,6 +146,10 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
     if (frame.empty() || canvas.width() != frame.width) {
         return match;  // 尺寸不对：交给调用方按失败处理，但不要动画布
     }
+
+    // 备用基准只保留 kAltRefMaxAge / kAltRefMaxFrames：超时后锚点已无意义，留着
+    // 只会让有效期之后每帧多算一次匹配。丢没丢由会话层取一次性通知打日志。
+    expireAltReference();
 
     std::vector<std::uint8_t> thumb;
     int thumbWidth = 0;
@@ -167,7 +174,9 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         m_bandsLocked = false;
         m_staticTop = 0;
         m_staticBottom = 0;
+        clearAltReference();
         updateReference(frame, thumb);
+        m_refTrusted = true;
         match.matched = true;
         return match;
     }
@@ -179,7 +188,9 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         m_bandsLocked = false;
         m_staticTop = 0;
         m_staticBottom = 0;
+        clearAltReference();
         updateReference(frame, thumb);
+        m_refTrusted = false;
         return match;
     }
 
@@ -195,15 +206,15 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
     // 恰好能对上 30 行"之类的偶然检测改变搜索区间、把位移带偏。
     const int searchTop = m_bandsLocked ? m_staticTop : detected.top;
     const int searchBottom = m_bandsLocked ? m_staticBottom : detected.bottom;
-    const StitchEstimate estimate =
+    const StitchEstimate direct =
         m_estimator.estimate(m_referenceSignature, m_currentSignature, searchTop, searchBottom);
-    match.score = estimate.score;
-    const std::int32_t delta = estimate.delta;
+    const bool directMatched =
+        direct.score >= kMinMatchScore && direct.informative >= kMinInformativeRows;
 
     // 固定条只在"第一次出现非零位移"时判定一次，之后锁死：内容滚动之后再判定，
     // 会把恰好对上号的若干内容行误当固定条，裁掉画布 → 坐标整体错位（历史上表现为
     // 画布突然变矮、之后怎么滚都不再增长、图片里成段重复）。
-    if (!m_bandsLocked && delta != 0) {
+    if (!m_bandsLocked && direct.delta != 0) {
         m_bandsLocked = true;
         m_staticTop = detected.top;
         m_staticBottom = detected.bottom;
@@ -215,26 +226,57 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         }
         m_canvasTop = 0;
         m_refTop = 0;
+        // 备用基准若是在固定条锁定前保存的，它记录的条带是 0；锁定后画布顶部被裁掉、
+        // 坐标归零（此时锚点只可能是首帧，refTop 本来就是 0），匹配时改用锁定后的条带。
+        if (m_alt.valid) {
+            m_alt.bandsTop = m_staticTop;
+            m_alt.bandsBottom = m_staticBottom;
+        }
     }
     const int bandsTop = m_bandsLocked ? m_staticTop : 0;
     const int bandsBottom = m_bandsLocked ? m_staticBottom : 0;
     const int movingHeight = frame.height - bandsTop - bandsBottom;
 
-    if (delta == 0) {
-        if (estimate.score >= kMinMatchScore && estimate.informative >= kMinInformativeRows) {
-            match.duplicate = true;  // 几乎没有新内容
-        } else {
-            // 位移为 0 但信息行对不上：光标闪烁/局部动画，按缺口处理并重设基准。
-            m_refTop = m_canvasTop + canvas.height();
-            updateReference(frame, thumb);
+    // 备用基准在有效期内每帧都试。为什么不只在当前基准失配时试：缺口把基准坐标
+    // 改成了"接在画布末尾"的估计值，用户小步回滚时直接匹配仍会成功（两帧之间本来
+    // 就有重叠），但算出来的坐标是错的、会把已有内容重复贴一遍；备用基准保存的是
+    // 缺口前的真实坐标，只要它过门槛就优先采纳。有效期见 kAltRefMaxAge。
+    StitchEstimate estimate = direct;
+    bool recovered = false;
+    // 恢复时 m_refTop 会提前换成备用基准的坐标；若本帧最终因画布高度上限没有贴进去，
+    // 要还原它，保持"m_refTop 对应当前基准帧"的不变量（会话随后会停止拼帧）。
+    const std::int64_t refTopBeforeAlt = m_refTop;
+    if (m_alt.valid) {
+        const StitchEstimate altEstimate =
+            m_estimator.estimate(m_alt.signature, m_currentSignature, m_alt.bandsTop,
+                                 m_alt.bandsBottom);
+        if (altEstimate.score >= kMinMatchScore &&
+            altEstimate.informative >= kMinInformativeRows) {
+            estimate = altEstimate;
+            recovered = true;
+            match.recovered = true;
+            // 采纳备用基准：m_refTop 换成缺口前的可信坐标，本帧因此按"回到已知内容"
+            // 处理，后面的坐标逻辑只在超出画布范围时才追加/前插。
+            m_refTop = m_alt.refTop;
+            m_refTrusted = true;
+            clearAltReference();
         }
+    }
+    match.score = estimate.score;
+    const std::int32_t delta = estimate.delta;
+
+    if (!directMatched && !recovered) {
+        // 缺口：不硬拼。先把坐标可信的当前基准留作备用基准（用户回滚时靠它恢复），
+        // 再让基准前进到当前帧，内容坐标按"接在画布末尾"估一个值，让下一次匹配仍能
+        // 算增量（否则坐标会永远停在上一次成功的位置）。
+        rememberAltReference(bandsTop, bandsBottom);
+        m_refTop = m_canvasTop + canvas.height();
+        m_refTrusted = false;
+        updateReference(frame, thumb);
         return match;
     }
-    if (estimate.score < kMinMatchScore || estimate.informative < kMinInformativeRows) {
-        // 缺口：不硬拼。基准前进到当前帧，内容坐标按"接在画布末尾"估一个值，
-        // 让下一次匹配仍能算增量（否则坐标会永远停在上一次成功的位置）。
-        m_refTop = m_canvasTop + canvas.height();
-        updateReference(frame, thumb);
+    if (!recovered && delta == 0) {
+        match.duplicate = true;  // 几乎没有新内容
         return match;
     }
 
@@ -252,29 +294,40 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         if (rows > movingHeight) {
             // 视口与画布完全不重叠（用户一次跳过了整屏）：这是缺口，不是高度上限。
             // 以前这里会误报 "已达高度上限 <当前高度>"，用户只滚一屏就以为满了。
+            rememberAltReference(bandsTop, bandsBottom);
             m_refTop = m_canvasTop + canvas.height();
+            m_refTrusted = false;
             updateReference(frame, thumb);
             return match;
         }
         if (!canvas.prepend(frame, bandsTop, rows)) {
             match.heightLimited = true;
+            if (recovered) {
+                m_refTop = refTopBeforeAlt;
+            }
             return match;
         }
         m_canvasTop = newRefTop;
     } else if (newRefTop + movingHeight > canvasBottom) {
         const int rows = static_cast<int>(newRefTop + movingHeight - canvasBottom);
         if (rows > movingHeight) {
+            rememberAltReference(bandsTop, bandsBottom);
             m_refTop = m_canvasTop + canvas.height();
+            m_refTrusted = false;
             updateReference(frame, thumb);
             return match;
         }
         if (!canvas.append(frame, frame.height - bandsBottom - rows, rows)) {
             match.heightLimited = true;
+            if (recovered) {
+                m_refTop = refTopBeforeAlt;
+            }
             return match;
         }
     }
 
     m_refTop = newRefTop;
+    m_refTrusted = true;
     updateReference(frame, thumb);
     match.matched = true;
     match.delta = delta;
@@ -332,6 +385,46 @@ void ScrollStitcher::commitSignature() noexcept {
     // 交换而不是拷贝：当前帧签名升级为参考帧，旧参考缓冲留给下一帧复用，
     // 避免每帧为几万字节的块均值矩阵重新分配内存。
     std::swap(m_referenceSignature, m_currentSignature);
+}
+
+bool ScrollStitcher::expireAltReference() noexcept {
+    if (!m_alt.valid) {
+        return false;
+    }
+    ++m_alt.frames;
+    const bool tooOld = std::chrono::steady_clock::now() - m_alt.savedAt >= kAltRefMaxAge;
+    if (!tooOld && m_alt.frames <= kAltRefMaxFrames) {
+        return false;
+    }
+    clearAltReference();
+    m_altDropped = true;
+    return true;
+}
+
+bool ScrollStitcher::consumeAltReferenceDrop() noexcept {
+    const bool dropped = m_altDropped;
+    m_altDropped = false;
+    return dropped;
+}
+
+void ScrollStitcher::rememberAltReference(int bandsTop, int bandsBottom) {
+    if (!m_refTrusted) {
+        // 当前基准的坐标本身就是缺口猜出来的：把它存成回滚锚点只会恢复出错坐标。
+        // 已有备用基准时保留旧的那份——连续多个缺口时，它才是唯一带真实坐标的锚点。
+        return;
+    }
+    m_alt.signature = m_referenceSignature;  // 缺口不常发生，这里复制一次可以接受。
+    m_alt.refTop = m_refTop;
+    m_alt.bandsTop = bandsTop;
+    m_alt.bandsBottom = bandsBottom;
+    m_alt.valid = true;
+    m_alt.savedAt = std::chrono::steady_clock::now();
+    m_alt.frames = 0;
+}
+
+void ScrollStitcher::clearAltReference() noexcept {
+    m_alt.valid = false;
+    m_alt.frames = 0;
 }
 
 }  // namespace long_capture

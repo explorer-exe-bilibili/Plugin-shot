@@ -19,6 +19,7 @@
 //  本文件与实现只用标准库，不包含任何平台头。
 // ============================================================================
 
+#include <chrono>
 #include <cstdint>
 #include <vector>
 
@@ -40,6 +41,7 @@ struct ScrollMatch {
     bool matched = false;          /**< true = 已按 delta 贴进画布。 */
     bool duplicate = false;        /**< true = 与上一保留帧几乎一致，已丢弃。 */
     bool heightLimited = false;    /**< true = 还要追加但画布已达高度上限，本帧没有贴。 */
+    bool recovered = false;        /**< true = 本帧坐标由备用基准恢复（用户回滚回来了）。 */
     double score = 0.0;            /**< 最佳候选的匹配分数 0..1，日志排障用。 */
 };
 
@@ -56,6 +58,17 @@ public:
 
     /** @brief 去重阈值：缩略图平均灰度差不超过它就算"几乎一致"，丢弃该帧。 */
     static constexpr double kDuplicateMeanDiff = 1.0;
+
+    /**
+     * @brief 备用基准最长保留时间。
+     *
+     * 备用基准只是"刚滚过头、可能马上滚回来"的短期锚点：用户滚远之后它大概率再也
+     * 匹配不上，继续保留只会让每帧多算一次大数组匹配。超过这个时间就丢弃。
+     */
+    static constexpr std::chrono::milliseconds kAltRefMaxAge{8000};
+
+    /** @brief 备用基准最多保留的帧数（与时间上限互补，高频送帧时也不会长期保留）。 */
+    static constexpr int kAltRefMaxFrames = 300;
 
     /**
      * @brief 构造：绑定一种位移估计算法。
@@ -78,6 +91,15 @@ public:
 
     /** @brief 当前算法名（"hash"/"correlate"/"phase"，日志用）。 */
     const char* algorithmName() const noexcept { return m_estimator.name; }
+
+    /** @brief 当前基准帧移动区顶部的内容坐标（会话日志与离线测试用）。 */
+    std::int64_t refTop() const noexcept { return m_refTop; }
+
+    /**
+     * @brief 取走"备用基准已超时丢弃"的一次性通知。
+     * @return true = 自上次取走后丢弃过一次；会话层据此打一条 debug 日志。
+     */
+    bool consumeAltReferenceDrop() noexcept;
 
     /**
      * @brief 把一帧并入画布：首帧直接铺满，后续帧先求位移再按方向追加/前插。
@@ -120,6 +142,39 @@ private:
      */
     void commitSignature() noexcept;
 
+    /**
+     * @brief 检查备用基准是否超时/超帧数，超过上限就丢弃。
+     * @return true = 本次丢弃了一个仍然有效的备用基准。
+     */
+    bool expireAltReference() noexcept;
+
+    /**
+     * @brief 缺口时把当前基准（坐标可信的那一帧）存成备用基准。
+     *
+     * 为什么只在坐标可信时保存：缺口本身会把基准的 m_refTop 改成"接在画布末尾"的
+     * 估计值；若把这个估计值当成回滚锚点，恢复出来的坐标仍然是错的。若已经有备用
+     * 基准且当前基准坐标不可信，则保留旧的那一份——连续快速滚动造成多个缺口时，
+     * 最早那份才是唯一还带着真实内容坐标的锚点。
+     *
+     * @param[in] bandsTop    保存时使用的顶部固定条行数。
+     * @param[in] bandsBottom 保存时使用的底部固定条行数。
+     */
+    void rememberAltReference(int bandsTop, int bandsBottom);
+
+    /** @brief 清空备用基准（恢复成功、尺寸变化、reset 时调用）。 */
+    void clearAltReference() noexcept;
+
+    /** @brief 备用基准：缺口前那一帧的签名与可信内容坐标（最多保留一份）。 */
+    struct AltReference {
+        StitchSignature signature;  /**< 缺口前基准帧签名（回滚时的匹配参考）。 */
+        std::int64_t refTop = 0;    /**< 该帧移动区顶部的内容坐标（保存时可信）。 */
+        int bandsTop = 0;           /**< 保存时使用的顶部固定条行数。 */
+        int bandsBottom = 0;        /**< 保存时使用的底部固定条行数。 */
+        bool valid = false;         /**< false = 当前没有备用基准。 */
+        std::chrono::steady_clock::time_point savedAt{}; /**< 保存时刻（超时判据）。 */
+        int frames = 0;             /**< 已存活的帧数（帧数上限判据）。 */
+    };
+
     StitchAlgorithm m_algorithm;             /**< 选中的位移估计算法。 */
     StitchEstimatorOps m_estimator;          /**< 对应函数表（早绑定，逐帧不查表分支）。 */
     StitchSignature m_referenceSignature;    /**< 上一保留帧签名（每帧预处理一次后缓存）。 */
@@ -137,6 +192,11 @@ private:
     int m_staticTop = 0;
     /** 锁定的底部固定条行数。 */
     int m_staticBottom = 0;
+    AltReference m_alt;      /**< 备用基准（回滚恢复用，最多一份）。 */
+    /** 当前基准的 m_refTop 是否可信：匹配/恢复过 = true，缺口猜出来的 = false。 */
+    bool m_refTrusted = false;
+    /** 备用基准刚因超时被丢弃的一次性通知（会话层取走后打日志）。 */
+    bool m_altDropped = false;
 };
 
 }  // namespace long_capture

@@ -328,10 +328,20 @@ void LongCapture::runSession() {
                      " 位移 " + std::to_string(match.delta) + "，分数 " +
                      std::to_string(match.score) + "，画布 " +
                      std::to_string(canvas->height()));
+            // 回滚恢复单独一行：用户反馈"滚回去对不上"时，这行日志能直接看出当时
+            // 有没有恢复到缺口前的坐标。
+            if (match.recovered) {
+                log.info("[long_capture] 已通过备用基准恢复坐标：refTop=" +
+                         std::to_string(stitcher.refTop()));
+            }
         } else if (!match.duplicate && !match.heightLimited) {
             log.warn("[long_capture] 帧 " + std::to_string(feedCount) + "：alg=" + algorithmName +
                      " 缺口（分数 " + std::to_string(match.score) + "），画布 " +
                      std::to_string(canvas->height()));
+        }
+        // 备用基准只是回滚用的短期锚点，超时丢弃时记一行 debug（不影响逐帧日志）。
+        if (stitcher.consumeAltReferenceDrop()) {
+            log.debug("[long_capture] 备用基准已超时丢弃（保留上限 8000ms / 300 帧）");
         }
 
         const auto now = std::chrono::steady_clock::now();

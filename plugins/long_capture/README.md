@@ -45,6 +45,14 @@
 `max_height` 后停止追加/前插，但保留 HUD 等用户保存或取消。固定条（标题栏/状态栏）
 在第一次出现非零位移时锁定并裁掉，之后不再重新判定。
 
+**回滚恢复**：快速滚动（触控板惯性）时相邻两帧重叠不足 30% 会记缺口，此时基准
+坐标只能按"接在画布末尾"估一个值。拼接器会把缺口前那一帧（行哈希 + 当时的内容
+坐标 + 固定条）留作一份**备用基准**；有效期内每一帧都会再和它比一次，若分数
+≥ 0.90 且信息行足够，就采纳 `altRefTop + delta`，本帧按"回到已知内容"处理
+（画布只在超出已有范围时追加/前插，不重复贴），日志会记一行
+`已通过备用基准恢复坐标：refTop=...`。备用基准最多保留 8 秒 / 300 帧，超时丢弃；
+出现坐标可信的新缺口时会替换它，避免把缺口猜出来的坐标当成回滚锚点。
+
 ## 3. 配置
 
 | key | 类型 | 默认 | 说明 |
@@ -165,7 +173,7 @@ bash tools/verify/build.sh --target long_capture
 | `src/stitch_hash.cpp` | `hash` 算法：行哈希 + 高频行过滤 + 带符号全量搜索 |
 | `src/stitch_correlate.cpp` | `correlate` 算法：64 列块均值 + 2D NCC（粗搜 + 精搜） |
 | `src/stitch_phase.cpp` | `phase` 算法：行亮度 1D 相位相关（radix-2 FFT 在匿名命名空间） |
-| `src/scroll_stitcher.cpp` | 画布坐标、固定条锁定、去重、缺口判定（算法可插拔） |
+| `src/scroll_stitcher.cpp` | 画布坐标、固定条锁定、去重、缺口判定、备用基准回滚恢复（算法可插拔） |
 | `src/long_image_saver.cpp` | stb_image_write 编码 PNG（UTF-8 路径、唯一文件名） |
 | `src/long_capture_config.cpp` | `algorithm` / `max_height` 配置项 |
 | `src/border_window_windows.cpp` | 选区外圈的主题色边框（置顶、点击穿透、`SetWindowRgn` 只留 2px 描边） |
