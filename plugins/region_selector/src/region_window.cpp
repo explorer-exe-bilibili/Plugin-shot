@@ -45,8 +45,10 @@
 //     当背景，交互与 Windows 完全一致（悬停吸附、单击截窗、拖框、主题色折角、Esc/右键
 //     取消）；确认后按 Windows 同一时序发布带 region 的 capture.request（普通框选）或
 //     region.selected（purpose 选择）。窗口命中用 XQueryTree + EWMH 类型过滤。
-//     选择逻辑本身（region_overlay.cpp / _draw.cpp / region_graphics.cpp）与平台无关，
-//     两个分支共用，本文件只做"平台层调用点"的运行期分派。
+//     覆盖层是 override-redirect + 键盘/指针 grab（见 region_overlay_x11.cpp）：WM 不管理
+//     它，所以永远在 DOCK 面板之上、面板抢不到焦点，悬停面板=全屏才成立；grab/属性失败
+//     自动降级回 WM 管理的普通窗口。选择逻辑本身（region_overlay.cpp / _draw.cpp /
+//     region_graphics.cpp）与平台无关，两个分支共用，本文件只做"平台层调用点"的运行期分派。
 //   X11 的坐标原点 = root 窗口 (0,0)，X 像素即物理像素；content scale 只放大字号。
 //
 // TODO: 跨显示器选择：现在只覆盖"鼠标所在显示器"，拖到另一块屏的选区会被夹在
@@ -245,6 +247,15 @@ bool RegionWindow::Impl::createWindow() {
     }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);  // 有垂直同步就开；覆盖层每帧都是一次整屏混合，没必要超频绘制
+#if defined(__linux__)
+    // X11：EWMH 的 DOCK 面板在 ABOVE 层，WM 管理的普通窗口即使带 _NET_WM_STATE_ABOVE
+    // 也可能被面板压住、被面板抢输入。必须在窗口第一次 map 之前切成 override-redirect
+    // （实现与失败降级都在 region_overlay_x11.cpp）。失败已在那边 WARN，这里继续按
+    // 旧的 WM 管理窗口跑，框选功能不受影响。
+    if (linuxBackend == LinuxSessionBackend::X11) {
+        x11PrepareOverrideRedirect();
+    }
+#endif
     return true;
 }
 
@@ -329,6 +340,15 @@ void RegionWindow::Impl::messageLoop() {
             }
         } else {
             // 隐藏时不渲染、不碰 GLFW：阻塞在条件变量上，空闲期不占 CPU。
+            // Wayland 隐藏流程结束后补一行日志（分步诊断的最后一环）：如果真机日志停在
+            // 这一行而屏幕上还能看到覆盖层，就说明 unmap 请求没有送达合成器，而不是
+            // UI 线程还卡在 hide / 编码里。
+            if (pendingIdleLog) {
+                pendingIdleLog = false;
+                shot::Logger(host).info(
+                    "region_selector：事件循环已回到隐藏态等待（条件变量）；若此时屏幕上仍有覆盖层，"
+                    "说明 unmap 请求没有送达合成器");
+            }
             waitForEvent();
             drainEvents();
         }
@@ -427,9 +447,10 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     if (!purpose.empty()) {
         log.info("region_selector：本次框选来自 region.select.request（purpose=" + purpose + "）");
     }
-    // 上一次确认的"裁剪 + 编码 + 写盘"可能还在工作线程里跑：先收掉再开始新一次框选，
-    // 保证同一时刻只有一个提交在写盘（也避免 sourcePixels 被两处同时持有）。
-    joinCommitThread();
+    // 上一次确认的"裁剪 + 编码 + 写盘"可能还在工作线程里跑：带超时回收一次
+    // （只 join 已经跑完的，绝不把 UI 线程按在编码上），保证正常情况下列表里最多
+    // 一个提交线程。
+    reapCommitWorkers(kCommitReapTimeoutMs);
 #endif
     // 第一次框选才初始化 GLFW/窗口/ImGui（原因见文件头），失败就安静放弃本次框选。
     if (!ensureGraphics()) {
@@ -662,8 +683,12 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     }
     glfwPollEvents();  // 让新尺寸/焦点配置事件进来，第一帧就按实际尺寸绘制
     if (linuxBackend == LinuxSessionBackend::X11) {
-        // X11：WM 可能在 map 之后才真正摆放窗口，poll 完再记录实际几何；坐标一律按
-        // 实际窗口位置换算（见 x11CommitSelection）。
+        // X11：显示后立刻接管输入（XRaiseWindow + XSetInputFocus + 键盘/指针 grab）。
+        // 这样覆盖层在 override-redirect 下盖住 DOCK 面板并独占输入；grab 被别的客户端
+        // 占着或属性设置失败时函数内部会 WARN 并降级为普通窗口，不影响后续框选。
+        x11ShowOverlayInput();
+        // WM 可能在 map 之后才真正摆放窗口（降级时尤其如此），poll 完再记录实际几何；
+        // 坐标一律按实际窗口位置换算（见 x11CommitSelection）。
         x11LogOverlayGeometry();
     } else {
         // Wayland：map 是异步的（合成器 configure 之后 GLFW 才认为可见）。
@@ -727,6 +752,43 @@ void RegionWindow::Impl::cancelSelection() {
 }
 
 void RegionWindow::Impl::hideOverlay() {
+#if defined(__linux__)
+    const shot::Logger log(host);
+    // hide 之前覆盖层是否真的在显示：只有"显示 → 隐藏"这一轮才需要在事件循环回到
+    // 等待时补一行日志（错误路径里的 hide 不该刷这句）。
+    const bool wasVisible = overlayVisible;
+    // Wayland 的分步日志第 1 环：hide 之前的窗口状态。GLFW_VISIBLE=0 但 overlayVisible=1
+    // 是很关键的一种状态：GLFW 3.4 的 wl 后端里 `_glfwHideWindowWayland` 只在
+    // `window->wl.visible` 为真时才销毁 shell 对象 + attach(NULL)，所以这种状态下
+    // glfwHideWindow 会变成**空操作**，合成器仍显示旧画面——真机上就是"覆盖层卡住"。
+    const bool waylandBackend = (linuxBackend == LinuxSessionBackend::Wayland);
+    if (window != nullptr && waylandBackend) {
+        int windowWidth = 0;
+        int windowHeight = 0;
+        glfwGetWindowSize(window, &windowWidth, &windowHeight);
+        const int visibleBefore = glfwGetWindowAttrib(window, GLFW_VISIBLE);
+        char text[256] = {};
+        std::snprintf(text, sizeof(text),
+                      "region_selector：隐藏覆盖层前（GLFW_VISIBLE=%d，窗口 %dx%d，"
+                      "overlayVisible=%d）",
+                      visibleBefore, windowWidth, windowHeight, overlayVisible ? 1 : 0);
+        log.info(text);
+        if (overlayVisible && visibleBefore == 0) {
+            log.warn(
+                "region_selector：GLFW 认为窗口已隐藏（GLFW_VISIBLE=0）但覆盖层状态是显示："
+                "glfwHideWindow 可能变成空操作，合成器也许仍显示旧画面（Wayland 的 "
+                "GLFW_VISIBLE 是客户端标志，不证明合成器已 unmap）");
+        }
+    }
+#endif
+#if defined(__linux__)
+    // X11：先 XUnmapWindow 并释放键盘/指针 grab，再走下面的 glfwHideWindow + poll。
+    // 顺序反过来会让"解除 grab 到窗口真正消失"之间的点击落到下面的面板上；函数内部
+    // 对"从未显示过"直接返回，不会重复 unmap 或刷日志（见 region_overlay_x11.cpp）。
+    if (window != nullptr && linuxBackend == LinuxSessionBackend::X11) {
+        x11HideOverlayInput();
+    }
+#endif
     if (window != nullptr) {
         glfwHideWindow(window);
     }
@@ -744,12 +806,87 @@ void RegionWindow::Impl::hideOverlay() {
         // 缓冲，要等下一次 glfw*Events() 里的 wl_display_flush 才真正发给合成器。
         // 不补这一下：取消（Esc/右键）或确认后覆盖层会一直留在屏幕上，而隐藏态的事件
         // 循环又阻塞在条件变量上，合成器 ping 无人应答（GNOME 报"应用没有响应"）。
-        glfwPollEvents();
+        if (waylandBackend) {
+            char text[192] = {};
+            std::snprintf(text, sizeof(text),
+                          "region_selector：glfwHideWindow 已调用（GLFW_VISIBLE=%d），"
+                          "进入事件泵等待",
+                          glfwGetWindowAttrib(window, GLFW_VISIBLE));
+            log.info(text);
+            // 分步日志第 2 环：事件泵等待（每轮 poll + 5ms 超时等待），最多 500ms。
+            waitOverlayHidden(kHideWaitTimeoutMs);
+            pendingIdleLog = wasVisible;
+        } else {
+            // X11：保持原行为（hide + 一次 poll），本轮的隐藏等待只针对 Wayland。
+            glfwPollEvents();
+        }
     }
 #endif
 }
 
 #if defined(__linux__)
+bool RegionWindow::Impl::waitOverlayHidden(int timeoutMs) {
+    const shot::Logger log(host);
+    if (window == nullptr) {
+        return true;
+    }
+    // 分步日志第 2 环：每轮 poll 之后记录 GLFW_VISIBLE，第 3 环：waitEventsTimeout 返回
+    // （带耗时）。注意 Wayland 的 GLFW_VISIBLE 在 glfwHideWindow 里就同步翻成 0（客户端
+    // 标志），所以逐轮日志的价值在于看"泵了几轮 / 每轮等了多久 / 有没有一轮被卡住"，
+    // 而不是看这个值什么时候变。
+    const auto startedAt = std::chrono::steady_clock::now();
+    int rounds = 0;
+    int visible = glfwGetWindowAttrib(window, GLFW_VISIBLE);
+    while (true) {
+        // 这一行才是真正的 wl_display_flush：unmap 请求在这里发给合成器。
+        glfwPollEvents();
+        visible = glfwGetWindowAttrib(window, GLFW_VISIBLE);
+        ++rounds;
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - startedAt)
+                             .count();
+        if (rounds <= kHideLogRounds) {
+            char text[192] = {};
+            std::snprintf(text, sizeof(text),
+                          "region_selector：隐藏等待 第 %d 轮 poll 完成（GLFW_VISIBLE=%d，已用 %lld ms）",
+                          rounds, visible, static_cast<long long>(elapsedMs));
+            log.info(text);
+        }
+        // 已泵够轮数且 GLFW 报告隐藏：认为"隐藏请求已经送出去"。
+        if (visible == 0 && rounds >= kHideMinPumpRounds) {
+            char text[192] = {};
+            std::snprintf(text, sizeof(text),
+                          "region_selector：覆盖层隐藏流程完成（GLFW_VISIBLE=0，泵 %d 轮 / %lld ms）",
+                          rounds, static_cast<long long>(elapsedMs));
+            log.info(text);
+            return true;
+        }
+        if (elapsedMs >= timeoutMs) {
+            break;
+        }
+        // 5ms 超时等待：既 flush，也给合成器一次处理 unmap 的机会。
+        const auto waitStartedAt = std::chrono::steady_clock::now();
+        glfwWaitEventsTimeout(kHideWaitRoundSeconds);
+        if (rounds <= kHideLogRounds) {
+            const auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - waitStartedAt)
+                                    .count();
+            char text[192] = {};
+            std::snprintf(text, sizeof(text),
+                          "region_selector：隐藏等待 第 %d 轮 waitEventsTimeout 已返回（耗时 %lld ms）",
+                          rounds, static_cast<long long>(waitMs));
+            log.info(text);
+        }
+    }
+    // 保底：超时也继续（调用方照常往下走），只留一条 WARN 供真机日志定位。
+    char text[224] = {};
+    std::snprintf(text, sizeof(text),
+                  "region_selector：覆盖层未在 %dms 内隐藏，继续处理（GLFW_VISIBLE=%d，泵 %d 轮）",
+                  timeoutMs, visible, rounds);
+    log.warn(text);
+    return false;
+}
+
 bool RegionWindow::Impl::waitOverlayVisible(int maxPolls) {
     if (window == nullptr) {
         return false;
@@ -769,10 +906,82 @@ bool RegionWindow::Impl::waitOverlayVisible(int maxPolls) {
     return glfwGetWindowAttrib(window, GLFW_VISIBLE) != 0;
 }
 
-void RegionWindow::Impl::joinCommitThread() {
-    if (commitThread.joinable()) {
-        commitThread.join();
+void RegionWindow::Impl::reapCommitWorkers(int waitMs) {
+    // 只回收**已经跑完**的提交线程：还在编码的不等（4K PNG 要几百毫秒到数秒，join 会
+    // 把 UI 线程按在原地，Wayland 下这段时间不再 dispatch 事件，合成器会认为应用无响应）。
+    // 没跑完的留在 commitWorkers 里，由下一次回收或 stop() 收掉。
+    if (commitWorkers.empty()) {
+        return;
     }
+    const shot::Logger log(host);
+    const auto startedAt = std::chrono::steady_clock::now();
+    std::vector<CommitWorker> finishedWorkers;
+    std::size_t stillRunning = 0;
+    {
+        std::unique_lock<std::mutex> lock(commitMutex);
+        const auto allFinished = [this]() {
+            for (const CommitWorker& worker : commitWorkers) {
+                if (worker.finished == nullptr || !*worker.finished) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (waitMs > 0 && !allFinished()) {
+            commitCv.wait_for(lock, std::chrono::milliseconds(waitMs), allFinished);
+        }
+        for (auto it = commitWorkers.begin(); it != commitWorkers.end();) {
+            if (it->finished != nullptr && *it->finished) {
+                finishedWorkers.push_back(std::move(*it));
+                it = commitWorkers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        stillRunning = commitWorkers.size();
+    }
+    // join 放在锁外：线程已经在收尾，join 立即返回；万一状态竞争导致它还没退完，
+    // 也不会把 commitMutex 一直占着（工作线程退出前要拿它置 finished）。
+    for (CommitWorker& worker : finishedWorkers) {
+        if (worker.thread.joinable()) {
+            worker.thread.join();
+        }
+    }
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - startedAt)
+                               .count();
+    char text[256] = {};
+    std::snprintf(text, sizeof(text),
+                  "region_selector：回收编码线程 %zu 个（耗时 %lld ms），仍有 %zu 个在写盘%s",
+                  finishedWorkers.size(), static_cast<long long>(elapsedMs), stillRunning,
+                  (stillRunning > 0) ? "（不阻塞 UI 线程，稍后再收）" : "");
+    log.info(text);
+}
+
+void RegionWindow::Impl::joinCommitWorkers() {
+    if (commitWorkers.empty()) {
+        return;
+    }
+    const shot::Logger log(host);
+    const auto startedAt = std::chrono::steady_clock::now();
+    std::vector<CommitWorker> workers;
+    {
+        std::lock_guard<std::mutex> lock(commitMutex);
+        workers.swap(commitWorkers);
+    }
+    // stop() 必须等干净：本插件/DLL 卸载之后工作线程不能还在用宿主服务表或写文件。
+    for (CommitWorker& worker : workers) {
+        if (worker.thread.joinable()) {
+            worker.thread.join();
+        }
+    }
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - startedAt)
+                               .count();
+    char text[192] = {};
+    std::snprintf(text, sizeof(text), "region_selector：stop() 已 join %zu 个编码线程（耗时 %lld ms）",
+                  workers.size(), static_cast<long long>(elapsedMs));
+    log.info(text);
 }
 #endif
 
@@ -1017,6 +1226,11 @@ void RegionWindow::stop() {
     if (!m_impl) {
         return;
     }
+    // 分步日志：stop() 也是"隐藏之后"的嫌疑阻塞点之一（join UI 线程 / join 编码线程），
+    // 前后各记一行，真机日志里能直接看出宿主退出卡在哪一步。
+    const shot::Logger stopLog(m_impl->host);
+    const auto stopStartedAt = std::chrono::steady_clock::now();
+    stopLog.info("region_selector：stop() 开始（退订总线 + join 事件循环线程）");
     // 1. 先退订事件总线：deinit 返回后宿主不再回调本插件（EVENT_BUS.md §5）。
     if (m_impl->busSubscribed) {
         shot::EventBus bus(m_impl->host);
@@ -1035,8 +1249,8 @@ void RegionWindow::stop() {
     }
 #if defined(__linux__)
     // 4. Wayland 的提交工作线程：UI 线程已退出，不会再有新任务；这里 join 保证它
-    //    不会在本插件/DLL 卸载之后还在用宿主服务表或写文件。
-    m_impl->joinCommitThread();
+    //    不会在本插件/DLL 卸载之后还在用宿主服务表或写文件（会记录耗时）。
+    m_impl->joinCommitWorkers();
 #endif
     {
         std::lock_guard<std::mutex> lock(m_impl->mutex);
@@ -1051,9 +1265,22 @@ void RegionWindow::stop() {
     m_impl->windowScan = WindowScan{};
     m_impl->windowScanValid = false;
     m_impl->overlayHwnd = 0;
+#if defined(__linux__)
+    // X11 的 override-redirect / grab 状态只属于已销毁的那个窗口；下次框选会重新建窗。
+    m_impl->x11OverrideRedirect = false;
+    m_impl->x11KeyboardGrabbed = false;
+    m_impl->x11PointerGrabbed = false;
+#endif
     m_impl->uiScale = 1.0f;
     // 线程已 join：不再有渲染帧读文案，放开对插件状态里语言表的借用关系。
     m_impl->i18n = nullptr;
+    const auto stopElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - stopStartedAt)
+                                   .count();
+    char stopText[192] = {};
+    std::snprintf(stopText, sizeof(stopText), "region_selector：stop() 完成（总耗时 %lld ms）",
+                  static_cast<long long>(stopElapsedMs));
+    stopLog.info(stopText);
 }
 
 std::int32_t RegionWindow::post(const char* name, const char* data, std::uint32_t len) {

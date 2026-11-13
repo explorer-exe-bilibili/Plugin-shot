@@ -32,12 +32,14 @@
 //    region_geometry_x11.cpp   —— X screen 几何 / 光标 / 显示器矩形 + 实测日志
 //    region_background_x11.cpp —— XGetImage 整屏快照 → GL 纹理
 //    window_target_x11.cpp     —— XQueryTree 顶层窗口枚举 / EWMH 类型过滤 / 命中测试
-//    region_overlay_x11.cpp    —— 覆盖层定位 / 实际几何日志 / 确认后的发布（与 Windows 同一时序）
+//    region_overlay_x11.cpp    —— override-redirect / 输入 grab（盖住面板）/ 覆盖层定位 /
+//                                 实际几何日志 / 确认后的发布（与 Windows 同一时序）
 // ============================================================================
 
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -93,6 +95,45 @@ inline constexpr int kMinimumSelectionSize = 8;
  * 覆盖层已经不在画面上）。等太短会把遮罩截进图里，等太久用户会觉得卡。
  */
 inline constexpr int kHideSettleDelayMs = 100;
+
+#if defined(__linux__)
+/**
+ * @brief Wayland 隐藏覆盖层的等待上限（毫秒）。
+ *
+ * `glfwHideWindow` 在 Wayland 上只是把 unmap 请求（xdg_toplevel destroy + attach(NULL)
+ * + commit）写进 `wl_display` 的发送缓冲，真正发出去靠下一次 `glfw*Events()` 里的
+ * `wl_display_flush`。所以隐藏之后不能只 poll 一两次就回去阻塞：要**用事件泵等**，
+ * 直到 GLFW 报告隐藏或超时。上限 500ms 是"用户能忍、又能覆盖一次合成器往返"的折中；
+ * 超时也继续（记 WARN），绝不把 UI 线程按在这里更久——UI 线程一停就不再 dispatch
+ * Wayland 事件，合成器 ping 无人应答，GNOME 会直接报"应用没有响应"。
+ */
+inline constexpr int kHideWaitTimeoutMs = 500;
+
+/** @brief 隐藏等待每轮的 `glfwWaitEventsTimeout` 秒数（也会 flush，见上）。 */
+inline constexpr double kHideWaitRoundSeconds = 0.005;
+
+/**
+ * @brief 隐藏等待至少泵几轮才认为"隐藏完成"。
+ *
+ * 关键事实（GLFW 3.4 `wl_window.c`）：`_glfwHideWindowWayland` 在**客户端**把
+ * `window->wl.visible` 置 false，所以 `glfwGetWindowAttrib(GLFW_VISIBLE)` 在
+ * `glfwHideWindow` 返回后立刻就是 0，它**不能证明**合成器已经 unmap。因此不能
+ * "看到 0 就走"，至少泵几轮，保证 flush 发生过、并给合成器一次处理 unmap 的机会。
+ */
+inline constexpr int kHideMinPumpRounds = 4;
+
+/** @brief 隐藏等待里逐轮打日志的轮数（之后的轮次只在结束时汇总，避免刷屏）。 */
+inline constexpr int kHideLogRounds = 6;
+
+/**
+ * @brief 回收上一次 Wayland 提交线程的最长等待（毫秒）。
+ *
+ * join 一个还在编码的线程会把 UI 线程按在原地几百毫秒到数秒（4K PNG 编码实测可达
+ * 数秒）。这里只等这么久，没跑完就不等：线程留在 `commitWorkers` 里，由下一次回收
+ * 或 `stop()` 收掉。
+ */
+inline constexpr int kCommitReapTimeoutMs = 200;
+#endif
 
 /** @brief 框选时的事件轮询间隔（秒）：鼠标拖动要跟手，有事件时 glfwWaitEventsTimeout 立即返回。 */
 inline constexpr double kSelectionPollSeconds = 1.0 / 120.0;
@@ -247,6 +288,7 @@ struct RegionWindow::Impl {
     bool imguiInitialized = false;
     bool metricsLogged = false;   // 显示器几何实测日志只打一次
     bool overlayVisible = false;  // 覆盖层是否正在显示
+    bool pendingIdleLog = false;  // 隐藏后要补一行"事件循环回到等待"（Wayland 诊断用）
     std::string selectionPurpose;  // 非空 = 本次选择由 region.select.request 发起，确认后回 region.selected
     DragState drag;               // 当前框选状态
     HoverBox hover;               // 悬停窗口吸附框（目标 + 动画中的显示矩形）
@@ -368,8 +410,35 @@ struct RegionWindow::Impl {
      * @return true = GLFW 已报告窗口可见。
      */
     bool waitOverlayVisible(int maxPolls);
-    /** @brief join 上一次 Wayland 提交的工作线程（不存在时立即返回）。 */
-    void joinCommitThread();
+    /**
+     * @brief hide 之后用事件泵等"隐藏请求真的送出去"（Wayland 专用）。
+     *
+     * 每轮 `glfwPollEvents()`（内部 `wl_display_flush`，unmap 请求在这一行才真正发给
+     * 合成器）+ `glfwWaitEventsTimeout(kHideWaitRoundSeconds)`，直到
+     * `glfwGetWindowAttrib(GLFW_VISIBLE) == 0`（且已泵够 `kHideMinPumpRounds` 轮）或超时。
+     * 超时只记 WARN 并返回 false，**绝不阻塞更久**：调用方必须继续往下走，让 UI 线程
+     * 回到事件循环。
+     *
+     * @param[in] timeoutMs 等待上限（毫秒），正常传 `kHideWaitTimeoutMs`。
+     * @return true = GLFW 报告已隐藏（并已泵够轮数）；false = 超时。
+     */
+    bool waitOverlayHidden(int timeoutMs);
+    /**
+     * @brief 一个"裁剪 + 编码 + 写盘 + 发布 capture.done"的工作线程。
+     *
+     * 为什么是列表而不是单个 std::thread：join 一个还在编码的线程会把 UI 线程按在
+     * 原地几百毫秒到数秒（Wayland 下这段时间不再 dispatch 事件，合成器会认为应用
+     * 无响应）。回收因此改成"带超时、只收已完成的"，没跑完的留在这里等下一次或
+     * `stop()`；正常情况下列表最多一个元素（同一时刻只有一个任务在写盘）。
+     */
+    struct CommitWorker {
+        std::thread thread;              /**< 工作线程句柄。 */
+        std::shared_ptr<bool> finished;  /**< 线程结束标志（读写都由 commitMutex 保护）。 */
+    };
+    /** @brief 非阻塞回收：最多等 waitMs，只 join 已完成的线程（没跑完的不等）。 */
+    void reapCommitWorkers(int waitMs);
+    /** @brief stop() 专用：join 所有提交线程（此时可以阻塞，但会记录耗时）。 */
+    void joinCommitWorkers();
     /** @brief 确认框选：内存裁剪 → 写 PNG → 发布 capture.done → 收掉覆盖层。 */
     void commitWaylandSelection(int x, int y, int width, int height);
 
@@ -383,16 +452,27 @@ struct RegionWindow::Impl {
     PortalScreenshotStatus lastPortalStatus = PortalScreenshotStatus::Ok;
 
     /**
-     * @brief "裁剪 + PNG 编码 + 写盘 + 发布 capture.done"的工作线程。
+     * @brief 提交工作线程的回收列表（见 CommitWorker 的注释）。
      *
-     * 编码一张 4K 级别的 PNG 要几百毫秒到数秒：留在 UI 线程会让隐藏后的覆盖层
-     * 长时间无法处理任何事件（Wayland 下连 wl_display_flush 都没有，合成器 ping
-     * 得不到回应会被报"应用没有响应"）。最多同时存在一个，下一次提交 / stop()
-     * 前必须 join。
+     * 只在 UI 线程增删；`stop()` 在 UI 线程 join 之后才碰它。工作线程只通过
+     * `commitMutex` 置位自己的 `finished` 标志，不访问列表本身。
      */
-    std::thread commitThread;
+    std::vector<CommitWorker> commitWorkers;
+    std::mutex commitMutex;            /**< 保护每个 CommitWorker 的 finished 标志。 */
+    std::condition_variable commitCv;  /**< 工作线程置位 finished 后唤醒回收方。 */
 
     // ---- Linux / X11 分支（只由 *_x11.cpp 实现；与上面的 Wayland 成员函数不同名） ----
+    /**
+     * @brief 覆盖层是否成功切成 override-redirect（false = WM 管理的普通窗口 / 降级）。
+     *
+     * X11 里 EWMH 的 DOCK 面板在 ABOVE 层，普通窗口（即使 `_NET_WM_STATE_ABOVE`）仍可能
+     * 在面板之下，面板还会抢焦点和输入——真机现象就是"鼠标移到任务栏，覆盖层收不到
+     * 事件、悬停全屏失效"。所以窗口在第一次 map 之前就切成 override-redirect，
+     * 不受 WM 管理；grab 或属性设置失败时自动降级回 false（旧行为）。
+     */
+    bool x11OverrideRedirect = false;
+    bool x11KeyboardGrabbed = false; /**< 当前是否持有 XGrabKeyboard。 */
+    bool x11PointerGrabbed = false;  /**< 当前是否持有 XGrabPointer。 */
     /** @brief 光标所在显示器：XQueryPointer 取 root 坐标 + GLFW 显示器矩形。 */
     bool x11MonitorUnderCursor(ScreenRect& out, float& contentScale) const;
     /** @brief 左键当前是否按着（XQueryPointer 的 Button1Mask）：覆盖层显示前判 waitRelease。 */
@@ -411,6 +491,36 @@ struct RegionWindow::Impl {
     void x11LogOverlayGeometry() const;
     /** @brief X11 确认框选：内容坐标 → X screen 坐标，然后按 Windows 同一时序发布。 */
     void x11CommitSelection(int localX, int localY, int localWidth, int localHeight);
+    /**
+     * @brief 把窗口切成 override-redirect（必须在它第一次 map 之前调用）。
+     *
+     * 顺序：`XUnmapWindow` → `XChangeWindowAttributes(CWOverrideRedirect)` → `XSync`，
+     * 这样 WM 永远看不到一个需要管理的 map 请求。成功时 `x11OverrideRedirect = true`，
+     * 覆盖层显示后由 `x11ShowOverlayInput` 接管输入；失败只 WARN 并保持普通窗口。
+     *
+     * @return true = 属性已生效；false = Display/窗口不可用或 X 请求报错（已记日志）。
+     */
+    bool x11PrepareOverrideRedirect();
+    /**
+     * @brief 显示后接管输入：XRaiseWindow + XSetInputFocus + 键盘/指针 grab。
+     *
+     * 键盘/指针 grab 都用 owner_events=True、grab_window=覆盖层：GLFW 的事件处理走同一个
+     * X 连接和窗口，grab 下照常收到 KeyPress / ButtonPress / MotionNotify，所以
+     * `glfwGetKey` / `glfwGetMouseButton` 轮询（Esc、拖框、悬停）不需要改。窗口已经可见
+     * 才做焦点与 grab；grab 被别的客户端占着（托盘菜单还没收起）时短重试几次。
+     *
+     * @return true = 键盘与指针 grab 都成功；false = 已 WARN 并降级为普通窗口。
+     */
+    bool x11ShowOverlayInput();
+    /**
+     * @brief 隐藏前先 unmap 并释放 grab（必须在公共的 glfwHideWindow 之前调用）。
+     *
+     * 先 unmap 让覆盖层立刻从画面上消失（窗口不可见时 X 也会自动释放 grab），再显式
+     * ungrab，保证下一次显示不会带着上一次的 grab/焦点。从未显示过时直接返回，不刷日志。
+     */
+    void x11HideOverlayInput();
+    /** @brief grab/属性失败时退回 WM 管理的普通窗口（旧行为）；只 WARN，不抛不崩。 */
+    void x11FallbackToManagedWindow();
 #endif
 };
 

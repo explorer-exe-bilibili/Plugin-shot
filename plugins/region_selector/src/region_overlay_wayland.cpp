@@ -11,11 +11,13 @@
 //
 // 隐藏与提交时序（真机踩过的坑，不要"优化"掉）：
 //   glfwHideWindow 在 Wayland 上只是把 unmap 请求写进 wl_display 的发送缓冲，真正
-//   发出去靠下一次 glfwPollEvents/WaitEvents 里的 wl_display_flush。确认时必须
-//   hideOverlay() + 立刻 poll，否则覆盖层留在屏幕上、UI 线程又进入空闲阻塞，
-//   合成器的 ping 无人应答 → GNOME 报"应用没有响应"。
+//   发出去靠下一次 glfwPollEvents/WaitEvents 里的 wl_display_flush。所以隐藏不再是
+//   "poll 两次"，而是**事件泵等待**（Impl::waitOverlayHidden：每轮 poll + 5ms 超时
+//   等待，最多 500ms，超时也继续并记 WARN）。不这样做：覆盖层留在屏幕上、UI 线程又
+//   进入空闲阻塞，合成器的 ping 无人应答 → GNOME 报"应用没有响应"。
 //   裁剪 + 编码 + 写盘放在工作线程（runWaylandCommit），UI 线程只负责隐藏、算布局、
-//   释放 GL 纹理与起线程；纹理释放必须在 UI 线程（GL 上下文只在那里有效）。
+//   释放 GL 纹理与起线程；纹理释放必须在 UI 线程（GL 上下文只在那里有效）。回收上一次
+//   提交线程用带超时的 reapCommitWorkers，**绝不 join 阻塞 UI 线程**。
 //
 // 窗口定位/全屏：Wayland 客户端不能摆放自己的窗口，也不能查询输出位置。窗口落在
 // 哪个输出、是否真的全屏由合成器决定；这里只提出请求，并在日志里记录实际尺寸，
@@ -48,8 +50,17 @@ namespace {
 /** @brief 产出的通知主题：与宿主流水线的 capture.done 同一格式（document/CAPTURE.md §3）。 */
 constexpr char kTopicCaptureDone[] = "capture.done";
 
-/** @brief 隐藏覆盖层后额外等一小段时间的秒数：留给合成器处理 unmap（下次 poll 之前）。 */
-constexpr double kHideSettlePollSeconds = 0.02;
+/**
+ * @brief 从某个时刻到现在过了多少毫秒（分步日志统一用它算耗时）。
+ *
+ * 步骤日志的格式固定成「…（耗时 N ms）」，真机回传日志时按 `region_selector：` 前缀
+ * 逐行看即可，不需要再去别处换算时间戳。
+ */
+long long elapsedMsSince(std::chrono::steady_clock::time_point since) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                 since)
+        .count();
+}
 
 /**
  * @brief 一次 Wayland 提交的输入快照（由工作线程持有，不再碰 UI 线程状态）。
@@ -92,14 +103,19 @@ void publishCaptureDone(const ShotHostServices* host, const std::string& path, i
         {"height", height},
         {"processors", 0},
     };
+    // 事件总线 publish 只做深拷贝入队（不回调订阅者），但队列满/宿主忙时仍可能阻塞，
+    // 所以记一次耗时：真机日志里"发布 capture.done"这一行慢，就说明卡在总线而不是编码。
+    const auto publishStartedAt = std::chrono::steady_clock::now();
     if (!bus.publish(kTopicCaptureDone, payload.dump())) {
         log.warn("region_selector：发布 capture.done 失败（队列满或参数非法），文件已保存");
         return;
     }
+    const long long publishMs = elapsedMsSince(publishStartedAt);
     char text[320] = {};
     std::snprintf(text, sizeof(text),
-                  "region_selector：框选结果已保存 %s（%dx%d 图像像素），已发布 capture.done",
-                  path.c_str(), width, height);
+                  "region_selector：框选结果已保存 %s（%dx%d 图像像素），已发布 capture.done"
+                  "（发布耗时 %lld ms）",
+                  path.c_str(), width, height, publishMs);
     log.info(text);
 }
 
@@ -115,10 +131,7 @@ void publishCaptureDone(const ShotHostServices* host, const std::string& path, i
  *
  * @param[in] job 提交任务（shared_ptr：构造线程失败时调用方还能自己执行）。
  */
-void runWaylandCommit(std::shared_ptr<WaylandCommitJob> job) {
-    if (job == nullptr) {
-        return;
-    }
+void runWaylandCommitBody(std::shared_ptr<WaylandCommitJob> job) {
     const shot::Logger log(job->host);
     const auto startedAt = std::chrono::steady_clock::now();
     bool saved = false;
@@ -130,9 +143,7 @@ void runWaylandCommit(std::shared_ptr<WaylandCommitJob> job) {
         log.warn("region_selector：保存框选结果时内存不足，本次放弃");
         saved = false;
     }
-    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                               std::chrono::steady_clock::now() - startedAt)
-                               .count();
+    const auto elapsedMs = elapsedMsSince(startedAt);
     if (!saved) {
         log.warn("region_selector：裁剪 PNG 写盘失败：" + job->path + "（耗时 " +
                  std::to_string(static_cast<long long>(elapsedMs)) + " ms）");
@@ -157,6 +168,33 @@ void runWaylandCommit(std::shared_ptr<WaylandCommitJob> job) {
         // 文件已经完整写出：事件没发出去只影响通知/剪贴板，不能再抛。
         log.warn("region_selector：发布 capture.done 时内存不足（文件已保存：" + job->path + "）");
     }
+}
+
+/**
+ * @brief 工作线程入口：保证「启动 / 结束」两条日志一定成对出现（分步诊断用）。
+ *
+ * 真机日志里这两行是"编码线程有没有起来、跑了多久"的唯一证据：只看到「启动」没有
+ * 「结束」= 线程还在编码或卡在写盘；两条都有 = 编码阶段没问题，问题在别处。
+ * 线程里逃出的异常也在这里兜住（工作线程里未捕获异常会 std::terminate）。
+ *
+ * @param[in] job 提交任务。
+ */
+void runWaylandCommit(std::shared_ptr<WaylandCommitJob> job) {
+    if (job == nullptr) {
+        return;
+    }
+    const shot::Logger log(job->host);
+    const auto startedAt = std::chrono::steady_clock::now();
+    log.info("region_selector：编码线程启动（" + job->path + "）");
+    try {
+        runWaylandCommitBody(job);
+    } catch (...) {
+        log.warn("region_selector：编码线程异常退出（文件可能未写完：" + job->path + "）");
+    }
+    char text[192] = {};
+    std::snprintf(text, sizeof(text), "region_selector：编码线程结束（总耗时 %lld ms）",
+                  elapsedMsSince(startedAt));
+    log.info(text);
 }
 
 }  // namespace
@@ -255,53 +293,69 @@ void RegionWindow::Impl::requestWaylandFullscreen() {
 void RegionWindow::Impl::commitWaylandSelection(int localX, int localY, int localWidth,
                                                 int localHeight) {
     const shot::Logger log(host);
+    const auto commitStartedAt = std::chrono::steady_clock::now();
     // 先把选区换算到截图图像像素（此时窗口还在，布局用的是刚才那一帧的尺寸）。
     const ImageRect crop = selectionToImagePixels(localX, localY, localWidth, localHeight);
 
     // ---- 关键时序：先让"隐藏"真正送达合成器，再做裁剪/编码 ----
     // glfwHideWindow 在本平台只是把 xdg_toplevel 的销毁 + attach(NULL) 写进 wl_display
     // 的发送缓冲，请求要等下一次 glfw*Events() 里的 wl_display_flush 才发得出去。
-    // 不 poll 会有两个真机症状（Ubuntu 26 实测）：
-    //   ① 覆盖层画面一直留在屏幕上（用户以为"卡住了"）；
-    //   ② 隐藏后 UI 线程阻塞在条件变量上，不再处理任何 Wayland 事件，合成器的 ping
-    //      得不到回应，GNOME 直接报"应用没有响应"。
-    // 这里连 poll 两次（第二次带上 20ms 超时，给合成器处理 unmap 的机会）；两次都
-    // 只是把请求发出去并处理已到达的事件，不会长时间阻塞。
+    // hideOverlay() 内部已经做了"事件泵等待"（waitOverlayHidden：每轮 poll + 5ms 超时
+    // 等待，最多 500ms，超时只 WARN 不阻塞），这里不再自己 poll，只记这一步的耗时。
+    //
+    // 这一步也是"覆盖层卡住"的头号嫌疑点，所以分步日志的第 1 环（hide 前状态）在第
+    // 2 环（glfwHideWindow 已调用）在 hideOverlay() 里，本函数记第 3 环（返回耗时）。
+    const auto hideStartedAt = std::chrono::steady_clock::now();
     hideOverlay();
-    glfwPollEvents();
-    glfwPollEvents();
-    if (window != nullptr) {
-        glfwWaitEventsTimeout(kHideSettlePollSeconds);
-    }
-    log.info("region_selector：覆盖层已请求隐藏（GLFW_VISIBLE=" +
-             std::to_string((window != nullptr)
-                                ? glfwGetWindowAttrib(window, GLFW_VISIBLE)
-                                : 0) +
-             "），开始编码");
+    const long long hideMs = elapsedMsSince(hideStartedAt);
+    char hideText[256] = {};
+    std::snprintf(hideText, sizeof(hideText),
+                  "region_selector：隐藏流程返回（GLFW_VISIBLE=%d，耗时 %lld ms），开始编码",
+                  (window != nullptr) ? glfwGetWindowAttrib(window, GLFW_VISIBLE) : 0, hideMs);
+    log.info(hideText);
+
+    // 释放背景纹理（GL 调用，必须在 UI 线程）：前后各记一行 + 耗时。GL 调用一旦同步
+    // 等待驱动，这里就是"隐藏之后卡住"的第二个嫌疑点。
+    const auto releaseTexture = [this, &log](const char* reason) {
+        const auto startedAt = std::chrono::steady_clock::now();
+        char beforeText[224] = {};
+        std::snprintf(beforeText, sizeof(beforeText),
+                      "region_selector：释放背景纹理前（纹理=%u，截图 %dx%d，原因：%s）",
+                      backgroundTexture, sourceWidth, sourceHeight, reason);
+        log.info(beforeText);
+        releaseBackgroundTexture();
+        char afterText[192] = {};
+        std::snprintf(afterText, sizeof(afterText),
+                      "region_selector：释放背景纹理后（耗时 %lld ms）",
+                      elapsedMsSince(startedAt));
+        log.info(afterText);
+    };
 
     // 没有可裁剪的内容：按取消处理（不落盘、不发事件），与旧行为一致。
     if (crop.width < 1 || crop.height < 1 || sourcePixels.empty() || sourceWidth <= 0 ||
         sourceHeight <= 0) {
         log.warn("region_selector：选区换算到截图图像像素后为空或没有可裁剪的截图，按取消处理");
-        releaseBackgroundTexture();
+        releaseTexture("裁剪结果为空");
         return;
     }
 
     // 保存目录与文件名在 UI 线程解析：resolveOutputDirectory 会查宿主的列表服务
     // （线程归属由宿主决定），不要在工作线程里碰。
+    const auto pathStartedAt = std::chrono::steady_clock::now();
     const std::string directory = resolveOutputDirectory(host);
     // directory 为空时原因已经在 resolveOutputDirectory 里记过
     // （配置目录不可建 / 找不到图片目录）。
     if (directory.empty()) {
-        releaseBackgroundTexture();
+        releaseTexture("输出目录为空");
         return;
     }
     const std::string path = makeOutputPngPath(directory);
     if (path.empty()) {
         log.warn("region_selector：生成输出文件名失败（本地时间取不到？），本次不保存");
-        releaseBackgroundTexture();
+        releaseTexture("输出文件名为空");
         return;
     }
+    const long long pathMs = elapsedMsSince(pathStartedAt);
 
     auto job = std::make_shared<WaylandCommitJob>();
     job->host = host;
@@ -314,23 +368,52 @@ void RegionWindow::Impl::commitWaylandSelection(int localX, int localY, int loca
     job->shouldAbort = [this]() { return shouldQuit(); };
 
     // GL 纹理必须在 UI 线程释放（GL 上下文只在这里有效）；像素已经 move 走，不浪费拷贝。
-    releaseBackgroundTexture();
+    releaseTexture("像素已交给工作线程");
 
-    // 上一次提交可能还没写完：先 join，保证同一时刻只有一个任务在写盘。
-    joinCommitThread();
-    char startText[256] = {};
+    // 上一次提交可能还没写完：**带超时**回收，只 join 已跑完的线程。绝不在这里
+    // 无超时 join——UI 线程一停就不再 dispatch Wayland 事件，合成器会认为应用无响应。
+    reapCommitWorkers(kCommitReapTimeoutMs);
+
+    char startText[320] = {};
     std::snprintf(startText, sizeof(startText),
-                  "region_selector：开始编码 PNG（工作线程）：裁剪 %dx%d @ (%d,%d) → %s",
-                  crop.width, crop.height, crop.x, crop.y, path.c_str());
+                  "region_selector：开始编码 PNG（工作线程）：裁剪 %dx%d @ (%d,%d) → %s"
+                  "（目录解析 %lld ms）",
+                  crop.width, crop.height, crop.x, crop.y, path.c_str(), pathMs);
     log.info(startText);
+    // 完成标志：工作线程退出前置位（commitMutex 保护），回收方据此判断"能不能 join"。
+    auto finished = std::make_shared<bool>(false);
     try {
-        commitThread = std::thread(&runWaylandCommit, job);
+        // 先把 vector 的容量要够：线程一旦起来，push_back 再分配失败就会让 joinable 的
+        // std::thread 被析构（std::terminate）。reserve 失败时线程还没创建，安全。
+        commitWorkers.reserve(commitWorkers.size() + 1);
+        std::thread workerThread([this, job, finished]() {
+            try {
+                runWaylandCommit(job);
+            } catch (...) {
+                // runWaylandCommit 内部已经兜过异常，这里只是最后一道保险。
+            }
+            {
+                std::lock_guard<std::mutex> lock(commitMutex);
+                *finished = true;
+            }
+            commitCv.notify_all();
+        });
+        commitWorkers.push_back(CommitWorker{std::move(workerThread), finished});
+        char workerText[192] = {};
+        std::snprintf(workerText, sizeof(workerText),
+                      "region_selector：编码线程已启动（待回收线程 %zu 个）", commitWorkers.size());
+        log.info(workerText);
     } catch (...) {
         // 线程资源耗尽等：退回 UI 线程同步保存（丢图比卡住更糟）。job 仍是有效 shared_ptr，
         // 无论线程构造过程中是否已经移动过参数，这里都还能自己执行。
         log.warn("region_selector：创建编码线程失败，改在 UI 线程同步保存");
         runWaylandCommit(job);
     }
+    char doneText[192] = {};
+    std::snprintf(doneText, sizeof(doneText),
+                  "region_selector：提交步骤结束（UI 线程总耗时 %lld ms，隐藏占 %lld ms）",
+                  elapsedMsSince(commitStartedAt), hideMs);
+    log.info(doneText);
 }
 
 }  // namespace region_selector

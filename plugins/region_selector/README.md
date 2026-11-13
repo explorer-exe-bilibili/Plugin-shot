@@ -16,7 +16,8 @@ Linux/Wayland 是同一套窗口与交互，但背景来自 xdg-desktop-portal �
 - **Wayland 会话**（`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland`）：走 xdg-desktop-portal
   的 Screenshot 门户 + 自己的覆盖层窗口（定格图 + 拖选，见 §8）；
 - **X11 会话**：真正的全屏覆盖层——`XGetImage` 抓整块 X screen 当背景，交互与 Windows
-  一致，窗口命中用 `XQueryTree` + EWMH 类型过滤（见 §9）；
+  一致，窗口命中用 `XQueryTree` + EWMH 类型过滤。覆盖层是 **override-redirect 窗口 +
+  键盘/指针 grab**，不受 WM 管理、盖住 DOCK 面板并独占输入（见 §9）；
 - macOS 等其它平台由 CMake 直接跳过（`SHOT_PLUGIN_SKIPPED`）。
 
 覆盖层是**不透明窗口 + 触发瞬间的桌面快照**（Windows 是 `region_background.cpp`，X11 是
@@ -80,7 +81,7 @@ plugins/region_selector/
     ├── window_target_wayland.cpp   # Linux/Wayland：空实现（协议不允许全局窗口枚举，吸附关闭）
     ├── region_geometry_x11.cpp     # Linux/X11：X screen 几何 / XQueryPointer 光标 / 显示器矩形 + 日志
     ├── region_background_x11.cpp   # Linux/X11：XGetImage 整屏快照 → 像素解包 → GL 纹理
-    ├── region_overlay_x11.cpp      # Linux/X11：覆盖层定位 / 实际几何日志 / 确认后发布（Windows 同时序）
+    ├── region_overlay_x11.cpp      # Linux/X11：override-redirect + 输入 grab / 覆盖层定位 / 几何日志 / 确认后发布（Windows 同时序）
     └── window_target_x11.cpp       # Linux/X11：XQueryTree + EWMH 类型过滤（DOCK→面板）+ root 坐标
 ```
 
@@ -154,7 +155,7 @@ ImGui 调用都在插件的 UI 线程上执行（GLFW 和 ImGui 都不是线程�
 | 3 | UI 线程 | 取鼠标位置 → 找所在显示器 → 把隐藏窗口搬过去铺满整屏；读主题色、记录覆盖层原生句柄（HWND / X11 Window）、按 Z 序扫描顶层窗口与任务栏/面板 → 按悬停优先级定位首帧选框 → 显示并聚焦 |
 | 4 | UI 线程 | 空闲：每 30ms 扫描一次，命中"屏幕四角 / 任务栏面板 / 顶层窗口"后选框用 100ms 指数平滑吸附过去；鼠标移到别的目标就平滑平移/缩放 |
 | 5 | UI 线程 | 单击（位移 ≤4px 且按住 ≤400ms）：直接把当前悬停目标矩形当 region 确认（窗口 = 该窗口，任务栏/四角 = 当前显示器全屏）；拖动（位移 >4px）：选框严格跟手，松开左键确认；右键 / Esc = 取消 |
-| 6 | UI 线程 | 确认后先 `glfwHideWindow` + `glfwPollEvents`，再 `sleep 100ms`（`kHideSettleDelayMs`） |
+| 6 | UI 线程 | 确认后先 `glfwHideWindow` + `glfwPollEvents`，再 `sleep 100ms`（`kHideSettleDelayMs`）；Wayland 用事件泵等待，见 §8.3（上限 500ms） |
 | 7 | UI 线程 | Windows / X11：发布 `capture.request`：`{"mode":"region","region":{"x","y","width","height"}}`；Wayland：内存裁剪写 PNG 后发 `capture.done` |
 | 8 | 宿主 worker | Windows / X11：抓整屏 → 按 `region` 裁剪 → 处理 → 保存，发 `capture.done`；Wayland 不经过流水线 |
 
@@ -411,7 +412,7 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | X11 合成器把画面画在 offscreen（root 快照疑似纯色） | 自动改抓 XComposite 覆盖窗口；无该扩展 / 缺库时保持 root 图并 WARN，框选照常工作 |
 | X11 `XQueryTree` 失败或拿不到 GLFW 的 X11 Display | 候选窗口为空，悬停吸附关闭；拖动框选仍然可用 |
 | X11 窗口没有 `_NET_WM_WINDOW_TYPE`（非 EWMH 应用） | 照常作为候选（宁可多列，不漏真实窗口） |
-| X11 WM 对隐藏窗口的位置/全屏请求不生效 | 显示后按**实际窗口位置/尺寸**换算与裁剪，并在日志里打印；选区仍准确，观感需真机确认（§9.5） |
+| X11 WM 对隐藏窗口的位置/全屏请求不生效 | override-redirect 下不经过 WM（位置/尺寸就是显示器矩形）；只有降级成普通窗口时才可能被 WM 延迟摆放，此时按**实际窗口位置/尺寸**换算与裁剪并打印日志（§9.5） |
 | 框选过程中收到 `host.shutdown` / 宿主热卸载 | 事件循环退出，覆盖层按取消处理，不发布事件 |
 | 显示器几何在框选期间变化（拔屏/改分辨率） | 本次框选仍按开始时的窗口坐标结束；下次触发重新取显示器 |
 | 第一次框选时 GLFW/窗口/ImGui 初始化失败 | 放弃本次框选并记 ERROR，不发布事件；`init` 本身不会因此失败（它不碰图形栈） |
@@ -431,7 +432,8 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | 不提供 `shot.configurable` | 本插件没有自己的配置项：最小选区、遮罩透明度是内部常量；主题色来自**宿主**配置 `core/theme_color`（不是插件配置项）。要加插件自己的配置时再声明 `shot.configurable` |
 | Linux 支持 Wayland 与 X11 两种会话 | 同一份 `.so` 同时编进两套实现，启动时按 `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE` 运行期选择（Wayland 优先）。X11 见 §9，Wayland 见 §8 |
 | X11 只支持单 X screen | 覆盖层只铺鼠标所在显示器；XQueryTree 枚举的是默认 X screen 的 root 子窗口，多 X screen（`:0.1` 等）不枚举、也不能跨 screen 覆盖。多显示器在同一 X screen 内是支持的，但一次仍只选一块屏 |
-| X11 的覆盖层由窗口管理器管理 | 用的是普通 GLFW 无边框置顶窗口（不是 override-redirect）：WM 可能加装饰/延迟摆放/改动位置。代码按**实际窗口位置**换算与裁剪，选区结果不受影响，但"是否真的全屏、是否无边框"要真机确认（§9.5） |
+| X11 override-redirect / 输入 grab 失败 | 设置失败或被别的客户端抢先（`AlreadyGrabbed`/`GrabFrozen`）时只 WARN，清理 grab 并退回 WM 管理的普通窗口（旧行为）：面板可能再次盖住覆盖层，但框选、悬停、Esc 仍可用（§9.3 第 8 条） |
+| X11 覆盖层是 override-redirect + 输入 grab | 窗口不受 WM 管理（永远盖住 DOCK 面板、面板抢不到焦点与悬停/点击），显示时 `XGrabKeyboard` + `XGrabPointer` 独占输入。代价是无边框/置顶/位置全部自己维护；**X11 已不再是"WM 管理的普通窗口"**，真机行为见 §9.5 |
 | X11 下的采集依赖宿主流水线 | 本插件只发布带 `region` 的 `capture.request`（与 Windows 一致），实际抓屏由 `screen_capture` 完成。`screen_capture` 现在也有 X11 分支（XShm/XGetImage），但两边**尚未联调**；X11 会话下普通框选的端到端链路要真机确认（见 §9.4/§9.5） |
 | X11 + XWayland 的边界 | Wayland 会话里 XWayland 应用是 X11 窗口，但本插件走 Wayland 分支（门户截图 + 自己的窗口），拿不到、也不枚举这些窗口；不要指望在 Wayland 会话里用 X11 路径去吸 XWayland 窗口 |
 | X11 窗口枚举不做子控件命中 | 与 Windows 一样只认顶层窗口；`_NET_WM_WINDOW_TYPE_*` 过滤 DOCK/TOOLTIP/MENU 等，完全透明的点击穿透窗口没有额外过滤 |
@@ -514,15 +516,26 @@ Linux 的入口来自：托盘菜单（`tray` 的 SNI/dbusmenu）、短按 `hotk
 - **确认/取消时的隐藏时序（真机踩过，别"优化"掉）**：`glfwHideWindow` 在 Wayland 上只是把
   `xdg_toplevel` 销毁 + `attach(NULL)` 写进 `wl_display` 的**发送缓冲**，请求要等下一次
   `glfwPollEvents` / `glfwWaitEventsTimeout` 里的 `wl_display_flush` 才发给合成器。所以
-  `hideOverlay()` 之后必须立刻 poll（`commitWaylandSelection` 里连 poll 两次 + 20ms
-  超时等待，`hideOverlay()` 里也统一补一次）。不 poll 的两个真机症状：① 覆盖层画面留在
-  屏幕上不消失；② 隐藏后 UI 线程阻塞在条件变量上不再处理 Wayland 事件，合成器的 ping
-  没人应答，GNOME 弹"应用没有响应"。
+  `hideOverlay()` 之后走**事件泵等待**（`Impl::waitOverlayHidden`）：循环
+  `glfwPollEvents()` + `glfwWaitEventsTimeout(5ms)`，总上限 **500ms**，直到
+  `glfwGetWindowAttrib(GLFW_VISIBLE) == 0`（且至少泵 4 轮）或超时；超时只记
+  `覆盖层未在 500ms 内隐藏，继续处理` WARN，**绝不阻塞更久**（UI 线程必须回到事件循环）。
+  两个关键事实：
+  ① GLFW 3.4 的 `GLFW_VISIBLE` 是**客户端标志**（`_glfwHideWindowWayland` 里同步置 false），
+  `glfwHideWindow` 返回时它已经是 0，**不能证明**合成器已经 unmap——所以不能"看到 0 就走"，
+  必须泵够轮数让 flush 真正发生、并给合成器一次处理 unmap 的机会；
+  ② 不泵的两个真机症状：覆盖层画面留在屏幕上不消失；隐藏后 UI 线程阻塞在条件变量上不再
+  处理 Wayland 事件，合成器的 ping 没人应答，GNOME 弹"应用没有响应"。
+  另外 `glfwHideWindow` 在 `wl.visible` 已经是 false 时是**空操作**（不会 `attach(NULL)`），
+  所以 hide 前如果发现 `GLFW_VISIBLE=0` 而覆盖层状态是显示，会先记一条 WARN
+  （真机日志里出现它，说明覆盖层可能根本收不到 unmap 请求）。
 - **编码线程**：确认后的"裁剪 + PNG 编码 + 写盘 + 发布 `capture.done`"在**工作线程**
   （`runWaylandCommit`）里做，UI 线程只负责隐藏、算布局、释放 GL 纹理与起线程。整屏 4K
   的 stb PNG 编码要几百毫秒到数秒，留在 UI 线程会让"隐藏之后"的那段时间完全不处理事件。
-  GL 纹理必须在 UI 线程释放（GL 上下文只在那里有效），整屏像素按 move 语义交给工作线程；
-  `startSelection` / `stop()` 会先 join 上一次的提交线程，不会有两个写盘任务重叠。
+  GL 纹理必须在 UI 线程释放（GL 上下文只在那里有效），整屏像素按 move 语义交给工作线程。
+  回收上一次提交线程用 `reapCommitWorkers`（**带超时、只 join 已跑完的**，最多等 200ms，
+  没跑完就留给下一次或 `stop()`），绝不在 UI 线程上无超时 join——那会把 UI 线程按在编码上，
+  又回到"应用没有响应"。
 
 ### 8.4 与 Windows 的行为差异
 
@@ -530,7 +543,7 @@ Linux 的入口来自：托盘菜单（`tray` 的 SNI/dbusmenu）、短按 `hotk
 | --- | --- | --- |
 | 悬停吸附 / 单击截窗口 | 有 | **没有**（Wayland 不允许全局窗口枚举）；单击不拖 = 取消 |
 | 背景 | 触发瞬间的当前显示器 GDI 快照 | 门户返回的**整个桌面**合成图，等比缩放居中 |
-| 确认后 | 隐藏 → 等 100ms → 发带 region 的 `capture.request` | 隐藏 → `glfwPollEvents`×2 → 工作线程裁剪/编码/写 PNG → 发 `capture.done` |
+| 确认后 | 隐藏 → 等 100ms → 发带 region 的 `capture.request` | 隐藏 + 事件泵等待（≤500ms）→ 工作线程裁剪/编码/写 PNG → 发 `capture.done` |
 | 图片经过 `image_processor` | 是 | 否（`processors:0`） |
 | 多显示器 | 只覆盖一块屏；悬停窗口可跨屏 | 一张缩放图，整张桌面都能选 |
 | 主题色 / 语言 / 选择框样式 | 相同 | 相同 |
@@ -546,10 +559,20 @@ Linux 的入口来自：托盘菜单（`tray` 的 SNI/dbusmenu）、短按 `hotk
   （覆盖层是在拿到截图**之后**才显示的，设计上不会挡授权框）。
 - portal 后端差异（GNOME / KDE / wlroots）：`CaptureRegion` 的触发入口、授权拒绝时门户
   返回的错误文本（取消/拒绝靠错误码 + 文本识别，不同版本可能不同）。
+- **确认后的隐藏是否真的生效**（本轮重点，**待真机验证**）：事件泵等待（每轮
+  `glfwPollEvents` + 5ms 超时等待，上限 500ms）能否让 Ubuntu 26 / GNOME Wayland 上的
+  覆盖层在确认后立刻消失；以及 500ms 超时那条 WARN 是否会出现。按 §8.6 的分步日志回传
+  即可定位到底卡在哪一行。
 - 图像编码：超大整屏图（8K+）时 GL 纹理上传可能超过 GPU 上限（有 WARN，裁剪与落盘不受影响）。
 - X11 会话：见 §9（同一份 `.so` 里另一套实现，与 Wayland 路径互不影响）。
 
 ### 8.6 真机诊断日志（按这个顺序看，一眼定位卡在哪一步）
+
+> 本轮针对"确认后覆盖层卡在屏幕上、应用像卡死"补了一整套**分步日志**（hide 前状态 →
+> `glfwHideWindow` → 每轮 poll 后的 `GLFW_VISIBLE` → `waitEventsTimeout` 返回 →
+> 编码线程启动/结束 → `releaseBackgroundTexture` 前后 → 事件循环回到等待），并把隐藏
+> 改成**事件泵等待**、把回收编码线程改成**带超时**。这些改动只在 WSL 里编译通过，
+> **没有 Wayland 真机验证**——下一份真机日志就是结论。
 
 一次正常的 Wayland 框选，`host.log`（Linux 是 `~/.plugin-shot/logs/host.log`，Windows 是
 `%LOCALAPPDATA%\plugin-shot\logs\host.log`）里 region_selector 的行应该依次出现：
@@ -565,11 +588,25 @@ region_selector：已取得 portal 截图 WxH（图像像素，将等比缩放�
 region_selector：准备显示覆盖层 WxH（显示器矩形 WxH）
 region_selector：glfwShowWindow 完成（GLFW_VISIBLE=1，GLFW_FOCUSED=1，实际窗口 WxH，合成器决定尺寸）
 region_selector：开始框选 显示器矩形=...                            # 覆盖层已经在屏幕上
--- 用户确认后 --
-region_selector：覆盖层已请求隐藏（GLFW_VISIBLE=0），开始编码
-region_selector：开始编码 PNG（工作线程）：裁剪 WxH @ (x,y) → <路径>
+-- 用户确认后（UI 线程，按顺序）--
+region_selector：隐藏覆盖层前（GLFW_VISIBLE=1，窗口 WxH，overlayVisible=1）
+region_selector：glfwHideWindow 已调用（GLFW_VISIBLE=0），进入事件泵等待
+region_selector：隐藏等待 第 1 轮 poll 完成（GLFW_VISIBLE=0，已用 0 ms）    # 每轮两条，最多 6 轮
+region_selector：隐藏等待 第 1 轮 waitEventsTimeout 已返回（耗时 5 ms）
+region_selector：覆盖层隐藏流程完成（GLFW_VISIBLE=0，泵 4 轮 / 20 ms）
+region_selector：隐藏流程返回（GLFW_VISIBLE=0，耗时 N ms），开始编码
+region_selector：释放背景纹理前（纹理=1，截图 WxH，原因：像素已交给工作线程）
+region_selector：释放背景纹理后（耗时 N ms）
+region_selector：回收编码线程 0 个（耗时 0 ms），仍有 0 个在写盘
+region_selector：开始编码 PNG（工作线程）：裁剪 WxH @ (x,y) → <路径>（目录解析 N ms）
+region_selector：编码线程已启动（待回收线程 1 个）
+region_selector：提交步骤结束（UI 线程总耗时 N ms，隐藏占 N ms）
+region_selector：事件循环已回到隐藏态等待（条件变量）；若此时屏幕上仍有覆盖层，说明 unmap 请求没有送达合成器
+-- 工作线程（与上面的 UI 线程日志交错出现，属正常）--
+region_selector：编码线程启动（<路径>）
 region_selector：已保存框选 PNG <路径> WxH（编码+写盘 N ms，工作线程）
-region_selector：框选结果已保存 ...，已发布 capture.done
+region_selector：框选结果已保存 ...，已发布 capture.done（发布耗时 N ms）
+region_selector：编码线程结束（总耗时 N ms）
 ```
 
 定位规则：
@@ -582,7 +619,13 @@ region_selector：框选结果已保存 ...，已发布 capture.done
 | 有 `portal 截图返回 status=...` 但不是 `ok` | 门户拒绝/不可用/超时；紧跟的 ERROR 行「区域框选未开始：portal 截图失败」是最终结论 |
 | 「准备显示覆盖层」之后没有「glfwShowWindow 完成」 | 卡在显示/全屏请求 |
 | `覆盖层没有被合成器显示（GLFW_VISIBLE=0）` | 窗口没被 map：合成器拒绝，覆盖层不会出现（ERROR 已记录） |
-| 「覆盖层已请求隐藏」之后没有「已保存」/「写盘失败」 | 工作线程异常退出（不应发生，`capture.done` 也不会发） |
+| 「隐藏覆盖层前」之后没有「glfwHideWindow 已调用」 | 卡在 `glfwHideWindow` 本身（驱动/合成器同步），隐藏链路的第一嫌疑点 |
+| 有「隐藏等待 第 N 轮」但没有「覆盖层隐藏流程完成」 | 500ms 内 GLFW 一直报可见：紧跟一条 `覆盖层未在 500ms 内隐藏，继续处理` WARN，UI 线程会继续往下走（不会卡死），但覆盖层可能真的没隐藏 |
+| 有「释放背景纹理前」但没有「释放背景纹理后」 | 卡在 GL 调用（`glDeleteTextures` 同步等驱动），隐藏链路的第二嫌疑点 |
+| 「回收编码线程」里出现 `仍有 N 个在写盘` | 上一次编码还没跑完；本轮**不再 join 阻塞**，UI 线程照常继续（正常只会在连点两次时出现） |
+| 「编码线程启动」之后没有「编码线程结束」 | 卡在编码/写盘（工作线程），UI 线程不受影响，等它自己跑完 |
+| 有「事件循环已回到隐藏态等待」但屏幕上仍有覆盖层 | UI 线程已经空闲、没卡在任何一步，但合成器还在显示旧画面：unmap 请求没送达/没生效。先看上面有没有 `GLFW 认为窗口已隐藏（GLFW_VISIBLE=0）但覆盖层状态是显示` 的 WARN——有它说明 `glfwHideWindow` 被 GLFW 当成空操作（见 §8.3 的隐藏时序），这是本轮最可能的根因方向 |
+| `stop()` 开始之后没有 `stop() 完成` | 宿主退出卡在 join；中间会有 `stop() 已 join N 个编码线程（耗时 N ms）`，看它是否出现来区分卡在 UI 线程还是编码线程 |
 
 ## 9. Linux（X11）
 
@@ -591,6 +634,14 @@ X11 会话下本插件走**真正的全屏覆盖层**，交互与 Windows 一致
 平台层全部在 `*_x11.cpp`，共享的交互/绘制代码
 （`region_overlay.cpp` / `region_overlay_draw.cpp` / `region_graphics.cpp`）只按平台
 调用不同的窗口扫描函数。
+
+**覆盖层是 override-redirect 窗口 + 键盘/指针输入 grab**（`region_overlay_x11.cpp`）：
+WM 管理的普通窗口即使带 `_NET_WM_STATE_ABOVE` 也可能被 EWMH 的 DOCK 面板压住，面板
+还会抢焦点和悬停/点击事件——真机现象就是"鼠标移到任务栏，覆盖层收不到事件，悬停面板
+= 全屏失效"。改成 override-redirect 后窗口不受 WM 管理、永远盖住面板；显示时再
+`XGrabKeyboard` + `XGrabPointer`（owner_events=True）独占输入，隐藏时先 unmap 再
+ungrab。grab 被拒（例如托盘菜单还没把 grab 放掉）或 X 请求报错时只 WARN 并降级回
+WM 管理的普通窗口，不会崩、框选仍可继续。
 
 同一份 `.so` 同时编进 Wayland（门户定格图）与 X11（Xlib）两套实现，**运行期按会话类型
 二选一**——不是编译期开关，用户不需要为不同会话装两份插件。
@@ -605,7 +656,9 @@ cmake --build build/Linux --target region_selector
 
 - `pkg_check_modules(SHOT_X11 REQUIRED x11)`：缺 `libx11-dev` 时**配置阶段直接失败**，
   CMake 的 `FATAL_ERROR` 里写明 Ubuntu 包名。用到的是 `XGetImage` / `XQueryTree` /
-  `XTranslateCoordinates` / `XQueryPointer` / `XGetWindowProperty` / `XInternAtom`。
+  `XTranslateCoordinates` / `XQueryPointer` / `XGetWindowProperty` / `XInternAtom` /
+  `XChangeWindowAttributes` / `XMoveResizeWindow` / `XSetInputFocus` /
+  `XGrabKeyboard` / `XGrabPointer`。
 - **不需要 `libxrandr-dev`**：显示器布局交给 GLFW（内部用 RandR），本插件只包含
   `<X11/Xlib.h>`；`glfw3native.h` 用 `GLFW_NATIVE_INCLUDE_NONE` 关掉了它默认带出的
   `<X11/extensions/Xrandr.h>`。运行期 GLFW / X 服务器仍然需要 RandR 扩展（正常桌面都有）。
@@ -644,15 +697,29 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 
 1. 与其它平台一样**延迟到第一次框选**才 `glfwInit` / 建窗口（原因见 §3.1）；
 2. 窗口 hint：无边框、`GLFW_FLOATING`（`_NET_WM_STATE_ABOVE`）、`GLFW_FOCUS_ON_SHOW`
-   （Esc 需要键盘焦点）、`GLFW_RESIZABLE=FALSE`；**不透明**，不用
+   （会向 WM 发 `_NET_ACTIVE_WINDOW`；override-redirect 下 WM 不处理，真正的键盘焦点由
+   第 6 步的 `XSetInputFocus` 负责）、`GLFW_RESIZABLE=FALSE`；**不透明**，不用
    `GLFW_TRANSPARENT_FRAMEBUFFER`（AGENTS §7 坑 #2）；
 3. 光标所在显示器：`XQueryPointer` 取 root 坐标（X 像素 = 物理像素），再在 GLFW 的
    显示器矩形里找包含它的那块（GLFW 在 X11 下用 RandR 拿输出布局）；
-4. 隐藏状态下 `glfwSetWindowSize/glfwSetWindowPos` 铺满整块显示器（含任务栏）。
-   **不做 Windows 的 +1px**：那是 Windows 全屏判定的专有坑；也不用
-   `glfwSetWindowMonitor`（会走 WM 的全屏状态切换）；
-5. 隐藏状态下先渲染两帧再 `glfwShowWindow`（与 Windows 同一原因：避免第一帧未渲染内容
-   被合成上去）；显示后把**实际**窗口几何写进日志。
+4. 窗口在**第一次 map 之前**切成 override-redirect：`XUnmapWindow` →
+   `XChangeWindowAttributes(CWOverrideRedirect)` → `XSync`。WM 从此不管理这个窗口，
+   它永远在 DOCK 面板之上（这是盖住任务栏/面板的关键；属性必须在 map 之前生效）；
+5. 隐藏状态下定位到目标显示器并铺满整块屏（含任务栏）：`glfwSetWindowSize/Pos` +
+   直接 `XMoveResizeWindow`。**不做 Windows 的 +1px**：那是 Windows 全屏判定的专有坑；
+   也不用 `glfwSetWindowMonitor`（会走 WM 的全屏状态切换）；
+6. 隐藏状态下先渲染两帧再 `glfwShowWindow`（与 Windows 同一原因：避免第一帧未渲染内容
+   被合成上去），然后 `XRaiseWindow` + `XSetInputFocus` + `XGrabKeyboard` +
+   `XGrabPointer`（owner_events=True，grab_window=覆盖层）接管输入；GLFW 的事件处理
+   走同一个 X 连接和窗口，grab 下 `glfwGetKey/glfwGetMouseButton` 轮询照常工作（Esc、
+   拖框、悬停都不用改）。显示后把**实际**窗口几何写进日志；
+7. 隐藏时先 `XUnmapWindow`（覆盖层立刻从画面消失，窗口不可见时 X 也会自动释放 grab）
+   再显式 `XUngrabKeyboard/XUngrabPointer`，最后走公共的 `glfwHideWindow` + poll 时序。
+   顺序不能反：先 ungrab 会让"取消 grab 到窗口消失"之间的点击落到下面的面板上；
+8. 失败降级：override-redirect 设置失败 / grab 被别的客户端占着（托盘菜单收起前会持有
+   grab，短重试 5 次 × 20ms）时只 `WARN`，清理 grab、清掉 override-redirect 重新 map，
+   退回 WM 管理的普通窗口（旧行为）。Xlib 的默认错误处理器会 `exit(1)`，所以所有可能
+   异步报错的请求都包在临时 X 错误记录器里，失败不会把进程带走。
 
 **背景快照**（`region_background_x11.cpp`）：
 
@@ -716,13 +783,34 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 > 下面的条目**都还没有在真实 X11 会话跑过**。代码按 X11 协议与 EWMH 写，失败路径只记
 > WARN、不影响框选；真机结果出来后再更新本节（不要在注释/文档里写"已验证"）。
 
-- 覆盖层在 GNOME/KDE/Xfwm 等 WM 下是否真的无边框、铺满、置顶并拿到键盘焦点
-  （`GLFW_FOCUS_ON_SHOW` 可能被焦点窃取保护忽略，Esc 需要焦点）；
-- WM 对隐藏窗口 `setSize/setPos` 的处理（可能延迟到 map 时才摆放）：代码按显示后的
-  实际窗口位置/尺寸换算，理论上选区准确，但背景 UV 裁剪与选框对齐需实测；
+**先 grep 这几行日志**（显示/隐藏各一条，字段顺序固定）：
+
+```text
+region_selector：X11 覆盖层已设为 override-redirect（不受 WM 管理，显示时置顶）
+region_selector：X11 覆盖层已显示并接管输入 override_redirect=1 grab_keyboard=1 grab_pointer=1 focus=1 显示器=(...)
+region_selector：X11 覆盖层隐藏 override_redirect=1 grab_keyboard=1 grab_pointer=1（已 unmap 并解除输入 grab）
+region_selector：X11 输入 grab 失败（keyboard=... pointer=...），降级为 WM 管理的普通窗口...
+region_selector：X11 已降级为 WM 管理的普通窗口（override-redirect=0）...
+```
+
+- **override-redirect 是否生效**：日志出现 `override_redirect=1`；覆盖层显示后能否盖住
+  GNOME 顶栏 / dash-to-dock / xfce4-panel（面板不再画在覆盖层之上）；
+- **输入是否真的被覆盖层独占**（`grab_keyboard=1 grab_pointer=1`）：鼠标移到面板区域时
+  面板不再获得焦点/悬停效果，覆盖层仍能收到 Motion 并触发"悬停面板 = 全屏"；单击、右键、
+  Esc 仍按 §5 的状态机工作；
+- **grab 是否泄漏**：Esc 取消 / 确认采集后再显示一轮，面板点击与键盘输入应完全正常
+  （隐藏日志里的 `已 unmap 并解除输入 grab` 是这一条的验收点）；
+- **grab 被抢**：从托盘/菜单触发时如果菜单还没收起，日志可能出现一次重试后的成功或
+  `输入 grab 失败` + 降级；两种情况都不应卡死或无响应；
+- **多显示器**：覆盖层只铺鼠标所在显示器（grab 不 confine，移出本屏后悬停框隐藏、拖框
+  贴边，与 §7 单屏限制一致）；另一块屏的面板不受影响；
+- 覆盖层在 GNOME/KDE/Xfwm 等 WM 下是否真的无边框、铺满、拿得到键盘焦点（焦点现在由
+  `XSetInputFocus` 自己设，不再依赖 `GLFW_FOCUS_ON_SHOW`）；
+- WM 对隐藏窗口 `setSize/setPos` 的处理：override-redirect 下不经过 WM，显示后的
+  pos/size 应等于显示器矩形；只有降级路径才需要按实际窗口位置换算；
 - `XGetImage` 在不同 depth/visual（24/30bpp、compositing 开关、Xvfb）下的像素解包；
 - reparenting frame 的 Z 序与 `_NET_WM_WINDOW_TYPE` 过滤在 GNOME/KDE 下的实际效果
-  （桌面窗口、面板、通知、工具提示是否都正确跳过）；
+  （桌面窗口、面板、通知、工具提示是否都正确跳过；覆盖层自身被排除）；
 - **悬停面板 / 屏幕四角**：面板是否真的带 `_NET_WM_WINDOW_TYPE_DOCK`（GNOME 顶栏、
   dash-to-dock、xfce4-panel 各自如何声明）、命中后是否稳定发布"当前显示器全屏"、
   面板位于屏幕中间/侧边时的表现；四角方块与面板重叠时按四角优先（结果相同）。
@@ -777,4 +865,8 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 - [ ] X11：`region` 是 root 坐标（原点 (0,0)），没有减任何"虚拟桌面原点"、没有乘 content scale？
 - [ ] X11：普通框选发 `capture.request`，purpose 选择发 `region.selected`（取消带 `cancelled:true`）？
 - [ ] X11：确认时序仍是"隐藏 → 等 100ms → 发布"，与 Windows 一致？
+- [ ] X11：覆盖层在第一次 map 之前切成 override-redirect（`XUnmapWindow` → `XChangeWindowAttributes(CWOverrideRedirect)` → `XSync`），失败只 WARN 并降级？
+- [ ] X11：显示后 `XRaiseWindow` + `XSetInputFocus(RevertToPointerRoot)` + `XGrabKeyboard`/`XGrabPointer`（owner_events=True，grab_window=覆盖层），隐藏时先 `XUnmapWindow` 再 ungrab？
+- [ ] X11：显示/隐藏日志都带 `override_redirect=… grab_keyboard=… grab_pointer=…`，grab 失败有 WARN + 降级（Xlib 默认错误处理器绝不会 exit 进程）？
+- [ ] X11：悬停面板/四角仍然吸附到"当前显示器全屏"（grab 不影响窗口枚举与命中测试）？
 - [ ] X11：Wayland 实现文件（`*_wayland.cpp` / `region_portal.cpp`）没有改动（两套平台函数用不同名字，避免重复符号）？
