@@ -416,11 +416,14 @@ Linux 默认目标是 Wayland（Ubuntu 24.04 GNOME）。Wayland 下应用**不�
 1. 收到 `capture.request`（`{"mode":"region"}`）后，调 `xdg-desktop-portal` 的
    **Screenshot** 门户做一次整屏截图（`xdp_portal_take_screenshot()` +
    `XDP_SCREENSHOT_FLAG_NONE`，非交互模式）。首次会弹**系统授权框**；取消/拒绝/超时都按
-   取消处理：不弹窗、不发布事件。
+   取消处理：不弹窗、不发布事件。等授权最多 **30s**（`kPortalTimeoutSeconds`），等待期间每
+   5s 写一条 info（「仍在等待 portal 授权…」）——真机上"按了没反应"多数就是这段等待，
+   没有这几行日志时看起来像插件完全没工作。
 2. 门户返回临时 PNG：`stb_image` 解码成 RGBA8 → **立刻删除临时文件** → 上传 GL 纹理，
    用自己的 GLFW/ImGui 覆盖层把整张图**等比缩放、居中**显示。
-3. 用户拖框（或 Esc / 右键取消；单击不拖 = 取消）。确认后直接在内存里的截图像素上裁剪
-   → `stb_image_write` 写 PNG → 发布 `capture.done {path,width,height,processors:0}`。
+3. 用户拖框（或 Esc / 右键取消；单击不拖 = 取消）。确认后**先隐藏覆盖层并立刻
+   `glfwPollEvents`**（见 §8.3 的时序说明），然后在内存里的截图像素上裁剪 →
+   `stb_image_write` 写 PNG → 发布 `capture.done {path,width,height,processors:0}`。
    **不发布 `capture.request`**：不再第二次采集、不再弹第二次授权。
 
 与 Windows 分支的对应关系：窗口/交互/绘制/主题色/语言表**完全复用**；只有平台层不同
@@ -477,6 +480,18 @@ D-Bus `CaptureRegion()` 翻译成这条事件）或桌面自定义快捷键调�
   `image_processor` 链）。不发 `capture.failed`（框选取消/保存失败只记日志）。
 - **退出**：等授权框期间每 100ms 检查一次宿主是否要求退出；宿主退出/热卸载时立即取消门户
   请求（`stop()` 的 join 不会被授权框卡住）。已落盘但宿主正在退出时不再发事件。
+- **确认/取消时的隐藏时序（真机踩过，别"优化"掉）**：`glfwHideWindow` 在 Wayland 上只是把
+  `xdg_toplevel` 销毁 + `attach(NULL)` 写进 `wl_display` 的**发送缓冲**，请求要等下一次
+  `glfwPollEvents` / `glfwWaitEventsTimeout` 里的 `wl_display_flush` 才发给合成器。所以
+  `hideOverlay()` 之后必须立刻 poll（`commitWaylandSelection` 里连 poll 两次 + 20ms
+  超时等待，`hideOverlay()` 里也统一补一次）。不 poll 的两个真机症状：① 覆盖层画面留在
+  屏幕上不消失；② 隐藏后 UI 线程阻塞在条件变量上不再处理 Wayland 事件，合成器的 ping
+  没人应答，GNOME 弹"应用没有响应"。
+- **编码线程**：确认后的"裁剪 + PNG 编码 + 写盘 + 发布 `capture.done`"在**工作线程**
+  （`runWaylandCommit`）里做，UI 线程只负责隐藏、算布局、释放 GL 纹理与起线程。整屏 4K
+  的 stb PNG 编码要几百毫秒到数秒，留在 UI 线程会让"隐藏之后"的那段时间完全不处理事件。
+  GL 纹理必须在 UI 线程释放（GL 上下文只在那里有效），整屏像素按 move 语义交给工作线程；
+  `startSelection` / `stop()` 会先 join 上一次的提交线程，不会有两个写盘任务重叠。
 
 ### 8.4 与 Windows 的行为差异
 
@@ -484,7 +499,7 @@ D-Bus `CaptureRegion()` 翻译成这条事件）或桌面自定义快捷键调�
 | --- | --- | --- |
 | 悬停吸附 / 单击截窗口 | 有 | **没有**（Wayland 不允许全局窗口枚举）；单击不拖 = 取消 |
 | 背景 | 触发瞬间的当前显示器 GDI 快照 | 门户返回的**整个桌面**合成图，等比缩放居中 |
-| 确认后 | 隐藏 → 等 100ms → 发带 region 的 `capture.request` | 隐藏 → 内存裁剪 → 写 PNG → 发 `capture.done` |
+| 确认后 | 隐藏 → 等 100ms → 发带 region 的 `capture.request` | 隐藏 → `glfwPollEvents`×2 → 工作线程裁剪/编码/写 PNG → 发 `capture.done` |
 | 图片经过 `image_processor` | 是 | 否（`processors:0`） |
 | 多显示器 | 只覆盖一块屏；悬停窗口可跨屏 | 一张缩放图，整张桌面都能选 |
 | 主题色 / 语言 / 选择框样式 | 相同 | 相同 |
@@ -495,12 +510,48 @@ D-Bus `CaptureRegion()` 翻译成这条事件）或桌面自定义快捷键调�
   会被忽略）；以及带标题栏时坐标是否仍然正确（按实际窗口尺寸算，理论上不受影响）。
 - 多屏 + 分数缩放（125% / 150% / 200%）下的窗口尺寸、`content_scale` 与坐标换算：映射用的是
   窗口内容坐标与图像像素，理论上与缩放无关，但没有实机结论。
-- 首次授权框的观感与超时（当前等待 120s）；授权框出现时是否抢焦点/是否遮住覆盖层
+- 首次授权框的观感与超时（当前等待 **30s**，等待期间每 5s 一条「仍在等待 portal 授权…」）；
+  授权框出现时是否抢焦点/是否遮住覆盖层
   （覆盖层是在拿到截图**之后**才显示的，设计上不会挡授权框）。
 - portal 后端差异（GNOME / KDE / wlroots）：`CaptureRegion` 的触发入口、授权拒绝时门户
   返回的错误文本（取消/拒绝靠错误码 + 文本识别，不同版本可能不同）。
 - 图像编码：超大整屏图（8K+）时 GL 纹理上传可能超过 GPU 上限（有 WARN，裁剪与落盘不受影响）。
 - X11 会话：见 §9（同一份 `.so` 里另一套实现，与 Wayland 路径互不影响）。
+
+### 8.6 真机诊断日志（按这个顺序看，一眼定位卡在哪一步）
+
+一次正常的 Wayland 框选，`host.log`（Linux 是 `~/.plugin-shot/logs/host.log`，Windows 是
+`%LOCALAPPDATA%\plugin-shot\logs\host.log`）里 region_selector 的行应该依次出现：
+
+```text
+region_selector：Linux 会话 = Wayland（门户定格图 + 拖选）          # 插件 init
+region_selector：开始框选（后端=wayland，portal 定格图 + 自有覆盖层）  # 事件到了插件
+region_selector：图形栈就绪（覆盖层窗口 WxH，GLFW_VISIBLE=0）        # GLFW/窗口/ImGui 建好
+region_selector：开始请求 portal 截图（等待授权，最多 30s）
+region_selector：仍在等待 portal 授权…（已等待 5s，最多 30s）        # 每 5s 一条
+region_selector：portal 截图返回 status=ok（耗时 N ms）             # ← 分水岭
+region_selector：已取得 portal 截图 WxH（图像像素，将等比缩放显示）
+region_selector：准备显示覆盖层 WxH（显示器矩形 WxH）
+region_selector：glfwShowWindow 完成（GLFW_VISIBLE=1，GLFW_FOCUSED=1，实际窗口 WxH，合成器决定尺寸）
+region_selector：开始框选 显示器矩形=...                            # 覆盖层已经在屏幕上
+-- 用户确认后 --
+region_selector：覆盖层已请求隐藏（GLFW_VISIBLE=0），开始编码
+region_selector：开始编码 PNG（工作线程）：裁剪 WxH @ (x,y) → <路径>
+region_selector：已保存框选 PNG <路径> WxH（编码+写盘 N ms，工作线程）
+region_selector：框选结果已保存 ...，已发布 capture.done
+```
+
+定位规则：
+
+| 最后一行停在哪 | 结论 |
+| --- | --- |
+| 「开始框选」之前 | 事件没到插件（插件没加载 / 没订阅总线），看宿主日志里的插件加载结果 |
+| 「开始框选」与「图形栈就绪」之间 | 卡在 GLFW 初始化 / 建窗口（Wayland 后端或 EGL 不可用），同段会有 `GLFW 错误 N：…`（ERROR） |
+| 「开始请求 portal 截图」之后、没有「portal 截图返回」 | 卡在门户授权框；超过 30s 会有一条 `portal 截图超时` WARN |
+| 有 `portal 截图返回 status=...` 但不是 `ok` | 门户拒绝/不可用/超时；紧跟的 ERROR 行「区域框选未开始：portal 截图失败」是最终结论 |
+| 「准备显示覆盖层」之后没有「glfwShowWindow 完成」 | 卡在显示/全屏请求 |
+| `覆盖层没有被合成器显示（GLFW_VISIBLE=0）` | 窗口没被 map：合成器拒绝，覆盖层不会出现（ERROR 已记录） |
+| 「覆盖层已请求隐藏」之后没有「已保存」/「写盘失败」 | 工作线程异常退出（不应发生，`capture.done` 也不会发） |
 
 ## 9. Linux（X11）
 

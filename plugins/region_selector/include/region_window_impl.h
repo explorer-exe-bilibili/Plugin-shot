@@ -49,7 +49,8 @@
 #include "window_target.h"
 
 #if defined(__linux__)
-#include "region_image.h"  // ImageRect：Wayland 分支的裁剪矩形类型（见 Impl 末尾的 Linux 段）
+#include "region_image.h"    // ImageRect：Wayland 分支的裁剪矩形类型（见 Impl 末尾的 Linux 段）
+#include "region_portal.h"   // PortalScreenshotStatus：startSelection 用来分级记录失败原因
 #endif
 
 struct GLFWwindow;   // 前置声明：内部头不拖 GLFW/GL 头文件
@@ -304,15 +305,39 @@ struct RegionWindow::Impl {
     void prepareWaylandOverlay(const ScreenRect& monitor);
     /** @brief 窗口显示后请求全屏（是否生效由合成器决定）。 */
     void requestWaylandFullscreen();
+    /**
+     * @brief 显示覆盖层后确认它真的被合成器 map 了（Wayland 的 map 是异步的）。
+     *
+     * 每轮先渲染一帧再 poll：Wayland 的 surface 只有在提交过缓冲区之后才会被 map，
+     * 光 poll 不渲染会永远等不到 GLFW_VISIBLE。
+     *
+     * @param[in] maxPolls 最多轮询多少轮（每轮 ~50ms）。
+     * @return true = GLFW 已报告窗口可见。
+     */
+    bool waitOverlayVisible(int maxPolls);
+    /** @brief join 上一次 Wayland 提交的工作线程（不存在时立即返回）。 */
+    void joinCommitThread();
     /** @brief 确认框选：内存裁剪 → 写 PNG → 发布 capture.done → 收掉覆盖层。 */
     void commitWaylandSelection(int x, int y, int width, int height);
-    /** @brief 发布 capture.done {path,width,height,processors:0}（与宿主流水线同格式）。 */
-    void publishCaptureDone(const std::string& path, int width, int height) const;
 
     // portal 截图的整屏像素：既是覆盖层背景，也是确认时的裁剪源（不再第二次采集）。
     std::vector<std::uint8_t> sourcePixels;
     int sourceWidth = 0;
     int sourceHeight = 0;
+
+    // 最近一次 portal 截图的结果：startSelection 据此决定失败日志级别
+    // （用户取消保持 debug/静默，其它失败用 error 记录一次）。
+    PortalScreenshotStatus lastPortalStatus = PortalScreenshotStatus::Ok;
+
+    /**
+     * @brief "裁剪 + PNG 编码 + 写盘 + 发布 capture.done"的工作线程。
+     *
+     * 编码一张 4K 级别的 PNG 要几百毫秒到数秒：留在 UI 线程会让隐藏后的覆盖层
+     * 长时间无法处理任何事件（Wayland 下连 wl_display_flush 都没有，合成器 ping
+     * 得不到回应会被报"应用没有响应"）。最多同时存在一个，下一次提交 / stop()
+     * 前必须 join。
+     */
+    std::thread commitThread;
 
     // ---- Linux / X11 分支（只由 *_x11.cpp 实现；与上面的 Wayland 成员函数不同名） ----
     /** @brief 光标所在显示器：XQueryPointer 取 root 坐标 + GLFW 显示器矩形。 */

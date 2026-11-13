@@ -9,11 +9,14 @@
 //    "有/没有图片"的确定结果，所以这里临时建一个线程私有的 GMainContext + GMainLoop，
 //    阻塞到回调、超时或中断为止。不碰宿主主循环，也不依赖 GLFW 的事件循环；
 //  · 超时用一个 GLib timeout source 实现：到点先取消 D-Bus 请求，再退出主循环，
-//    避免门户一直挂着把覆盖层永远挡在"准备阶段"；
+//    避免门户一直挂着把覆盖层永远挡在"准备阶段"；超时值见 region_portal.h 的
+//    kPortalTimeoutSeconds（30s，真机上 120s 会被用户当成"点了没反应"）；
+//  · 等待期间每 kPortalWaitLogSeconds 秒写一条 info（"仍在等待 portal 授权…"）：
+//    真机日志里"region_selector 没有任何日志"最常见的原因就是这段静默等待；
 //  · 门户返回的是 `file://` URI，转成本地路径交给上层，由上层用 stb 解码后删除
 //    （临时文件属于调用方，门户不会替我们清理）。
 //
-// 日志：用户取消/拒绝只记 debug（需求：取消静默）；门户不可用/失败记 WARN。
+// 日志：用户取消/拒绝只记 debug（需求：取消静默）；门户不可用/失败/超时记 WARN。
 // 日志固定中文，不进语言表（e2e 按中文日志断言）。
 
 #include "region_portal.h"
@@ -34,14 +37,6 @@
 namespace region_selector {
 namespace {
 
-/**
- * @brief 等用户点「允许」的最长时间（秒）。
- *
- * 门户弹的是系统授权框，用户可能不在这台机器前；120s 足够点一次授权，又不至于
- * 让覆盖层永远起不来（超时按取消处理：静默、不发事件）。
- */
-constexpr guint kPortalTimeoutSeconds = 120;
-
 /** @brief 中断检查的轮询间隔（毫秒）：宿主退出/热卸载时不必等满超时。 */
 constexpr guint kAbortPollMs = 100;
 
@@ -50,6 +45,8 @@ struct PortalCall {
     GMainLoop* loop = nullptr;        /**< 本线程私有的主循环（回调里 quit）。 */
     GCancellable* cancellable = nullptr; /**< 超时/中断后取消 D-Bus 请求。 */
     const std::function<bool()>* shouldAbort = nullptr; /**< 调用方的中断检查（可空）。 */
+    const ShotHostServices* host = nullptr; /**< 日志目标（可空）；进度日志要用。 */
+    guint waitedSeconds = 0;          /**< 已经等了多少秒：进度日志里显示。 */
     gboolean timedOut = FALSE;        /**< 是否是超时结束的。 */
     gboolean aborted = FALSE;         /**< 是否是调用方要求中断（宿主退出等）。 */
     char* uri = nullptr;              /**< 成功时的 `file://` URI（g_free 释放）。 */
@@ -112,6 +109,25 @@ gboolean onAbortPoll(gpointer data) {
         g_main_loop_quit(call->loop);
     }
     return G_SOURCE_REMOVE;
+}
+
+/**
+ * @brief 进度日志：等待授权期间每 kPortalWaitLogSeconds 秒写一条 info。
+ *
+ * 为什么非要这个：门户授权框是系统窗口，用户可能根本没看见（点到了别的窗口后面），
+ * 而"点了区域截屏之后没有任何 region_selector 日志"最常见的原因就是这段静默等待。
+ * 有了这几行，真机日志能一眼看出"卡在等授权"还是"门户已返回"。
+ */
+gboolean onWaitProgress(gpointer data) {
+    auto* call = static_cast<PortalCall*>(data);
+    if (call == nullptr) {
+        return G_SOURCE_REMOVE;
+    }
+    call->waitedSeconds += static_cast<guint>(kPortalWaitLogSeconds);
+    shot::Logger(call->host).info(
+        "region_selector：仍在等待 portal 授权…（已等待 " + std::to_string(call->waitedSeconds) +
+        "s，最多 " + std::to_string(kPortalTimeoutSeconds) + "s）");
+    return G_SOURCE_CONTINUE;
 }
 
 /** @brief GError 的消息文本（可能为空），用于拼日志。 */
@@ -185,9 +201,14 @@ PortalScreenshotStatus PortalScreenshot::take(std::string& pngPath,
         call.loop = g_main_loop_new(context, FALSE);
         call.cancellable = g_cancellable_new();
         call.shouldAbort = &shouldAbort;
+        call.host = m_host;
         GSource* timeout = g_timeout_source_new_seconds(kPortalTimeoutSeconds);
         g_source_set_callback(timeout, &onScreenshotTimeout, &call, nullptr);
         g_source_attach(timeout, context);
+        // 进度日志：没有它，等待授权的几十秒在日志里是一片空白（真机排查时误判成"没反应"）。
+        GSource* progress = g_timeout_source_new_seconds(kPortalWaitLogSeconds);
+        g_source_set_callback(progress, &onWaitProgress, &call, nullptr);
+        g_source_attach(progress, context);
         // 中断轮询：宿主退出/热卸载时 stop() 会 join 本线程，不能让授权框卡住它。
         GSource* abortPoll = g_timeout_source_new(kAbortPollMs);
         g_source_set_callback(abortPoll, &onAbortPoll, &call, nullptr);
@@ -195,6 +216,7 @@ PortalScreenshotStatus PortalScreenshot::take(std::string& pngPath,
 
         // 非交互模式（flags = NONE）= 整屏截图；parent = NULL：本插件没有可以当门户
         // 对话框父窗口的稳定窗口句柄（覆盖层此时还没显示）。
+        log.debug("region_selector：已经发出 portal 截图请求，等待门户回调");
         xdp_portal_take_screenshot(portal, nullptr, XDP_SCREENSHOT_FLAG_NONE,
                                    call.cancellable, &onScreenshotDone, &call);
         g_main_loop_run(call.loop);
@@ -211,8 +233,9 @@ PortalScreenshotStatus PortalScreenshot::take(std::string& pngPath,
             log.debug("region_selector：宿主正在退出，放弃等待门户截图授权");
         } else if (call.timedOut) {
             status = PortalScreenshotStatus::TimedOut;
-            log.warn("region_selector：等待 xdg-desktop-portal 截图授权超时（" +
-                     std::to_string(kPortalTimeoutSeconds) + "s），放弃本次框选");
+            log.warn("region_selector：portal 截图超时（等 " +
+                     std::to_string(kPortalTimeoutSeconds) +
+                     "s 仍没有拿到授权/截图，已取消门户请求），按取消处理本次框选");
         } else if (call.uri != nullptr) {
             GError* uriError = nullptr;
             char* localPath = g_filename_from_uri(call.uri, nullptr, &uriError);
@@ -250,6 +273,8 @@ PortalScreenshotStatus PortalScreenshot::take(std::string& pngPath,
 
         g_source_destroy(abortPoll);
         g_source_unref(abortPoll);
+        g_source_destroy(progress);
+        g_source_unref(progress);
         g_source_destroy(timeout);
         g_source_unref(timeout);
         if (call.uri != nullptr) {

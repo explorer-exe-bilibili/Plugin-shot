@@ -417,11 +417,37 @@ void RegionWindow::Impl::requestQuit() {
 // 框选会话：开始 / 取消 / 确认（提交流程）
 // ---------------------------------------------------------------------------
 bool RegionWindow::Impl::startSelection(const std::string& purpose) {
+    const shot::Logger log(host);
+#if defined(__linux__)
+    // 真机排查"按了区域截屏什么都没发生"的第一行日志：证明事件确实到了插件，
+    // 并且告诉我们走的是 Wayland 还是 X11 分支。
+    log.info(linuxBackend == LinuxSessionBackend::Wayland
+                 ? "region_selector：开始框选（后端=wayland，portal 定格图 + 自有覆盖层）"
+                 : "region_selector：开始框选（后端=x11，XGetImage 快照 + 全屏覆盖层）");
+    if (!purpose.empty()) {
+        log.info("region_selector：本次框选来自 region.select.request（purpose=" + purpose + "）");
+    }
+    // 上一次确认的"裁剪 + 编码 + 写盘"可能还在工作线程里跑：先收掉再开始新一次框选，
+    // 保证同一时刻只有一个提交在写盘（也避免 sourcePixels 被两处同时持有）。
+    joinCommitThread();
+#endif
     // 第一次框选才初始化 GLFW/窗口/ImGui（原因见文件头），失败就安静放弃本次框选。
     if (!ensureGraphics()) {
-        shot::Logger(host).error("[region_selector] 图形栈初始化失败，本次框选放弃");
+        log.error("[region_selector] 图形栈初始化失败（GLFW 窗口 / OpenGL / ImGui），本次框选放弃");
         return false;
     }
+#if defined(__linux__)
+    {
+        int readyWidth = 0;
+        int readyHeight = 0;
+        glfwGetWindowSize(window, &readyWidth, &readyHeight);
+        char readyText[192] = {};
+        std::snprintf(readyText, sizeof(readyText),
+                      "region_selector：图形栈就绪（覆盖层窗口 %dx%d，GLFW_VISIBLE=%d）", readyWidth,
+                      readyHeight, glfwGetWindowAttrib(window, GLFW_VISIBLE));
+        log.info(readyText);
+    }
+#endif
     ScreenRect monitor;
     float contentScale = 1.0f;
 #if defined(__linux__)
@@ -576,15 +602,37 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
         }
     } else {
         // Wayland：覆盖层的背景就是 portal 截图。没有截图就没有可选内容（失败原因已由
-        // captureBackground 按级别记过：门户不可用 WARN / 用户取消静默），所以不显示覆盖层、
-        // 不弹窗、不发布任何事件。
+        // captureBackground 按级别记过：门户不可用/失败/超时 WARN / 用户取消静默），
+        // 所以不显示覆盖层、不弹窗、不发布任何事件。
+        //
+        // 真机日志里"点了区域截屏之后没有任何 region_selector 日志"，最常见的原因就是
+        // 下面这两行之间在等系统授权框（最长 kPortalTimeoutSeconds）。中间每
+        // kPortalWaitLogSeconds 秒会有一条"仍在等待 portal 授权…"，看到它就说明
+        // 卡在授权而不是卡在别处。
+        log.info("region_selector：开始请求 portal 截图（等待授权，最多 " +
+                 std::to_string(kPortalTimeoutSeconds) + "s）");
         if (!captureBackground()) {
+            const PortalScreenshotStatus status = lastPortalStatus;
+            if (status == PortalScreenshotStatus::Cancelled) {
+                // 用户取消 / 宿主正在退出：保持安静（需求：取消不打扰用户）。
+                log.debug("region_selector：区域框选未开始：portal 截图被用户取消，保持安静");
+            } else {
+                // 其它失败用 error 记录一次：这是"按了没反应"的最终结论行，必须能一眼看到。
+                log.error("region_selector：区域框选未开始：portal 截图失败（status=" +
+                          std::string(portalStatusName(status)) +
+                          "），覆盖层不会显示；原因见上面门户日志行");
+            }
+            // 兜底：不留下覆盖层窗口、不留下整屏纹理/像素（窗口本身留给下一次复用，
+            // 但必须是隐藏且无背景的干净状态）。
             hideOverlay();
+            releaseBackgroundTexture();
             return false;
         }
         // 等授权框期间宿主可能已经开始卸载本插件：不要再把覆盖层显示出来。
         if (shouldQuit()) {
+            log.warn("region_selector：宿主正在退出，放弃显示覆盖层");
             hideOverlay();
+            releaseBackgroundTexture();
             return false;
         }
     }
@@ -611,6 +659,25 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
         renderFrame();
         glfwPollEvents();
     }
+#if defined(__linux__)
+    {
+        // Wayland 的窗口尺寸由合成器决定：尺寸为 0 时 glfwShowWindow 之后可能根本不会
+        // map 出可见表面（真机上表现为"覆盖层没出现"）。先补一次尺寸再显示。
+        int showWidth = 0;
+        int showHeight = 0;
+        glfwGetWindowSize(window, &showWidth, &showHeight);
+        if (showWidth <= 0 || showHeight <= 0) {
+            log.warn("region_selector：显示前窗口尺寸为 0，改回显示器尺寸后再显示");
+            glfwSetWindowSize(window, std::max(monitor.width, 1), std::max(monitor.height, 1));
+            glfwGetWindowSize(window, &showWidth, &showHeight);
+        }
+        char beforeText[192] = {};
+        std::snprintf(beforeText, sizeof(beforeText),
+                      "region_selector：准备显示覆盖层 %dx%d（显示器矩形 %dx%d）", showWidth,
+                      showHeight, monitor.width, monitor.height);
+        log.info(beforeText);
+    }
+#endif
     glfwShowWindow(window);
     // 不再额外调 glfwFocusWindow：窗口 hint 里 GLFW_FOCUS_ON_SHOW 已经让它拿到焦点，
     // 再显式聚焦一次会多触发一轮焦点切换（真机上表现为又闪一下）。
@@ -627,6 +694,28 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
         // X11：WM 可能在 map 之后才真正摆放窗口，poll 完再记录实际几何；坐标一律按
         // 实际窗口位置换算（见 x11CommitSelection）。
         x11LogOverlayGeometry();
+    } else {
+        // Wayland：map 是异步的（合成器 configure 之后 GLFW 才认为可见）。
+        // 这里有限等待并渲染，把"窗口是否真的显示出来"变成日志里的确定结论。
+        const bool visible = waitOverlayVisible(10);
+        int shownWidth = 0;
+        int shownHeight = 0;
+        glfwGetWindowSize(window, &shownWidth, &shownHeight);
+        char shownText[256] = {};
+        std::snprintf(shownText, sizeof(shownText),
+                      "region_selector：glfwShowWindow 完成（GLFW_VISIBLE=%d，GLFW_FOCUSED=%d，"
+                      "实际窗口 %dx%d，合成器决定尺寸）",
+                      glfwGetWindowAttrib(window, GLFW_VISIBLE),
+                      glfwGetWindowAttrib(window, GLFW_FOCUSED), shownWidth, shownHeight);
+        log.info(shownText);
+        if (!visible) {
+            // 合成器一直没有 map 这个窗口：不要留一个"看不见但在跑"的框选会话。
+            log.error("region_selector：覆盖层没有被合成器显示（GLFW_VISIBLE=0），放弃本次框选");
+            hideOverlay();
+            glfwPollEvents();
+            releaseBackgroundTexture();
+            return false;
+        }
     }
 #else
     glfwPollEvents();
@@ -678,7 +767,43 @@ void RegionWindow::Impl::hideOverlay() {
     hover = HoverBox{};
     windowTargets.clear();
     windowScanValid = false;
+#if defined(__linux__)
+    if (window != nullptr) {
+        // Linux（Wayland 尤其）：glfwHideWindow 只是把 unmap 请求放进 wl_display 的发送
+        // 缓冲，要等下一次 glfw*Events() 里的 wl_display_flush 才真正发给合成器。
+        // 不补这一下：取消（Esc/右键）或确认后覆盖层会一直留在屏幕上，而隐藏态的事件
+        // 循环又阻塞在条件变量上，合成器 ping 无人应答（GNOME 报"应用没有响应"）。
+        glfwPollEvents();
+    }
+#endif
 }
+
+#if defined(__linux__)
+bool RegionWindow::Impl::waitOverlayVisible(int maxPolls) {
+    if (window == nullptr) {
+        return false;
+    }
+    for (int poll = 0; poll < maxPolls; ++poll) {
+        // 先渲染一帧：Wayland 的 surface 只有提交过缓冲区之后才会被合成器 map，
+        // 只 poll 不画会永远等不到 GLFW_VISIBLE。
+        renderFrame();
+        glfwPollEvents();
+        if (glfwGetWindowAttrib(window, GLFW_VISIBLE) != 0) {
+            return true;
+        }
+        // 50ms 一轮、最多 10 轮（~500ms）：够合成器完成一次 configure（正常 1~2 轮就可见），
+        // 又不至于在"真的显示不出来"时让用户觉得卡住。可见即提前退出。
+        glfwWaitEventsTimeout(0.05);
+    }
+    return glfwGetWindowAttrib(window, GLFW_VISIBLE) != 0;
+}
+
+void RegionWindow::Impl::joinCommitThread() {
+    if (commitThread.joinable()) {
+        commitThread.join();
+    }
+}
+#endif
 
 void RegionWindow::Impl::finishSelection(int localX, int localY, int localWidth, int localHeight,
                                          bool windowClick) {
@@ -937,6 +1062,11 @@ void RegionWindow::stop() {
     if (m_impl->thread.joinable()) {
         m_impl->thread.join();
     }
+#if defined(__linux__)
+    // 4. Wayland 的提交工作线程：UI 线程已退出，不会再有新任务；这里 join 保证它
+    //    不会在本插件/DLL 卸载之后还在用宿主服务表或写文件。
+    m_impl->joinCommitThread();
+#endif
     {
         std::lock_guard<std::mutex> lock(m_impl->mutex);
         m_impl->quitRequested = false;

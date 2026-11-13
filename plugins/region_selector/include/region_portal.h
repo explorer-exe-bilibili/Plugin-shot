@@ -19,6 +19,18 @@
 namespace region_selector {
 
 /**
+ * @brief 等用户点「允许」的最长时间（秒）。
+ *
+ * 门户弹的是系统授权框，但用户看不到我们这边的任何进度提示：等太久会被当成
+ * "点了没反应"。30s 足够点一次授权，又能在真机上很快看到"超时"这条日志
+ * （实测 120s 时用户根本不知道卡在哪一步）。
+ */
+inline constexpr int kPortalTimeoutSeconds = 30;
+
+/** @brief 等待授权期间打印"仍在等待"日志的间隔（秒）：真机上用它判断是否还活着。 */
+inline constexpr int kPortalWaitLogSeconds = 5;
+
+/**
  * @brief 一次 Screenshot 门户调用的结果分类。
  *
  * 分类只影响日志级别与"是否继续本次框选"：门户不可用/失败要 WARN，用户取消/拒绝
@@ -33,14 +45,41 @@ enum class PortalScreenshotStatus {
 };
 
 /**
+ * @brief PortalScreenshotStatus 的短名字（稳定的英文单词，用于拼诊断日志）。
+ *
+ * 之所以用英文而不是中文：真机排查时用户/issue 会直接 grep 这个值
+ * （`status=timeout` / `status=unavailable`），日志正文仍是中文。
+ *
+ * @param[in] status 门户调用结果。
+ * @return `ok` / `cancelled` / `timeout` / `unavailable` / `failed`；非法值返回 `unknown`。
+ */
+inline const char* portalStatusName(PortalScreenshotStatus status) {
+    switch (status) {
+        case PortalScreenshotStatus::Ok:
+            return "ok";
+        case PortalScreenshotStatus::Cancelled:
+            return "cancelled";
+        case PortalScreenshotStatus::TimedOut:
+            return "timeout";
+        case PortalScreenshotStatus::Unavailable:
+            return "unavailable";
+        case PortalScreenshotStatus::Failed:
+            return "failed";
+    }
+    return "unknown";
+}
+
+/**
  * @brief 调用一次 xdg-desktop-portal 的 Screenshot 门户，拿回整屏截图的临时 PNG 路径。
  *
  * 实现要点（与需求"方案 B"一致）：
  *  - 使用 libportal 的 `xdp_portal_take_screenshot()` + `XDP_SCREENSHOT_FLAG_NONE`
  *    （非交互模式 = 整屏截图；交互模式会多弹一次选区域/选窗口，这里不要）；
  *  - 门户 API 是异步的，本类在调用线程里临时建一个线程私有的 GMainContext + GMainLoop，
- *    阻塞到回调或超时为止，不碰宿主的主循环；
- *  - 超时时间与取消语义见 region_portal.cpp 的常量注释。
+ *    阻塞到回调、超时或中断为止，不碰宿主的主循环；
+ *  - 超时时间与取消语义见 region_portal.cpp 的常量说明；等待期间每
+ *    kPortalWaitLogSeconds 秒写一条 info（"仍在等待 portal 授权…"），
+ *    真机上"没有覆盖层"时先看这几行判断卡在授权还是卡在别处。
  *
  * 调用线程：插件的 UI 线程（阻塞期间覆盖层还没显示，宿主其它线程不受影响）。
  */

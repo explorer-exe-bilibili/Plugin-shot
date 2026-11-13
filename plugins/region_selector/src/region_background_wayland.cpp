@@ -11,9 +11,18 @@
 //
 // 图像的显示方式（等比缩放适配 + 居中）在 region_overlay_wayland.cpp；本文件只负责
 // "拿到像素并变成纹理"。
+//
+// 日志（真机排查"不显示覆盖层"时按这个顺序看）：
+//   1. startSelection 的「开始请求 portal 截图（等待授权，最多 30s）」
+//   2. region_portal 的「仍在等待 portal 授权…」（每 5s 一条）
+//   3. 本文件的「portal 截图返回 status=…（耗时 N ms）」
+//   4. 本文件的「已取得 portal 截图 WxH」→ 说明失败只可能发生在显示阶段
+// 第 3 行是分水岭：有它 = 门户已经返回；没有它 = 还卡在门户/授权。
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -28,13 +37,26 @@ namespace region_selector {
 
 bool RegionWindow::Impl::captureBackground() {
     const shot::Logger log(host);
+    // 失败时默认按 Failed 记：下面任一步失败，startSelection 的"区域框选未开始"才会
+    // 写对原因（只是门户返回 ok 但解码失败时，不能报成 status=ok）。
+    lastPortalStatus = PortalScreenshotStatus::Failed;
     // 1. 门户截图（首次会弹系统授权框）。取消/拒绝/超时/不可用的日志都在
     //    PortalScreenshot::take 里按级别记过，这里只负责放弃本次框选。
     //    中断检查接 shouldQuit()：宿主退出/热卸载时 stop() 要 join 本线程，不能卡在
     //    授权框上等满超时。
     PortalScreenshot portal(host);
     std::string pngPath;
-    if (portal.take(pngPath, [this]() { return shouldQuit(); }) != PortalScreenshotStatus::Ok) {
+    const auto startedAt = std::chrono::steady_clock::now();
+    const PortalScreenshotStatus status =
+        portal.take(pngPath, [this]() { return shouldQuit(); });
+    // 记下结果给 startSelection：用户取消保持安静，其它失败要用 error 记录一次。
+    lastPortalStatus = status;
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - startedAt)
+                               .count();
+    log.info("region_selector：portal 截图返回 status=" + std::string(portalStatusName(status)) +
+             "（耗时 " + std::to_string(static_cast<long long>(elapsedMs)) + " ms）");
+    if (status != PortalScreenshotStatus::Ok) {
         return false;
     }
 
@@ -48,6 +70,9 @@ bool RegionWindow::Impl::captureBackground() {
         log.warn("region_selector：删除 portal 临时截图失败（" + pngPath + "）");
     }
     if (!loaded || width <= 0 || height <= 0) {
+        // 门户给了文件但解码失败：对外仍然算失败（不是用户取消），让 startSelection 用
+        // error 记录"区域框选未开始：portal 截图失败（status=failed）"。
+        lastPortalStatus = PortalScreenshotStatus::Failed;
         log.warn("region_selector：portal 返回的截图无法解码（" + pngPath + "），放弃本次框选");
         return false;
     }
