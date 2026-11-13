@@ -33,7 +33,7 @@
    - `ScreenGrabber` 用 `GetDC(NULL)` + `BitBlt` 直接抓目标区域，BGRA → RGBA 进内存；
    - **不落盘、不发 `capture.request`、不发 `capture.done`**；
    - 交给 `ScrollStitcher` 做位移估计（算法由配置项 `algorithm` 选择，默认
-     `correlate`；三种算法的取舍见 §3.1），正位移追加、负位移前插；
+     `algorithm.correlate`；三种算法的取舍见 §3.1），正位移追加、负位移前插；
    - 相邻两帧至少间隔 60ms；HUD 以 5Hz 刷新缩略图与状态行（缩略图由自带采集的帧
      拼出的画布生成）。
 4. Enter / HUD「保存」：画布 → PNG 落盘 → 发布**一条** `capture.done`；HUD 显示
@@ -60,7 +60,7 @@
 
 | key | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `algorithm` | ENUM | `correlate` | 位移估计算法：`hash` / `correlate` / `phase`（见 §3.1） |
+| `algorithm` | ENUM | `algorithm.correlate` | 位移估计算法：`algorithm.hash` / `algorithm.correlate` / `algorithm.phase`（见 §3.1）。候选值本身就是文案 key，旧配置里的 `hash` / `correlate` / `phase` 仍然接受 |
 | `max_height` | INT | `30000` | 长图高度上限（像素，范围 1000~120000）；达到后停止拼接，仍需手动保存。画布内存约 宽×高×4 字节：30000 高、1020 宽约 122MB，120000 约 490MB |
 
 ### 3.1 如何选算法

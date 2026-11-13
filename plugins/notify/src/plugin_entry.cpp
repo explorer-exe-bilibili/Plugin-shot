@@ -38,6 +38,8 @@ namespace {
 // 配置 key 与 notify_config.cpp 的 kConfig 一一对应。
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
+    R"json("plugin.name":"通知",)json"
+    R"json("plugin.description":"截屏结果消息提示：订阅 capture.done / capture.failed，用系统通知显示保存路径或失败原因",)json"
     R"json("config.enabled.label":"消息提示",)json"
     R"json("config.enabled.tooltip":)json"
     R"json("截屏成功后弹出系统通知显示保存路径；关掉后本插件的所有提示都不弹",)json"
@@ -60,6 +62,8 @@ const char* const kLangTables[] = {
     R"json("toast.window_title":"Plugin-shot 消息提示",)json"
     R"json("toast.icon_tooltip":"Plugin-shot 消息提示（隐藏占位）"})json",
     R"json({"@meta":"en-US",)json"
+    R"json("plugin.name":"Notify",)json"
+    R"json("plugin.description":"Capture notifications: subscribes to capture.done / capture.failed and shows the saved path or the failure reason",)json"
     R"json("config.enabled.label":"Notifications",)json"
     R"json("config.enabled.tooltip":)json"
     R"json("Show the saved path in a system notification; off disables all notifications",)json"

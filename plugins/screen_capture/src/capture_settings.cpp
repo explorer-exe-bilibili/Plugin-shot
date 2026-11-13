@@ -34,8 +34,12 @@ const char kLabelSource[] = "config.source.label";
 const char kTooltipSource[] = "config.source.tooltip";
 
 // source 的取值（ENUM）：Wayland 门户一次只共享一个输出或一个窗口。
-const char kSourceMonitor[] = "monitor";
-const char kSourceWindow[] = "window";
+// 跨边界用带命名空间的键（同时是 i18n key，设置页直接按候选值解析文案）；
+// 不带前缀的旧值 monitor / window 仍然接受，用户已有配置升级后照常生效。
+const char kSourceMonitor[] = "source.monitor";
+const char kSourceWindow[] = "source.window";
+const char kLegacyMonitor[] = "monitor";
+const char kLegacyWindow[] = "window";
 
 const ShotConfigDesc kConfig[] = {
     {
@@ -56,7 +60,7 @@ const ShotConfigDesc kConfig[] = {
         .key           = kKeySource,
         .label         = kLabelSource,
         .default_value = kSourceMonitor,
-        .options       = "monitor|window",
+        .options       = "source.monitor|source.window",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
@@ -148,12 +152,13 @@ std::int32_t capture_config_set(void* self, const char* key, const char* value) 
         return -1;  // 非法取值：拒绝，保留原值，宿主可以继续工作
     }
     if (std::strcmp(key, kKeySource) == 0) {
-        // ENUM 只接受描述符里声明的两个值；大小写也按声明精确匹配。
-        if (std::strcmp(value, kSourceMonitor) == 0) {
+        // ENUM 只接受描述符声明的两个值；新键（source.*）与旧值（裸技术名）都认，
+        // 大小写按声明精确匹配。写入后内部只保留布尔状态，读出时统一返回新键。
+        if (std::strcmp(value, kSourceMonitor) == 0 || std::strcmp(value, kLegacyMonitor) == 0) {
             state->settings.setCaptureWindow(false);
             return 0;
         }
-        if (std::strcmp(value, kSourceWindow) == 0) {
+        if (std::strcmp(value, kSourceWindow) == 0 || std::strcmp(value, kLegacyWindow) == 0) {
             state->settings.setCaptureWindow(true);
             return 0;
         }

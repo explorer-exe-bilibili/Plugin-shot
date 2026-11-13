@@ -7,6 +7,8 @@
 // 并在 kIfaces 里加一项 —— 纯新增数据，不需要动 ABI 版本。
 
 #include <cstdint>
+#include <iterator>
+#include <memory>
 #include <new>
 #include <string>
 
@@ -23,6 +25,33 @@ const char kPluginId[] = "opencv.provider";
 const char kPluginName[] = "OpenCV Environment Provider";
 const char kPluginVersion[] = "1.0.0";
 const char kLibraryName[] = "opencv";
+
+// ---- 多语言：插件显示名/描述 ----------------------------------------------
+//
+// 本插件没有配置项也没有自绘 UI，但设置页按 (owner=插件 id, "plugin.name") 解析
+// 插件分区的显示名，所以这里按 shot::I18n 的约定发布一张最小的语言表到
+// i18n_source_list（owner 就是下面的 kPluginId，条目不需要 target）。
+// key 只有 plugin.name / plugin.description；每语言一张 JSON 对象、@meta 必填，
+// 两张表的 key 集必须一致。日志与库名不进表（库名是技术值，日志保持中文）。
+const char* const kLangTables[] = {
+    R"json({"@meta":"zh-CN",)json"
+    R"json("plugin.name":"OpenCV 提供者",)json"
+    R"json("plugin.description":"把 OpenCV 带进进程的运行库提供者，不提供任何算法"})json",
+    R"json({"@meta":"en-US",)json"
+    R"json("plugin.name":"OpenCV Environment Provider",)json"
+    R"json("plugin.description":"Library provider that loads OpenCV into the process; it offers no algorithms"})json",
+};
+
+/**
+ * @brief 实例状态：只持有语言表（本插件不缓存别的对象）。
+ *
+ * I18n 不可拷贝/移动，用 unique_ptr 持有；destroy 里先析构它（会退订
+ * lists.changed），再释放状态本身。
+ */
+struct ProviderState {
+    /** @brief 插件自身文案；构造失败时为 nullptr，显示名回退成 key。 */
+    std::unique_ptr<shot::I18n> i18n;
+};
 
 // 构建期没找到 OpenCV 时，本插件依旧合法，只是报不出库版本。
 std::string opencv_version() {
@@ -48,16 +77,28 @@ std::int32_t opencv_provider_init(const ShotHostServices* host, std::uint32_t fl
     return 0;
 }
 
-// 实例不需要真的持有东西，但必须是真实分配出来的指针：
+// 实例不需要真的持有能力对象，但必须是真实分配出来的指针：
 // 宿主不会解引用它，可 destroy 会拿它来释放。
-void* opencv_provider_create(std::uint32_t index, const ShotHostServices* /*host*/) {
+// 语言表在这里发布（create 是唯一拿得到宿主服务表的实例路径），异常绝不能
+// 穿过 C 导出边界；文案失败只降级成 key，不影响 lib_provider 能力。
+void* opencv_provider_create(std::uint32_t index, const ShotHostServices* host) {
     if (index != 0) {
         return nullptr;
     }
-    return new (std::nothrow) int(0);
+    auto state = std::make_unique<ProviderState>();
+    try {
+        state->i18n = std::make_unique<shot::I18n>(host, kPluginId);
+        if (!state->i18n->loadTables(kLangTables, std::size(kLangTables))) {
+            shot::Logger(host).warn("[OpenCVProvider] 语言表解析失败，显示名回退为 key");
+        }
+    } catch (...) {
+        state->i18n.reset();
+        shot::Logger(host).warn("[OpenCVProvider] 初始化多语言失败，显示名回退为 key");
+    }
+    return state.release();
 }
 
-void opencv_provider_destroy(void* instance) { delete static_cast<int*>(instance); }
+void opencv_provider_destroy(void* instance) { delete static_cast<ProviderState*>(instance); }
 
 // ---- 能力：shot.lib_provider ----------------------------------------------
 

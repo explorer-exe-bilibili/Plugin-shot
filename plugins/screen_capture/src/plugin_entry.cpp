@@ -45,24 +45,33 @@ using screen_capture::PluginInstance;
 const ShotHostServices* g_hostServices = nullptr;
 
 // 用户可见文案的语言表（每个语言一张 JSON 对象，@meta 是 BCP-47 语言标签）：
-// 本插件没有自绘 UI，用户可见文案只有配置项的 label/tooltip，所以表里只有
-// 这几组 key。capture_settings.cpp 的 kConfig 存的就是这里的 key，两处拼写
-// 必须严格一致（设置页按 display(owner, key) = i18n_list[(owner, key)] ?? key 解析，
-// 拼错就显示 key 本身）。单张表超过 120 列，所以拆成相邻字符串字面量：编译期拼成
+// 本插件没有自绘 UI，用户可见文案只有配置项的 label/tooltip 与 ENUM 候选值
+// （候选值本身直接当 key，设置页用 display(owner, 候选值) 解析，查不到就显示原始
+// 技术值），所以表里只有这几组 key。capture_settings.cpp 的 kConfig 存的就是这里
+// 的 key 与候选值，两处拼写必须严格一致（设置页按 display(owner, key) =
+// i18n_list[(owner, key)] ?? key 解析，拼错就显示 key 本身）。单张表超过 120 列，所以拆成相邻字符串字面量：编译期拼成
 // 一条 JSON，JSON 字符串内部没有裸换行。日志不进这张表（保持中文，e2e 按中文日志断言）。
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
+    R"json("plugin.name":"屏幕采集",)json"
+    R"json("plugin.description":"抓取屏幕并把 BGRA8 像素交给宿主（Windows GDI / Linux Wayland 门户 + PipeWire / X11 XShm）",)json"
     R"json("config.include_cursor.label":"合成鼠标光标",)json"
     R"json("config.include_cursor.tooltip":"Windows/X11：抓屏后把当前鼠标光标画进截图，关闭后不含光标；Wayland 下光标由合成器决定",)json"
     R"json("config.source.label":"共享类型",)json"
-    R"json("config.source.tooltip":"Wayland：共享整个输出（monitor）或单个窗口（window）；默认整个输出"})json",
+    R"json("config.source.tooltip":"Wayland：共享整个输出（monitor）或单个窗口（window）；默认整个输出",)json"
+    R"json("source.monitor":"显示器",)json"
+    R"json("source.window":"窗口"})json",
     R"json({"@meta":"en-US",)json"
+    R"json("plugin.name":"Screen Capture",)json"
+    R"json("plugin.description":"Captures the screen and hands BGRA8 pixels to the host: Windows GDI, Linux Wayland portal + PipeWire, X11 XShm",)json"
     R"json("config.include_cursor.label":"Include mouse cursor",)json"
     R"json("config.include_cursor.tooltip":)json"
     R"json("Windows/X11: draws the cursor into the screenshot; off omits it. On Wayland the compositor decides",)json"
     R"json("config.source.label":"Share source",)json"
     R"json("config.source.tooltip":)json"
-    R"json("Wayland: share the whole output (monitor) or a single window (window); default is the whole output"})json",
+    R"json("Wayland: share the whole output (monitor) or a single window (window); default is the whole output",)json"
+    R"json("source.monitor":"Monitor",)json"
+    R"json("source.window":"Window"})json",
 };
 
 void* create_instance(std::uint32_t index, const ShotHostServices* host) {

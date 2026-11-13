@@ -49,11 +49,15 @@ const char kFileListTarget[] = "text/uri-list";
 // 120 列上限，所以用相邻 raw 字面量拼接——拼出来的仍是一行合法 JSON。
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
+    R"json("plugin.name":"剪贴板",)json"
+    R"json("plugin.description":"截屏落盘后把图片写进系统剪贴板，可选同时提供文件列表（CF_HDROP / text/uri-list）",)json"
     R"json("config.enabled.label":"写进剪贴板",)json"
     R"json("config.enabled.tooltip":"截屏落盘后把图片复制进系统剪贴板，可以直接粘贴到聊天/文档",)json"
     R"json("config.also_file_drop.label":"同时提供文件",)json"
     R"json("config.also_file_drop.tooltip":"额外提供 CF_HDROP：资源管理器里可粘贴成文件；不勾选则只发图片"})json",
     R"json({"@meta":"en-US",)json"
+    R"json("plugin.name":"Clipboard",)json"
+    R"json("plugin.description":"Copies the saved screenshot to the system clipboard, optionally also as a file list (CF_HDROP / text/uri-list)",)json"
     R"json("config.enabled.label":"Copy to clipboard",)json"
     R"json("config.enabled.tooltip":)json"
     R"json("Copies the saved screenshot to the system clipboard so you can paste it into a chat or document",)json"

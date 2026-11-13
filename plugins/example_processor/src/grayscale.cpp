@@ -50,8 +50,8 @@ const ShotConfigDesc kConfig[] = {
         .kind          = SHOT_CONFIG_KIND_ENUM,
         .key           = kKeyMode,
         .label         = kLabelMode,
-        .default_value = "luma",
-        .options       = "luma|average",
+        .default_value = "mode.luma",
+        .options       = "mode.luma|mode.average",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
@@ -85,7 +85,7 @@ bool grayscale_start(void* self, const ShotHostServices* host) {
     }
     // owner 用插件身份证（kGrayscale.id），宿主按它校验 lists.add、并在卸载时按它清理贡献。
     state->i18n = std::make_unique<shot::I18n>(host, kGrayscale.id);
-    return load_language_tables(*state->i18n);
+    return load_language_tables(*state->i18n, kGrayscale.id);
 }
 
 std::int32_t grayscale_process(void* self, ShotImage* image) {
@@ -140,7 +140,8 @@ std::int32_t grayscale_get_config(void* self, const char* key, char* buf, std::u
     const auto* state = static_cast<const GrayscaleState*>(state_of(self));
     if (std::strcmp(key, kKeyMode) == 0) {
         const bool use_luma = (state == nullptr) ? true : state->use_luma;
-        return copy_config_value(buf, buf_size, use_luma ? "luma" : "average");
+        // 对外返回命名空间键（同时是 i18n key，设置页直接按候选值解析文案）。
+        return copy_config_value(buf, buf_size, use_luma ? "mode.luma" : "mode.average");
     }
     if (std::strcmp(key, kKeyStrength) == 0) {
         const int strength = (state == nullptr) ? 100 : state->strength;
@@ -163,11 +164,12 @@ std::int32_t grayscale_set_config(void* self, const char* key, const char* value
         return -1;
     }
     if (std::strcmp(key, kKeyMode) == 0) {
-        if (std::strcmp(value, "luma") == 0) {
+        // 新键（mode.luma / mode.average）与旧配置里的裸值（luma / average）都接受。
+        if (std::strcmp(value, "mode.luma") == 0 || std::strcmp(value, "luma") == 0) {
             state->use_luma = true;
             return 0;
         }
-        if (std::strcmp(value, "average") == 0) {
+        if (std::strcmp(value, "mode.average") == 0 || std::strcmp(value, "average") == 0) {
             state->use_luma = false;
             return 0;
         }

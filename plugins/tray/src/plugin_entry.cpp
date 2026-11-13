@@ -144,11 +144,15 @@ namespace {
 // 引用一一对应。日志不在这里：日志一律中文（document/I18N.md）。
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
+    R"json("plugin.name":"托盘",)json"
+    R"json("plugin.description":"托盘图标与菜单：菜单由插件贡献的数据驱动，点击只发布条目声明的事件",)json"
     R"json("config.icon.label":"托盘图标",)json"
     R"json("config.icon.tooltip":"选择 .ico 文件自定义托盘图标；留空使用宿主应用图标",)json"
     R"json("tray.fallback.quit":"退出",)json"
     R"json("tray.tooltip":"Plugin-shot 托盘"})json",
     R"json({"@meta":"en-US",)json"
+    R"json("plugin.name":"Tray",)json"
+    R"json("plugin.description":"Tray icon and menu: the menu is driven by plugin-contributed data and clicks only publish the declared events",)json"
     R"json("config.icon.label":"Tray icon",)json"
     R"json("config.icon.tooltip":"Pick an .ico file to customize the tray icon; leave empty to use the host icon",)json"
     R"json("tray.fallback.quit":"Quit",)json"

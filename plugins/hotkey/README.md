@@ -150,6 +150,9 @@ ScrollLock 开着时事件 state 会多出锁位，只抓 `Ctrl+Alt+S` 会"按�
 
 ### 3.1 多语言（i18n）
 
+> 语言表同时包含插件自身的 `plugin.name` / `plugin.description`：设置页的插件分区标题按
+> `display(插件 id, "plugin.name")` 解析（查不到时回退成 key 本身）。
+
 用户可见文案走"语言表 + key"：`src/plugin_entry.cpp` 的 `kLangTables` 用两张
 `R"json(...)json"` 静态表（zh-CN / en-US）声明文案，`ui_init(host)` 里构造
 `shot::I18n` 并发布到 `i18n_source_list`。设置页按

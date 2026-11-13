@@ -75,16 +75,18 @@ extern const PluginEntry kInvert;
 extern const PluginEntry kGrayscale;
 
 /**
- * @brief 把本包两个插件共用的语言表发布到宿主（i18n_source_list）。
+ * @brief 把本包的文案发布到宿主（i18n_source_list）。
  *
- * 一个 DLL 里两个插件共用同一份表：每个实例按自己的插件 id 作为 owner 各发布一次，
- * 宿主生成 i18n_list 后，设置页/托盘按 (owner, key) 解析到当前语言文本。表本体在
- * plugin_entry.cpp；放在包入口是因为它同时覆盖两个插件的配置项和托盘命令文案。
+ * 一个 DLL 里两个插件各用自己的 id 作为 owner 发布一次：公共文案（配置项
+ * label/tooltip、托盘命令）两个插件共用一份，plugin.name / plugin.description
+ * 与各自的 ENUM 候选按 pluginId 选择，运行期拼成"公共 + 身份"一张表。
  *
- * @param[in,out] i18n 已构造好、owner 为本实例 id 的 I18n。
- * @return true = 至少一张表解析成功；false = 表全部非法（调用方记 WARN，不失败）。
+ * @param[in,out] i18n     已构造好、owner 为本实例 id 的 I18n。
+ * @param[in]     pluginId 本实例的插件 id（kInvert.id / kGrayscale.id）。
+ * @return true = 至少一张表解析成功；未知 id 或表全部非法时 false
+ *         （调用方记 WARN，不失败）。
  */
-bool load_language_tables(shot::I18n& i18n);
+bool load_language_tables(shot::I18n& i18n, const char* pluginId);
 
 /**
  * @brief 宿主拿到的不透明实例：哪个插件 + 插件自己的状态。

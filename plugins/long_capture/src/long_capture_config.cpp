@@ -30,6 +30,9 @@ const char kKeyMaxHeight[] = "max_height";
 
 // 默认值只在描述符里写一遍：构造函数也从这个常量取初始值，避免"描述符默认值"
 // 与"初始值"两处漂移。默认 correlate：它最耐相似行/重复内容，见插件 README。
+// 跨边界的 ENUM 值是带命名空间的键（algorithm.*），它们同时是 i18n key；
+// 这里仍保存裸技术名给 parseStitchAlgorithm 用，旧配置里的裸值也继续接受。
+const char kAlgorithmPrefix[] = "algorithm.";
 const char kDefaultAlgorithm[] = "correlate";
 const char kDefaultMaxHeight[] = "30000";
 
@@ -52,10 +55,11 @@ const ShotConfigDesc kConfig[] = {
         .kind          = SHOT_CONFIG_KIND_ENUM,
         .key           = kKeyAlgorithm,
         .label         = kLabelAlgorithm,
-        .default_value = kDefaultAlgorithm,
-        // 候选值是纯技术名（hash/correlate/phase），与 stitch_estimator.h 的枚举一一
-        // 对应；"auto"（多算法融合）是预留值，只在 set 里接受，不放进候选让用户选。
-        .options       = "hash|correlate|phase",
+        .default_value = "algorithm.correlate",
+        // 候选值是带命名空间的键（algorithm.*），与 stitch_estimator.h 的枚举一一
+        // 对应，同时本身就是 i18n key（设置页直接用候选值解析文案）；"auto"（多算法
+        // 融合）是预留值，只在 set 里接受，不放进候选让用户选。
+        .options       = "algorithm.hash|algorithm.correlate|algorithm.phase",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
@@ -102,7 +106,10 @@ std::int32_t LongCaptureConfig::get(const char* key, char* buf, std::uint32_t bu
     }
     std::lock_guard<std::mutex> lock(m_mutex);
     if (std::strcmp(key, kKeyAlgorithm) == 0) {
-        return copyValue(buf, bufSize, stitchAlgorithmName(m_values.algorithm));
+        // 对外返回命名空间键（同时是 i18n key）；内部仍是枚举。
+        const std::string name =
+            std::string(kAlgorithmPrefix) + stitchAlgorithmName(m_values.algorithm);
+        return copyValue(buf, bufSize, name.c_str());
     }
     if (std::strcmp(key, kKeyMaxHeight) == 0) {
         const std::string text = std::to_string(m_values.maxHeight);
@@ -117,10 +124,17 @@ std::int32_t LongCaptureConfig::set(const char* key, const char* value) {
     }
     std::lock_guard<std::mutex> lock(m_mutex);
     if (std::strcmp(key, kKeyAlgorithm) == 0) {
-        // ENUM 只接受描述符里的候选值；"auto" 由 parseStitchAlgorithm 接受并回落到
-        // correlate（多算法融合留待后续，见 stitch_estimator.cpp 的 TODO）。
+        // ENUM 的候选值是带命名空间的键（algorithm.hash 等），旧配置里存的是裸技术名
+        // （hash / correlate / phase）——两种写法都接受，内部统一保存枚举。
+        // "auto" 由 parseStitchAlgorithm 接受并回落到 correlate（多算法融合留待后续，
+        // 见 stitch_estimator.cpp 的 TODO）。
+        const char* name = value;
+        const std::size_t prefixLength = std::strlen(kAlgorithmPrefix);
+        if (std::strncmp(value, kAlgorithmPrefix, prefixLength) == 0) {
+            name = value + prefixLength;
+        }
         StitchAlgorithm parsed = m_values.algorithm;
-        if (!parseStitchAlgorithm(value, parsed)) {
+        if (!parseStitchAlgorithm(name, parsed)) {
             return -1;  // 非法取值：拒绝，保留原值，宿主可以继续工作
         }
         m_values.algorithm = parsed;

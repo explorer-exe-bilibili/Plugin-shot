@@ -134,6 +134,9 @@ capture.done ─► 订阅回调（宿主 main 线程）：stb 解码 + stb_imag
 
 ## 5. 多语言（i18n）
 
+> 语言表同时包含插件自身的 `plugin.name` / `plugin.description`：设置页的插件分区标题按
+> `display(插件 id, "plugin.name")` 解析（查不到时回退成 key 本身）。
+
 用户可见文案走 `shot::I18n`（`include/shot_plugin_helpers/shot_i18n.h`）。这条链路
 零 ABI 改动：插件用 `lists.add` 把自己的语言表发布到 `i18n_source_list`，宿主汇总后
 生成只读的 `i18n_list`，所有消费方按同一条规则解析：

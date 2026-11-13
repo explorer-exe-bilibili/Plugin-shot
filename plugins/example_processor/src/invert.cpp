@@ -60,7 +60,7 @@ bool invert_start(void* self, const ShotHostServices* host) {
     }
     // owner 用插件身份证（kInvert.id），宿主按它校验 lists.add、并在卸载时按它清理贡献。
     state->i18n = std::make_unique<shot::I18n>(host, kInvert.id);
-    return load_language_tables(*state->i18n);
+    return load_language_tables(*state->i18n, kInvert.id);
 }
 
 std::int32_t invert_process(void* self, ShotImage* image) {

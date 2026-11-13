@@ -153,6 +153,8 @@ namespace {
 const char* const kLangTables[] = {
     // zh-CN：简体中文表，与下面 en-US 表的 key 集完全一致。
     R"json({"@meta":"zh-CN",)json"
+    R"json("plugin.name":"全局热键",)json"
+    R"json("plugin.description":"全局热键：按热键列表注册组合键，按下时只发布对应事件，不直接调用其它插件",)json"
     R"json("config.enabled.label":"启用全局热键",)json"
     R"json("config.enabled.tooltip":"关闭后撤销全部热键注册；热键线程与窗口保留，重新启用立即生效",)json"
     R"json("config.capture.label":"截屏热键",)json"
@@ -164,6 +166,8 @@ const char* const kLangTables[] = {
     R"json("config.settings.tooltip":"发布 settings.open（空负载）；语法同上"})json",
     // en-US：与 zh-CN 表一一对应。
     R"json({"@meta":"en-US",)json"
+    R"json("plugin.name":"Hotkey",)json"
+    R"json("plugin.description":"Global hotkeys: registers combos from the hotkey list and only publishes events, never calling other plugins",)json"
     R"json("config.enabled.label":"Enable global hotkeys",)json"
     R"json("config.enabled.tooltip":"Unregisters all hotkeys when off; )json"
     R"json(the hotkey thread and window stay alive, and re-enabling takes effect immediately",)json"

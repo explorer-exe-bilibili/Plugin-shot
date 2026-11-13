@@ -88,13 +88,16 @@ cmake --build build
 | key | kind | 默认值 | 取值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `directory` | PATH（`options="directory"`） | 空 | 任意目录 | 空 = 系统图片目录（Windows 的「图片」库、Linux 的 XDG 图片目录）；相对路径相对宿主工作目录；设置页「浏览…」弹的是**选目录**对话框 |
-| `format` | ENUM | `png` | `png` / `jpeg` | PNG 无损（保留 alpha）；JPEG 有损、无 alpha |
+| `format` | ENUM | `format.png` | `format.png` / `format.jpeg` | PNG 无损（保留 alpha）；JPEG 有损、无 alpha。候选值本身就是文案 key，旧配置里的 `png` / `jpeg` 仍然接受 |
 | `quality` | INT | `90` | `1`–`100`（step 1） | 只对 JPEG 生效；越界值夹到区间内 |
 | `filename` | STRING | `shot_%Y%m%d_%H%M%S` | 任意模板 | 不含扩展名；支持 `%Y %m %d %H %M %S` 与 `%%` |
 
 配置值一律是字符串（契约要求），非法值安静回退默认，不会让宿主或插件崩掉。
 
 ## 多语言（i18n）
+
+> 语言表同时包含插件自身的 `plugin.name` / `plugin.description`：设置页的插件分区标题按
+> `display(插件 id, "plugin.name")` 解析（查不到时回退成 key 本身）。
 
 用户可见文案走 `shot::I18n`（`include/shot_plugin_helpers/shot_i18n.h`）。这条链路
 零 ABI 改动：插件用 `lists.add` 把语言表发布到 `i18n_source_list`，宿主汇总后生成
@@ -116,15 +119,15 @@ display(owner, key) = i18n_list[(owner, key)] ?? key
 - **key 规范**：
   - 配置项：`config.<配置 key>.label` / `config.<配置 key>.tooltip`，见上面的配置表；
   - 插件自己的 UI 文案：`ui.*`（本插件没有窗口/对话框，因此暂无 `ui.*` key）；
-  - ENUM 候选值 `png` / `jpeg` 本身是可读的技术值，本期不额外提供选项文案，
-    设置页直接显示技术值（技术值不翻译）。
+  - ENUM 候选值 `format.png` / `format.jpeg` 本身就是文案 key（同时也是存储值），
+    设置页按 `display(owner, 候选值)` 解析成「PNG（无损）」这类用户文案。
 - **回退**：宿主拿不到语言表时（老宿主没有列表服务、语言表解析失败），设置页按
   上面的规则回退显示 key 本身；若将来新增 `i18n.tr(key, fallback)` 调用，
   `fallback` 必须写中文原文。本插件当前没有 `i18n.tr(...)` 调用点：用户可见文案只有
   四个配置项的 label/tooltip，由设置页按 `i18n_list` 解析；保存失败原因只进中文日志。
 - **不翻译的东西**：日志（`shot::Logger`）保持中文——e2e 按中文日志断言；配置 key
-  `directory` / `format` / `quality` / `filename`、ENUM 技术值 `png` / `jpeg`、
-  事件主题也不翻译。
+  `directory` / `format` / `quality` / `filename`、ENUM 存储值 `format.png` /
+  `format.jpeg`、事件主题也不翻译。
 - **新增一条文案**：在两张语言表里同时加同一个 key，再在 `saver_config.cpp` 里用
   key 引用；只加一种语言时 `loadTables` 会记 WARN（各语言 key 数不一致），缺文本的
   语言按回退链取。

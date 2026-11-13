@@ -31,7 +31,13 @@ const char kKeyFilename[] = "filename";
 // 默认值只在描述符里写一遍：构造函数也从这几个常量取初始值，避免"描述符默认值"
 // 与"初始值"两处漂移。
 const char kDefaultDirectory[] = "";  // 空 = 系统图片目录
-const char kDefaultFormat[] = "png";
+// 格式：内部仍用技术名 png / jpeg（编码器与快照都按它判断），跨边界（config_list、
+// 配置值）统一用带命名空间的键 format.png / format.jpeg —— 它们同时是 i18n key，
+// 设置页按 display(owner, 值) 解析成「PNG（无损）」这类用户文案。
+const char kFormatPng[] = "png";
+const char kFormatJpeg[] = "jpeg";
+const char kOptionPng[] = "format.png";
+const char kOptionJpeg[] = "format.jpeg";
 const char kDefaultQuality[] = "90";
 const char kDefaultFilename[] = "shot_%Y%m%d_%H%M%S";
 
@@ -39,8 +45,8 @@ constexpr int kMinQuality = 1;
 constexpr int kMaxQuality = 100;
 
 // 文案 key：命名规范 config.<配置 key>.label / .tooltip，写成常量是为了让 kConfig
-// 一眼能扫出"这里放的是 key 而不是中文"。ENUM 候选值 png/jpeg 本身是可读的技术值，
-// 本期不额外提供选项文案（设置页直接显示技术值）。
+// 一眼能扫出"这里放的是 key 而不是中文"。ENUM 的候选值本身也是 i18n key
+// （format.png / format.jpeg），设置页直接用 display(owner, 候选值) 解析文案。
 const char kLabelDirectory[] = "config.directory.label";
 const char kTooltipDirectory[] = "config.directory.tooltip";
 const char kLabelFormat[] = "config.format.label";
@@ -70,8 +76,8 @@ const ShotConfigDesc kConfig[] = {
         .kind          = SHOT_CONFIG_KIND_ENUM,
         .key           = kKeyFormat,
         .label         = kLabelFormat,
-        .default_value = kDefaultFormat,
-        .options       = "png|jpeg",
+        .default_value = kOptionPng,
+        .options       = "format.png|format.jpeg",
         .min           = 0.0,
         .max           = 0.0,
         .step          = 0.0,
@@ -109,7 +115,7 @@ SaverConfig::SaverConfig() {
     // 构造期间没有并发，直接按默认常量填；不走 set() 是为了让"默认值"只依赖上面
     // 那四个常量（set() 还要做字符串比较，构造函数里没必要）。
     m_values.directory = kDefaultDirectory;
-    m_values.format = kDefaultFormat;
+    m_values.format = kFormatPng;
     m_values.quality = std::atoi(kDefaultQuality);
     m_values.filename = kDefaultFilename;
 }
@@ -134,7 +140,8 @@ std::int32_t SaverConfig::get(const char* key, char* buf, std::uint32_t bufSize)
         return copyValue(buf, bufSize, m_values.directory.c_str());
     }
     if (std::strcmp(key, kKeyFormat) == 0) {
-        return copyValue(buf, bufSize, m_values.format.c_str());
+        // 对外统一返回命名空间键（同时是 i18n key）；内部快照仍是 png / jpeg。
+        return copyValue(buf, bufSize, m_values.format == kFormatJpeg ? kOptionJpeg : kOptionPng);
     }
     if (std::strcmp(key, kKeyQuality) == 0) {
         char text[16];
@@ -161,10 +168,18 @@ std::int32_t SaverConfig::set(const char* key, const char* value) {
         return 0;
     }
     if (std::strcmp(key, kKeyFormat) == 0) {
-        if (std::strcmp(value, "png") != 0 && std::strcmp(value, "jpeg") != 0) {
+        // 同时接受新键（format.png / format.jpeg）与旧值（png / jpeg）：用户已有配置
+        // 里存的还是旧值，升级后必须照常生效；写入后内部一律归一成技术名。
+        const char* format = nullptr;
+        if (std::strcmp(value, kOptionPng) == 0 || std::strcmp(value, kFormatPng) == 0) {
+            format = kFormatPng;
+        } else if (std::strcmp(value, kOptionJpeg) == 0 ||
+                   std::strcmp(value, kFormatJpeg) == 0) {
+            format = kFormatJpeg;
+        } else {
             return -1;  // 非法取值：拒绝，保留原值，宿主可以继续工作
         }
-        m_values.format = value;
+        m_values.format = format;
         return 0;
     }
     if (std::strcmp(key, kKeyQuality) == 0) {

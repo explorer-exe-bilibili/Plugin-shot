@@ -49,6 +49,7 @@ namespace {
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
     R"json("plugin.name":"语言包",)json"
+    R"json("plugin.description":"读取外部语言包（官方与用户目录）并把译文贡献给界面，用户包覆盖官方包",)json"
     R"json("config.enabled.label":"启用外部语言包",)json"
     R"json("config.enabled.tooltip":)json"
     R"json("开启后扫描语言包目录，把包里的语言加进「语言」下拉，并用包里的译文覆盖内置文案；关闭即撤回",)json"
@@ -57,6 +58,7 @@ const char* const kLangTables[] = {
     R"json("留空使用官方 <exe>/files/lang 与用户目录；填了只用该目录（多个用分号分隔）"})json",
     R"json({"@meta":"en-US",)json"
     R"json("plugin.name":"Language packs",)json"
+    R"json("plugin.description":"Loads external language packs (official and user folders) and contributes their texts; user packs override official ones",)json"
     R"json("config.enabled.label":"Enable external language packs",)json"
     R"json("config.enabled.tooltip":)json"
     R"json("Scan the language pack folder, add its languages to the Language )json"

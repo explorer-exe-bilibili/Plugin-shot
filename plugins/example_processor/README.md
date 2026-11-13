@@ -76,7 +76,7 @@ cmake --build build
 
 | key | kind | 默认值 | 取值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `mode` | ENUM | `luma` | `luma` / `average` | `luma` = BT.601 亮度加权，`average` = (B+G+R)/3；ENUM 存储值不翻译 |
+| `mode` | ENUM | `mode.luma` | `mode.luma` / `mode.average` | `luma` = BT.601 亮度加权，`average` = (B+G+R)/3；候选值本身就是文案 key，ENUM 存储值不翻译；旧配置里的 `luma` / `average` 仍然接受 |
 | `strength` | INT | `100` | 0..100 | 0 = 原图，100 = 完全灰度 |
 
 `ShotConfigDesc` 的 `label` / `tooltip` 不写中文，写的是语言表 key（文案本体见
@@ -124,6 +124,9 @@ cmake --build build
 
 ## 多语言（i18n）
 
+> 语言表同时包含插件自身的 `plugin.name` / `plugin.description`：设置页的插件分区标题按
+> `display(插件 id, "plugin.name")` 解析（查不到时回退成 key 本身）。
+
 用户可见文案走 `shot::I18n`（`include/shot_plugin_helpers/shot_i18n.h`），链路零 ABI
 改动：插件用 `lists.add` 把语言表发布到 `i18n_source_list`，宿主汇总后生成只读的
 `i18n_list`，所有消费方按同一条规则解析（完整协议见 `document/I18N.md`）：
@@ -145,13 +148,15 @@ display(owner, key) = i18n_list[(owner, key)] ?? key
   `lists.changed`）再释放状态；不能在宿主卸载 DLL 后还留着订阅。
 - **key 规范**：
   - 配置项：`config.<配置 key>.label` / `config.<配置 key>.tooltip`；
+  - 插件身份：`plugin.name` / `plugin.description`（设置页分区标题用）；
+  - ENUM 候选值本身就是 key（`mode.luma` / `mode.average`），设置页按候选值解析；
   - 托盘命令：直接用命令 id 当 key（`example.capture`）；
   - 本包没有自绘 UI，因此没有 `ui.*` key，也没有 `i18n.tr(...)` 调用点。
 - **回退**：老宿主没有列表服务、语言表解析失败时，设置页/托盘按上面的规则回退显示
   key 本身；插件自己的 `tr(key, fallback)` 兜底必须写中文原文（本包当前没有调用点）。
 - **不翻译的东西**：日志（`shot::Logger`）保持中文——e2e 按中文日志断言；事件主题
   `capture.request`、配置 key `keep_alpha` / `mode` / `strength`、ENUM 存储值
-  `luma` / `average` 不翻译。
+  `mode.luma` / `mode.average`（本身是文案 key）不翻译。
 - **新增一条文案**：在两张语言表里同时加同一个 key，再用 key 引用；只加一种语言时
   `loadTables` 会记 WARN（各语言 key 数不一致），缺文本的语言按回退链取。
 

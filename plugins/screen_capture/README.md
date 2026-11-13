@@ -176,7 +176,7 @@ buffer 的真实像素尺寸；门户的 stream `size` 属性属于 compositor �
 | key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `include_cursor` | BOOL | `"1"` | Windows/X11：抓屏时是否把当前鼠标光标一起合成进截图。Wayland 下没有可执行语义（光标由门户/合成器决定），见 §5.4 与 §6.4 |
-| `source` | ENUM | `"monitor"` | Wayland：共享整个输出（`monitor`）还是单个窗口（`window`）；改变后下一次建立/重建会话生效。Windows 与 X11 忽略 |
+| `source` | ENUM | `source.monitor` | Wayland：共享整个输出（`source.monitor`）还是单个窗口（`source.window`）；改变后下一次建立/重建会话生效。Windows 与 X11 忽略。候选值本身就是文案 key，旧配置里的 `monitor` / `window` 仍然接受 |
 
 `ShotConfigDesc::label/tooltip` 存的是**文案 key**，不是最终显示文本；设置页按
 `display(owner, key)` 到 `i18n_list` 里取当前语言（owner 是 `screen_capture.main`）：
@@ -189,7 +189,8 @@ buffer 的真实像素尺寸；门户的 stream `size` 属性属于 compositor �
 key 规范、语言表格式与回退行为见 §3.3。
 
 - 值一律用字符串表达；布尔只接受 `"1"`/`"0"`/`"true"`/`"false"`，ENUM 只接受
-  描述符里声明的值（`monitor` / `window`），其它写法按非法值拒绝并保留原值
+  描述符里声明的值（`source.monitor` / `source.window`；旧配置里的 `monitor` /
+  `window` 仍然接受并归一成新键），其它写法按非法值拒绝并保留原值
   （不把 `"yes"`/`"2"`/`"Monitor"` 静默当成合法值）。
 - **线程模型**：`capture` 在流水线 worker 线程、`set_config` 在宿主 main 线程，
   两项配置都用 `std::atomic` 保存；一次抓屏只在开头读一次快照。`source` 的变更
@@ -199,6 +200,9 @@ key 规范、语言表格式与回退行为见 §3.3。
   "插件 id/key" 拼），可以手改 `config.json`，验证脚本也用它把开关固定成 `"1"`。
 
 ### 3.3 多语言（i18n）
+
+> 语言表同时包含插件自身的 `plugin.name` / `plugin.description`：设置页的插件分区标题按
+> `display(插件 id, "plugin.name")` 解析（查不到时回退成 key 本身）。
 
 用户可见文案走 `shot::I18n`（`include/shot_plugin_helpers/shot_i18n.h`）。这条链路
 零 ABI 改动：插件用 `lists.add` 把自己的语言表发布到 `i18n_source_list`，宿主汇总后
@@ -293,8 +297,8 @@ Wayland 不允许应用直接读屏幕：唯一通用路径是 `xdg-desktop-port
 4. **状态机**：`Idle → Starting →（CreateSession + SelectSources）→（Start，弹授权/
    选择框）→ Ready`，失败进 `Failed`。到达 `Ready` 后主循环继续运行，以接收
    `closed` 信号（用户撤销共享 / 输出被移除）。
-5. **参数**：`types = XDP_OUTPUT_MONITOR`（配置 `source = monitor`，共享整个输出）
-   或 `XDP_OUTPUT_WINDOW`（`source = window`，共享单个窗口），一次只选一个源
+5. **参数**：`types = XDP_OUTPUT_MONITOR`（配置 `source` = `source.monitor`，共享整个输出）
+   或 `XDP_OUTPUT_WINDOW`（`source` = `source.window`，共享单个窗口），一次只选一个源
    （`multiple=false`）；`cursor_mode = XDP_CURSOR_MODE_EMBEDDED`、
    `persist_mode = XDP_PERSIST_MODE_NONE`（不记住授权，重建会话会重新弹框）。
    `source` 改动后下一次 describe/capture 会先结束旧会话再重建（会再次弹框）。

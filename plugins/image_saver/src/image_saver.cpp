@@ -34,24 +34,33 @@ namespace {
 // 与其把宿主给的小缓冲写爆，不如按保存失败报出去。
 constexpr std::uint32_t kMaxPathBytes = 32768;
 
-// 本插件的用户可见文案：四个配置项的 label/tooltip。配置描述符里写的是这些 key
-// （见 saver_config.cpp），设置页按 display(owner, key) = i18n_list[(owner, key)]
-// ?? key 解析；key 拼写必须与 saver_config.cpp 完全一致，拼错会原样显示 key。
+// 本插件的用户可见文案：自己的显示名/描述（plugin.name / plugin.description，
+// 设置页配置分区标题用）、四个配置项的 label/tooltip，以及 ENUM 候选值
+// （候选值本身直接当 key，如 format.png；查不到时设置页显示原始值）。
+// 配置描述符里写的是这些 key（见 saver_config.cpp），设置页按
+// display(owner, key) = i18n_list[(owner, key)] ?? key 解析；key 拼写必须与
+// saver_config.cpp 完全一致，拼错会原样显示 key。
 // 每语言一张 JSON 对象，@meta 必填，两张表的 key 集必须一致；JSON 文本里不能有
 // 裸换行，而整行又可能超过 120 列，所以用相邻 raw 字面量拼接——拼出来仍是一行。
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
+    R"json("plugin.name":"图像保存",)json"
+    R"json("plugin.description":"把截到的图像保存为 PNG/JPEG；目录、格式、质量与文件名模板都可配置",)json"
     R"json("config.directory.label":"保存目录",)json"
     R"json("config.directory.tooltip":)json"
     R"json("留空使用系统图片目录（Windows 的「图片」库、Linux 的 XDG 图片目录）",)json"
     R"json("config.format.label":"保存格式",)json"
     R"json("config.format.tooltip":"PNG 无损；JPEG 有损、文件更小（质量见下一项）",)json"
+    R"json("format.png":"PNG（无损）",)json"
+    R"json("format.jpeg":"JPEG（有损）",)json"
     R"json("config.quality.label":"JPEG 质量",)json"
     R"json("config.quality.tooltip":"1 = 最小文件，100 = 最好画质；PNG 忽略此项",)json"
     R"json("config.filename.label":"文件名模板",)json"
     R"json("config.filename.tooltip":)json"
     R"json("不含扩展名；支持 %Y %m %d %H %M %S，如 shot_%Y%m%d_%H%M%S"})json",
     R"json({"@meta":"en-US",)json"
+    R"json("plugin.name":"Image Saver",)json"
+    R"json("plugin.description":"Saves the captured image as PNG or JPEG; folder, format, quality and file name template are configurable",)json"
     R"json("config.directory.label":"Save folder",)json"
     R"json("config.directory.tooltip":)json"
     R"json("Leave empty to use the system Pictures folder )json"
@@ -60,6 +69,8 @@ const char* const kLangTables[] = {
     R"json("config.format.tooltip":)json"
     R"json("PNG is lossless; JPEG is lossy and produces smaller files )json"
     R"json((quality is the next setting)",)json"
+    R"json("format.png":"PNG (lossless)",)json"
+    R"json("format.jpeg":"JPEG (lossy)",)json"
     R"json("config.quality.label":"JPEG quality",)json"
     R"json("config.quality.tooltip":)json"
     R"json("1 = smallest file, 100 = best quality; ignored for PNG",)json"

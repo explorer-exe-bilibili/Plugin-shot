@@ -32,12 +32,14 @@ namespace {
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
     R"json("plugin.name":"会话控制",)json"
+    R"json("plugin.description":"Linux/Wayland 的截屏触发入口：把会话总线上的 D-Bus 方法翻译成事件总线主题（替代全局热键）",)json"
     R"json("config.enabled.label":"启用 D-Bus 控制",)json"
     R"json("config.enabled.tooltip":)json"
     R"json("在会话总线注册 org.pluginshot.Control；Wayland 下用桌面「自定义快捷键」)json"
     R"json(执行 gdbus call 触发截图，关掉即注销名称"})json",
     R"json({"@meta":"en-US",)json"
     R"json("plugin.name":"Session Control",)json"
+    R"json("plugin.description":"Capture trigger for Linux/Wayland: turns D-Bus methods on the session bus into event-bus topics",)json"
     R"json("config.enabled.label":"Enable D-Bus control",)json"
     R"json("config.enabled.tooltip":)json"
     R"json("Exposes org.pluginshot.Control on the session bus so a desktop custom shortcut can )json"

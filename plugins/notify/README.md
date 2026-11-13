@@ -138,6 +138,9 @@ get/set，落盘与回灌归宿主（`document/SETTINGS.md` §2）。只把 `"0"
 
 ### 4.1 多语言（i18n）
 
+> 语言表同时包含插件自身的 `plugin.name` / `plugin.description`：设置页的插件分区标题按
+> `display(插件 id, "plugin.name")` 解析（查不到时回退成 key 本身）。
+
 用户可见文案全部走 `shot::I18n`（`include/shot_plugin_helpers/shot_i18n.h`），
 代码里只保留中文 fallback，不再把中文当作唯一显示文本：
 
