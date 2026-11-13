@@ -33,6 +33,13 @@ files/lang/ja-JP.json
 
 `@meta.tag` 与文件名不一致时 WARN，以 `@meta.tag` 为准。
 
+## 当前官方包
+
+本目录当前随安装包提供 `zh-TW.json`（繁體中文，台湾用语；`@meta.fallback` 为
+`zh-CN`），覆盖宿主 `core` 与全部内置插件的 zh-CN 文案。启用翻译插件
+（`translator.main/enabled=1`）后，语言下拉里的「繁體中文」即显示繁体文案；
+包内缺文本时按回退链落到 zh-CN。
+
 ## 文件格式
 
 ```json
