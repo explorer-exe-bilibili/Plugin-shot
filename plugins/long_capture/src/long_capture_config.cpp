@@ -33,9 +33,11 @@ const char kKeyMaxHeight[] = "max_height";
 const char kDefaultAlgorithm[] = "correlate";
 const char kDefaultMaxHeight[] = "30000";
 
-// 高度上限：下限保证至少能放进一屏，上限防止用户手改配置把画布撑到几百 MB。
+// 高度上限：下限保证至少能放进一屏；默认 30000（约 122MB/1020px 宽），用户可在设置页
+// 调到 120000（约 490MB）——不设无穷大是硬约束：画布是整张 RGBA，保存时还要再分配一份
+// PNG 编码缓冲，超过这个量级普通机器会明显卡顿甚至 OOM，而用户此时已经滚了很久。
 constexpr int kMinHeight = 1000;
-constexpr int kMaxHeight = 60000;
+constexpr int kMaxHeight = 120000;
 
 // 文案 key：命名规范 config.<配置 key>.label / .tooltip，写成常量是为了让 kConfig
 // 一眼能扫出"这里放的是 key 而不是中文"。
