@@ -15,7 +15,7 @@
         },
         {
             "name": "Debug (Linux, gdb)",
-            "type": "cppdbg",
+            "type": "lldb",
             "request": "launch",
             "program": "${workspaceFolder}/build/Linux/bin/Plugin-shot",
             "args": [],
