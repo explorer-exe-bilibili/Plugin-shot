@@ -9,8 +9,9 @@
 //    2. 编码：stb_image_write 的 *_to_func 接口写进自己的 ofstream —— stb 的
 //       按文件名接口在 Windows 上是 ANSI，中文目录会坏（与 image_saver 同一坑）。
 //
-//  本文件与实现只用标准库 + stb，不包含任何平台头（取系统图片目录是唯一的
-//  #if 分支，与 image_saver/src/output_path.cpp 的既有做法一致）。
+//  平台分支只有取系统图片目录一处（与 image_saver/src/output_path.cpp 同一套
+//  优先级）：Windows 走 SHGetKnownFolderPath(FOLDERID_Pictures) 以跟随「图片」库
+//  重定位，POSIX 按 XDG 规则读 $XDG_PICTURES_DIR / user-dirs.dirs。
 // ============================================================================
 
 #include <filesystem>
@@ -47,8 +48,10 @@ public:
     static SaveOutcome save(const StitchCanvas& canvas, const std::string& directory);
 
     /**
-     * @brief 系统图片目录（Windows: %USERPROFILE%\Pictures；其它平台: $HOME/Pictures）。
-     * @return UTF-8 绝对路径；环境变量缺失时退回进程当前目录。
+     * @brief 系统图片目录（Windows 的「图片」库 / Linux 的 XDG 图片目录）。
+     * @return Windows = SHGetKnownFolderPath(FOLDERID_Pictures)，失败回退
+     *         %USERPROFILE%\Pictures；POSIX = $XDG_PICTURES_DIR 或 user-dirs.dirs
+     *         里的 XDG_PICTURES_DIR，回退 $HOME/Pictures；都取不到时退回进程当前目录。
      */
     static std::string defaultDirectory();
 

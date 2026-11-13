@@ -64,7 +64,8 @@ find_package(Stb REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 # 平台库：user32（会话热键/鼠标/HUD 窗口）、gdi32（自带采集与 HUD 绘制）、
-# shell32（托盘气泡的 Shell_NotifyIconW）。
+# shell32（托盘气泡的 Shell_NotifyIconW、取系统「图片」库的 SHGetKnownFolderPath）、
+# ole32（释放 KnownFolder 返回值的 CoTaskMemFree）。
 shot_add_plugin(${SHOT_PLUGIN_NAME}
     METADATA     metadata.json
     SOURCES      src/plugin_entry.cpp
@@ -91,6 +92,7 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  user32
                  gdi32
                  shell32
+                 ole32
 )
 
 # shot_add_plugin() 只认识 INCLUDE_DIRS / LINK_LIBRARIES 两种参数，所以 stb 的

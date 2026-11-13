@@ -54,6 +54,12 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
 # 头目录在目标上单独加（header-only，没有链接项）。
 target_include_directories(${SHOT_PLUGIN_NAME} PRIVATE ${Stb_INCLUDE_DIR})
 
+# Windows 取系统「图片」库要走 KnownFolder API：shell32（SHGetKnownFolderPath）
+# 与 ole32（释放返回值的 CoTaskMemFree）。POSIX 分支只用标准库，不链额外库。
+if(WIN32)
+    target_link_libraries(${SHOT_PLUGIN_NAME} PRIVATE shell32 ole32)
+endif()
+
 # 新插件要求 /W4 干净；不加 /WX，避免不同 MSVC 小版本的第三方头差异卡死构建。
 if(MSVC)
     target_compile_options(${SHOT_PLUGIN_NAME} PRIVATE /W4)

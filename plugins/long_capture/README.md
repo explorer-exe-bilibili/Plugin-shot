@@ -112,7 +112,8 @@
 ## 6. 保存位置与事件
 
 - 目录：读 `config_list` 里 `owner = image_saver.main`、`id = directory` 的当前值；
-  读不到用系统图片目录（`%USERPROFILE%\\Pictures`）。
+  读不到用系统图片目录（Windows 的「图片」库、Linux 的 XDG 图片目录；见
+  `image_saver/src/output_path.cpp` 的解析优先级）。
 - 文件名：`shot_long_YYYYMMDD_HHMMSS.png`；同名追加 `_1`/`_2`…，绝不覆盖。
 - 保存成功后发布**唯一一条**：
 
@@ -177,7 +178,7 @@ bash tools/verify/build.sh --target long_capture
 | `src/stitch_correlate.cpp` | `correlate` 算法：64 列块均值 + 2D NCC（粗搜 + 精搜） |
 | `src/stitch_phase.cpp` | `phase` 算法：行亮度 1D 相位相关（radix-2 FFT 在匿名命名空间） |
 | `src/scroll_stitcher.cpp` | 画布坐标、固定条锁定、去重、缺口判定、备用基准回滚恢复（算法可插拔） |
-| `src/long_image_saver.cpp` | stb_image_write 编码 PNG（UTF-8 路径、唯一文件名） |
+| `src/long_image_saver.cpp` | stb_image_write 编码 PNG（系统图片目录回退、UTF-8 路径、唯一文件名） |
 | `src/long_capture_config.cpp` | `algorithm` / `max_height` 配置项 |
 | `src/border_window_windows.cpp` | 选区外圈的主题色边框（置顶、点击穿透、`SetWindowRgn` 只留 2px 描边） |
 | `src/hud_windows.cpp` | HUD 窗口线程、GDI 绘制、按钮/拖动/滚轮 |

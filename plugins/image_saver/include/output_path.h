@@ -20,9 +20,11 @@ namespace image_saver {
  *     文件写到目录之外（配置文件是可以被手改的，不能当可信输入）；
  *   · 同名文件已存在时依次尝试 name-1、name-2…，绝不覆盖用户已有文件。
  *
- * @note 目录为空（配置项默认值）时使用系统图片目录：Windows 取
- *       %USERPROFILE%\Pictures，POSIX 取 $HOME/Pictures；都取不到就退回当前
- *       目录，保证默认配置下第一次调用就能落盘。
+ * @note 目录为空（配置项默认值）时使用系统图片目录（Windows 的「图片」库、
+ *       Linux 的 XDG 图片目录）：Windows 取 SHGetKnownFolderPath(FOLDERID_Pictures)
+ *       以便跟随用户重定位，失败才回退 %USERPROFILE%\Pictures；POSIX 依次读
+ *       $XDG_PICTURES_DIR、user-dirs.dirs，再回退 $HOME/Pictures。都取不到就
+ *       退回当前目录，保证默认配置下第一次调用就能落盘。
  */
 class OutputPath {
 public:
@@ -66,9 +68,11 @@ public:
     static std::string toUtf8(const std::filesystem::path& path);
 
     /**
-     * @brief 系统图片目录的 UTF-8 路径。
-     * @return Windows = %USERPROFILE%\Pictures，POSIX = $HOME/Pictures；
-     *         环境变量缺失时退回当前工作目录，再失败返回 "."。
+     * @brief 系统图片目录的 UTF-8 路径（Windows 的「图片」库 / Linux 的 XDG 图片目录）。
+     * @return Windows = SHGetKnownFolderPath(FOLDERID_Pictures)，失败回退
+     *         %USERPROFILE%\Pictures；POSIX = $XDG_PICTURES_DIR 或 user-dirs.dirs
+     *         里的 XDG_PICTURES_DIR，回退 $HOME/Pictures；都取不到时退回当前工作
+     *         目录，再失败返回 "."。
      */
     static std::string defaultPicturesDirectory();
 

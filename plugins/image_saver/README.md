@@ -2,7 +2,8 @@
 
 把宿主流水线处理完的 `ShotImage` 落盘成 PNG/JPEG：格式、质量、输出目录、文件名
 模板都是本插件自己的配置项，宿主不硬编码任何保存策略。编码用 vcpkg 的
-`stb`（header-only），实现只依赖标准库 + stb，不引入平台 API。
+`stb`（header-only）；除"取系统图片目录"要调 Windows 的 KnownFolder API（POSIX
+只解析 XDG 配置文件、不引入第三方依赖）之外，其余只用标准库。
 
 插件 id 是 `image_saver.main`，同时实现两个能力：`shot.image_saver`（保存一张图）
 与 `shot.configurable`（声明并读写四个配置项）。
@@ -17,13 +18,13 @@ plugins/image_saver/
 │   ├── plugin_entry.h          #   内部头：PluginEntry / PluginInstance / state_of
 │   ├── image_saver.h           #   ImageSaver：保存能力 + 配置能力 + 语言表生命周期的主体
 │   ├── image_encoder.h         #   ImageEncoder：BGRA→RGBA/RGB + stb 编码
-│   ├── output_path.h           #   OutputPath：模板展开、非法字符清洗、唯一文件名
+│   ├── output_path.h           #   OutputPath：系统图片目录、模板展开、非法字符清洗、唯一文件名
 │   └── saver_config.h          #   SaverConfig：四个配置项 + 线程安全读写
 └── src/
     ├── plugin_entry.cpp        # 唯一导出符号 shot_module_entry + kEntries 索引目录
     ├── image_saver.cpp         # ImageSaver 实现 + 语言表 + ABI 回调/函数表 + 插件身份证
     ├── image_encoder.cpp       # stb_image_write 实现展开（全仓只在这里展开一次）
-    ├── output_path.cpp         # 路径解析与文件名规则
+    ├── output_path.cpp         # 路径解析、系统图片目录与文件名规则
     └── saver_config.cpp        # 配置描述符（label/tooltip 写语言表 key）+ get/set
 ```
 
@@ -86,7 +87,7 @@ cmake --build build
 
 | key | kind | 默认值 | 取值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `directory` | PATH（`options="directory"`） | 空 | 任意目录 | 空 = 系统图片目录；相对路径相对宿主工作目录；设置页「浏览…」弹的是**选目录**对话框 |
+| `directory` | PATH（`options="directory"`） | 空 | 任意目录 | 空 = 系统图片目录（Windows 的「图片」库、Linux 的 XDG 图片目录）；相对路径相对宿主工作目录；设置页「浏览…」弹的是**选目录**对话框 |
 | `format` | ENUM | `png` | `png` / `jpeg` | PNG 无损（保留 alpha）；JPEG 有损、无 alpha |
 | `quality` | INT | `90` | `1`–`100`（step 1） | 只对 JPEG 生效；越界值夹到区间内 |
 | `filename` | STRING | `shot_%Y%m%d_%H%M%S` | 任意模板 | 不含扩展名；支持 `%Y %m %d %H %M %S` 与 `%%` |
@@ -136,8 +137,13 @@ display(owner, key) = i18n_list[(owner, key)] ?? key
 2. 展开结果里的路径分隔符与 Windows 非法字符（`< > : " / \ | ? *`、控制字符）
    替换成 `_`，并去掉尾随空格/点、避让 `CON`/`NUL`/`COM1` 这类保留设备名。
    配置不是可信输入，不能让它把文件写到目录之外。
-3. 目录为空时用系统图片目录：Windows 取 `%USERPROFILE%\Pictures`，POSIX 取
-   `$HOME/Pictures`；环境变量缺失时退回宿主当前工作目录。
+3. 目录为空时用系统图片目录（Windows 的「图片」库、Linux 的 XDG 图片目录），
+   解析优先级：
+   - **Windows**：`SHGetKnownFolderPath(FOLDERID_Pictures)`（跟随用户在「图片 →
+     属性 → 位置」里的重定位）→ `%USERPROFILE%\Pictures` → 当前工作目录；
+   - **POSIX**：`$XDG_PICTURES_DIR` → `$XDG_CONFIG_HOME/user-dirs.dirs`（缺省
+     `$HOME/.config/user-dirs.dirs`）里的 `XDG_PICTURES_DIR`（展开 `$HOME`）→
+     `$HOME/Pictures` → 当前工作目录。只接受绝对路径，相对路径视为不可用。
 4. 目标文件已存在时依次尝试 `name-1`、`name-2`…（最多 1000 次），**绝不覆盖**
    用户已有文件；用尽返回 `3`。
 5. 最终路径由 `std::filesystem::absolute` 绝对化后写入 `path`；Windows 上路径经
@@ -163,8 +169,13 @@ display(owner, key) = i18n_list[(owner, key)] ?? key
 
 ## 平台说明
 
-- Windows 上的路径/编码行为已随构建验证；POSIX 分支（`$HOME/Pictures`、
-  `localtime_r`）按标准库/CRT 语义编写，本机未实际运行验证。
+- Windows：系统图片目录走 `SHGetKnownFolderPath(FOLDERID_Pictures)`（链接
+  `shell32` / `ole32`），默认配置下的落盘路径已在真机验证；用户把「图片」库
+  重定位到别的盘后会自动跟随（KnownFolder API 的语义），但**本机没有改过图片库
+  位置，未实测重定位场景**。
+- POSIX：XDG 解析（`$XDG_PICTURES_DIR` / `user-dirs.dirs` / `$HOME/Pictures` 回退）
+  在 WSL 里用独立探针验证（见 `build/verify/`），未在真实桌面会话里跑过插件；
+  `localtime_r` 分支按标准库/CRT 语义编写，本机未实际运行验证。
 - 非 BGRA8 的像素格式（例如纯 RGB）不属于 v1 契约，`save` 返回 `1`。
 
 ## 刻意不做的事
@@ -174,7 +185,8 @@ display(owner, key) = i18n_list[(owner, key)] ?? key
 | 把配置项写进 `metadata.json` | 真实 schema 在 `shot.configurable` 里，写两遍必然漂移（`document/METADATA.md` §3） |
 | 自己写配置文件 | 存盘键是 `<plugin_id>/<key>`，落盘与启动回灌归宿主（`document/SETTINGS.md`） |
 | 覆盖同名文件 | 截图场景下"再来一张"很常见，静默覆盖用户已有文件是不可接受的副作用 |
-| 调用平台 API 取"图片"已知文件夹 | v1 要求纯标准库 + stb；`%USERPROFILE%\Pictures` 是跨平台可移植的折中 |
+| 为取 XDG 图片目录引入 GLib 等第三方依赖 | 只要读一个 `user-dirs.dirs` 键，自己解析十几行就够；新增依赖会改变插件的部署面 |
+| 自己猜图片目录（硬拼 `%USERPROFILE%\Pictures` / `$HOME/Pictures`） | Windows 的「图片」库可被用户重定位、Linux 的目录名会本地化（`~/图片`），猜出来的路径是错的 |
 | 区域采集 / 光标 / 剪贴板 / 图床上传 | 属于采集或其他保存策略，不属于这个插件的 v1 范围 |
 | 在 `save` 里起线程/异步写盘 | 契约明确 `save` 同步落盘，异步会让宿主拿到路径时文件还不存在 |
 
