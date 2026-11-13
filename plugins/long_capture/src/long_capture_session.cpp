@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "border_window.h"
 #include "capture_windows.h"
 #include "global_keys.h"
 #include "hud.h"
@@ -170,6 +171,16 @@ void LongCapture::runSession() {
                  "降级为托盘气泡提示");
         showTrayHint("long.tray.hint_title", "长截图已开始", "long.tray.hint_text",
                      "请滚动窗口内容；Enter 保存 / Esc 取消");
+    }
+
+    // 选区外圈的主题色边框：让用户看清"正在截哪一块"。颜色来自宿主设置
+    // core/theme_color（与 region_selector 同一格式、同一默认色），缺失或非法时回退默认色。
+    const std::string themeColorText =
+        shot::Config(m_host).getString("core/theme_color", kDefaultThemeColorHex);
+    BorderWindow border(m_host);
+    if (!border.start(content, parseThemeColorRgb(themeColorText, kDefaultThemeColorRgb))) {
+        // 边框只是视觉提示，失败不影响采集与会话。
+        log.warn("[long_capture] 选区边框不可用，继续会话（HUD/按键不受影响）");
     }
 
     if (m_keys) {
@@ -351,6 +362,11 @@ void LongCapture::runSession() {
         m_keys->endSession();
     }
     keysGuard.keys = nullptr;
+
+    // 抓帧已结束，边框不再代表"正在截取"：在展示保存/失败结果前先撤掉，避免结果
+    // 提示期间屏幕上还留着"正在截"的错觉。析构函数仍会兜底 stop()，提前返回/
+    // 异常路径都不会漏。
+    border.stop();
 
     bool saveRequested = false;
     bool cancelRequested = false;

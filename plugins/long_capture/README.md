@@ -26,6 +26,9 @@
 2. 把 region 加回虚拟桌面原点，得到绝对屏幕坐标的目标内容区；在内容区外摆 HUD
    （右 → 左 → 下 → 上，与内容区留 12px、完全落在工作区内）；四周都放不下就不建
    窗口，降级为托盘气泡提示。
+   同时在目标内容区**外侧**画一圈 2px 的主题色边框（宿主配置 `core/theme_color`，
+   缺失/非法时回退 `#4C9AFF`，与 `region_selector` 一致），让用户看清"正在截哪一块"；
+   边框不占内容区、不参与抓取，抓帧结束时立即销毁。
 3. 注册会话按键 Enter / Esc（失败退回 `WH_KEYBOARD_LL`），开始循环：
    - `ScreenGrabber` 用 `GetDC(NULL)` + `BitBlt` 直接抓目标区域，BGRA → RGBA 进内存；
    - **不落盘、不发 `capture.request`、不发 `capture.done`**；
@@ -165,6 +168,7 @@ bash tools/verify/build.sh --target long_capture
 | `src/scroll_stitcher.cpp` | 画布坐标、固定条锁定、去重、缺口判定（算法可插拔） |
 | `src/long_image_saver.cpp` | stb_image_write 编码 PNG（UTF-8 路径、唯一文件名） |
 | `src/long_capture_config.cpp` | `algorithm` / `max_height` 配置项 |
+| `src/border_window_windows.cpp` | 选区外圈的主题色边框（置顶、点击穿透、`SetWindowRgn` 只留 2px 描边） |
 | `src/hud_windows.cpp` | HUD 窗口线程、GDI 绘制、按钮/拖动/滚轮 |
 | `src/global_keys_windows.cpp` | 会话内 RegisterHotKey、低级键盘钩子 |
 | `src/tray_hint_windows.cpp` | 托盘气泡提示 |

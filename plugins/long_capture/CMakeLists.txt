@@ -9,7 +9,8 @@
 #  核心（画布 / 行指纹拼接 / PNG 编码）只用标准库 + stb，放在
 #  stitch_canvas.cpp / scroll_stitcher.cpp / long_image_saver.cpp，不包含任何平台头；
 #  自带采集层（capture_windows.cpp）、HUD、会话按键、托盘气泡是 Win32 实现
-#  （hud_windows.cpp / global_keys_windows.cpp / tray_hint_windows.cpp），
+#  （border_window_windows.cpp / hud_windows.cpp / global_keys_windows.cpp /
+#  tray_hint_windows.cpp），
 #  非 Windows 平台直接跳过整个插件，不产出伪实现。
 #
 #  构建方式一（宿主仓库内）：
@@ -80,6 +81,7 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
                  src/scroll_stitcher.cpp
                  src/long_image_saver.cpp
                  src/capture_windows.cpp
+                 src/border_window_windows.cpp
                  src/hud_windows.cpp
                  src/global_keys_windows.cpp
                  src/tray_hint_windows.cpp
