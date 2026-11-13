@@ -485,10 +485,11 @@ void SettingsWindow::Impl::showWindow() {
         // content scale 重建 ImGui 样式/字号，再显示，第一帧就是对的缩放。
         refreshDpiScale();
         glfwShowWindow(window);
-        glfwFocusWindow(window);
         visible = true;
         shot::Logger(host).info("settings_ui：设置窗口已显示");
     }
+    glfwRequestWindowAttention(window);  // 任务栏闪烁提示
+    glfwFocusWindow(window);
     // 每次打开都重读一遍：窗口隐藏期间配置可能被别的路径改过（config.applied / 热加载）。
     panel.refresh(host);
 }
