@@ -6,7 +6,7 @@
       "id": "tray.main",
       "name": "Tray",
       "version": "0.1.0",
-      "description": "Windows 托盘图标：图标默认用宿主应用图标（可用 icon 配置换成 .ico）；右键菜单由 tray_command_list 数据驱动，点击发布条目声明的事件；不弹气泡（提示归消息提示插件）",
+      "description": "托盘图标：Windows 用 Win32 托盘（宿主图标或 icon 配置的 .ico），Linux 用 StatusNotifierItem（主题图标 camera-photo-symbolic）；菜单都由 tray_command_list 数据驱动，点击发布条目声明的事件；不弹气泡（提示归消息提示插件）",
       "interfaces": ["shot.ui_provider", "shot.configurable"],
       "requires": ["core>=0.1.0"],
       "provides": []
