@@ -32,9 +32,12 @@
 #  或 region.selected（purpose 选择）。
 #  依赖系统包 libx11-dev（pkg-config 模块 x11）。**不需要 xrandr**：显示器布局交给
 #  GLFW，X11 的 native 头用 GLFW_NATIVE_INCLUDE_NONE 关掉了 Xrandr 头依赖。
+#  合成器（Mutter/KWin）下 root 窗口的 XGetImage 常常只剩桌面底色：可选依赖
+#  libxcomposite（pkg-config 模块 xcomposite）用来抓 Composite Overlay Window；
+#  **找不到只 WARN** 并定义 SHOT_REGION_NO_XCOMPOSITE 关闭该回退，不 FATAL。
 #  同一份 .so 同时编 Wayland 与 X11 两套实现，启动时按 WAYLAND_DISPLAY /
-#  XDG_SESSION_TYPE 运行期选择（见 README「Linux（X11）」）。缺任一依赖都会在
-#  configure 阶段 FATAL_ERROR，并给出 Ubuntu 包名。
+#  XDG_SESSION_TYPE 运行期选择（见 README「Linux（X11）」）。硬依赖（x11 / xrandr）
+#  缺失会在 configure 阶段 FATAL_ERROR，并给出 Ubuntu 包名。
 #
 #  窗口/上下文/事件循环：glfw3（与 settings_ui 同一套依赖）。
 #  渲染：vcpkg 的 imgui 静态库 —— glfw-binding + opengl3-binding 已经把
@@ -143,6 +146,20 @@ else()
             "region_selector 的 X11 分支需要 Xrandr 头（glfw3native.h 声明 RROutput），"
             "但系统里找不到。Ubuntu/Debian: sudo apt-get install -y libxrandr-dev")
     endif()
+    # XComposite（**可选**）：合成器（Mutter/KWin）把窗口内容画进 offscreen，root 窗口的
+    # XGetImage 往往只剩桌面底色（真机现象：遮罩是灰色、看不到桌面）。此时改抓
+    # Composite Overlay Window 才是最终合成画面。不是所有 X11 环境都装了
+    # libxcomposite-dev，所以缺了**只 WARN 并关掉该回退**（编译期宏），不能 FATAL。
+    pkg_check_modules(SHOT_XCOMPOSITE QUIET IMPORTED_TARGET xcomposite)
+    if(SHOT_XCOMPOSITE_FOUND)
+        list(APPEND _region_selector_libraries PkgConfig::SHOT_XCOMPOSITE)
+    else()
+        message(WARNING
+            "region_selector：找不到 xcomposite（pkg-config 模块 xcomposite），"
+            "XComposite 覆盖窗口回退已关闭（SHOT_REGION_NO_XCOMPOSITE）；"
+            "合成器（GNOME/KDE）下 XGetImage 可能只得到纯色遮罩。"
+            "Ubuntu/Debian: sudo apt-get install -y libxcomposite-dev")
+    endif()
     find_package(Stb REQUIRED)
     find_package(OpenGL REQUIRED)
     list(APPEND _region_selector_sources
@@ -173,3 +190,10 @@ shot_add_plugin(${SHOT_PLUGIN_NAME}
     LINK_LIBRARIES
                  ${_region_selector_libraries}
 )
+
+# 找不到 xcomposite 时用编译期宏关掉覆盖窗口回退（region_background_x11.cpp 里
+# #if !defined(SHOT_REGION_NO_XCOMPOSITE) 守卫）：插件照常构建，只是合成器下可能
+# 只有纯色遮罩。宏只在 Linux 分支有意义，Windows 不需要。
+if(UNIX AND NOT APPLE AND NOT SHOT_XCOMPOSITE_FOUND)
+    target_compile_definitions(${SHOT_PLUGIN_NAME} PRIVATE SHOT_REGION_NO_XCOMPOSITE)
+endif()

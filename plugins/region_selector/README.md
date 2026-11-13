@@ -111,7 +111,7 @@ cmake --build build
 ```
 
 依赖与 `settings_ui` 同一套，vcpkg 清单里已启用对应特性；Linux 额外依赖系统包
-`libportal-dev` 与 `libx11-dev`（见 §8 / §9）：
+`libportal-dev`、`libx11-dev`（必需）与 `libxcomposite-dev`（可选，见 §9）：
 
 | 依赖 | 平台 | 用途 |
 | --- | --- | --- |
@@ -121,6 +121,7 @@ cmake --build build
 | `opengl32` / `user32` / `dwmapi` | Windows | ImGui OpenGL3 后端 / `GetCursorPos`、`EnumWindows` / 窗口扩展帧边界与 cloaked 检测 |
 | `libportal-1.0`（`libportal-dev`） | Linux（Wayland 分支） | xdg-desktop-portal 的 Screenshot 门户（Wayland 唯一的通用整屏截图途径） |
 | `x11`（`libx11-dev`） | Linux（X11 分支） | `XGetImage` 快照 / `XQueryTree` 窗口枚举 / `XTranslateCoordinates` / `XQueryPointer`；**不需要 `libxrandr-dev`**（见 §9.1） |
+| `xcomposite`（`libxcomposite-dev`，**可选**） | Linux（X11 分支） | 合成器下 root 快照疑似纯色时，改抓 Composite Overlay Window；缺库时 configure 只 WARN 并关闭该回退（见 §9.3） |
 | `stb`（vcpkg，header-only） | Linux/Wayland | 截图像素解码、裁剪与 PNG 编码 |
 | `OpenGL::GL` | Linux | ImGui OpenGL3 后端的 GL 1.x 入口 |
 
@@ -378,6 +379,7 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | `DwmGetWindowAttribute` 失败（合成关闭等） | 扩展帧边界退回 `GetWindowRect`；cloaked 检测失败按"未 cloaked"处理 |
 | `EnumWindows` 枚举不到任何窗口 | 悬停框为空，拖动框选仍然可用（拖动不依赖窗口枚举） |
 | X11 `XGetImage` 快照失败 / 纹理上传失败 | 只记 WARN，覆盖层退化为**纯色底 + 遮罩**；拖框/吸附/发布区域照常工作 |
+| X11 合成器把画面画在 offscreen（root 快照疑似纯色） | 自动改抓 XComposite 覆盖窗口；无该扩展 / 缺库时保持 root 图并 WARN，框选照常工作 |
 | X11 `XQueryTree` 失败或拿不到 GLFW 的 X11 Display | 候选窗口为空，悬停吸附关闭；拖动框选仍然可用 |
 | X11 窗口没有 `_NET_WM_WINDOW_TYPE`（非 EWMH 应用） | 照常作为候选（宁可多列，不漏真实窗口） |
 | X11 WM 对隐藏窗口的位置/全屏请求不生效 | 显示后按**实际窗口位置/尺寸**换算与裁剪，并在日志里打印；选区仍准确，观感需真机确认（§9.5） |
@@ -576,6 +578,11 @@ cmake --build build/Linux --target region_selector
 - **不需要 `libxrandr-dev`**：显示器布局交给 GLFW（内部用 RandR），本插件只包含
   `<X11/Xlib.h>`；`glfw3native.h` 用 `GLFW_NATIVE_INCLUDE_NONE` 关掉了它默认带出的
   `<X11/extensions/Xrandr.h>`。运行期 GLFW / X 服务器仍然需要 RandR 扩展（正常桌面都有）。
+- `libxcomposite-dev`（**可选**，pkg-config 模块 `xcomposite`）：GNOME/KDE 合成器下 root
+  窗口的 `XGetImage` 往往只剩桌面底色，本插件会改抓 Composite Overlay Window
+  （`XCompositeQueryExtension` + `XCompositeGetOverlayWindow`）。configure 找不到它时
+  **只 `message(WARNING)` 并定义 `SHOT_REGION_NO_XCOMPOSITE`**（编译期关闭该回退），
+  插件照常构建——此时合成器下只有纯色遮罩（见 §9.3），不是构建失败。
 - `libportal-dev` 仍然要装：Wayland 实现在同一个 `.so` 里，configure 阶段就要求它
   （见 §8.1）。**即使只用 X11 会话也不能省**——否则 Wayland 用户装同一份包时缺依赖。
 - GLFW 必须带 **X11 后端**（vcpkg 的 glfw3 端口在 Linux 默认同时编 X11/Wayland）。
@@ -621,6 +628,14 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 - 用 `glfwGetX11Display()` 拿 GLFW 的 X11 `Display`，对默认 screen 的 root 窗口做
   `XGetImage(display, root, 0, 0, DisplayWidth, DisplayHeight, AllPlanes, ZPixmap)`，
   抓**整个 X screen**（不是只抓当前显示器）；
+- **合成器（Mutter / KWin 等）下 root 不是最终画面**：窗口内容被重定向到 offscreen
+  pixmap，root 里往往只剩桌面底色，直接 `XGetImage` 会得到纯色（真机现象：遮罩是
+  灰色的、看不到桌面内容）。所以抓完 root 后先做 32×32 均匀采样（每个通道极差 < 2
+  判为"疑似纯色"）；纯色则用 `XCompositeQueryExtension` +
+  `XCompositeGetOverlayWindow` 抓 **Composite Overlay Window**（抓完立即
+  `XCompositeReleaseOverlayWindow`），并复用同一份 `imageToRgba()` 转换。运行期没有
+  XComposite 扩展、或构建期缺 `libxcomposite-dev`（`SHOT_REGION_NO_XCOMPOSITE`）时
+  保持 root 画面并 WARN；最终仍疑似纯色时再 WARN 一行（带分辨率与首像素，见 §9.5）；
 - 32bpp 且字节序与客户端一致时按行用 32 位字直接解包，通道按 `red_mask/green_mask/
   blue_mask` 归一化；16/24bpp 或大端等少见格式退回 `XGetPixel`（慢但正确）；
 - 上传成 GL 纹理后立即释放临时像素（不常驻）。绘制时按覆盖层窗口在 root 里的**实际
@@ -679,6 +694,10 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 - 分数缩放 / 大字体：`content scale` 只影响字号，X 像素即物理像素；150%/200% 下的
   观感与 `glfwGetMonitorContentScale` 的返回值需实测；
 - 与 `screen_capture` 的 X11 分支联调（见 §9.4）；
+- **合成器下的背景是不是桌面内容**（而不是纯色）：日志出现
+  `XGetImage 得到疑似空白画面（纯色）` 表示命中了合成器路径，紧跟
+  `已改从 XComposite 覆盖窗口截取覆盖层背景` 表示回退成功；若再出现
+  `X11 快照仍疑似纯色（<宽>x<高>，首像素 #RRGGBB）`，请把这几行一起回传；
 - XWayland 应用在**X11 会话**里是普通 X11 窗口，可正常命中；在 **Wayland 会话**里
   XWayland 窗口不会被枚举（走 Wayland 分支），这是平台边界，不是 bug。
 
@@ -712,6 +731,7 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 - [ ] X11：`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland` 判定优先于 `DISPLAY`（XWayland 不会被误判成 X11 会话）？
 - [ ] X11：覆盖层用的是**不透明** GLFW 窗口（没有 `GLFW_TRANSPARENT_FRAMEBUFFER`），背景是 `XGetImage` 快照？
 - [ ] X11：快照失败只 WARN，覆盖层退化为纯色底 + 遮罩，框选仍可用？
+- [ ] X11：root 快照疑似纯色时会尝试 XComposite 覆盖窗口（`XCompositeGetOverlayWindow` → `XCompositeReleaseOverlayWindow`），缺库时只 WARN 不 FATAL？
 - [ ] X11：窗口枚举用 `XQueryTree(root)` 且**反向**遍历（底 → 顶），矩形用 `XTranslateCoordinates` 到 root？
 - [ ] X11：排除了覆盖层自己（含 reparenting WM 的 frame）与 `_NET_WM_WINDOW_TYPE_TOOLTIP/DOCK/...` 类型？
 - [ ] X11：`region` 是 root 坐标（原点 (0,0)），没有减任何"虚拟桌面原点"、没有乘 content scale？
