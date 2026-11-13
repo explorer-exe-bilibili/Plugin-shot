@@ -102,6 +102,49 @@ std::uint32_t jsonKind(const nlohmann::json& object) {
     return 0;
 }
 
+/**
+ * @brief 把 plugin_list 快照里的描述合并进注册表行（按插件 id 对齐）。
+ *
+ * 为什么只合并描述：状态/启停的权威仍是 shot.host.plugin_registry（含拒绝原因
+ * 文本），plugin_list 只补 metadata 里才有、注册表结构体没有的字段。列表缺失、
+ * 老宿主没有这个 list id、JSON 坏掉时都安静降级——表格继续用注册表快照渲染
+ * （id/name/version/state），只是少一行描述，不影响启停。
+ *
+ * @param[in]     host 宿主服务表（只用于坏 JSON 的 WARN 日志，可为 nullptr）。
+ * @param[in]     text plugin_list 的 JSON 数组文本。
+ * @param[in,out] rows 已经由注册表建好的行；命中 id 时写入 description。
+ */
+void mergePluginDescriptions(const ShotHostServices* host, std::string_view text,
+                             std::vector<PluginRow>& rows) {
+    if (text.empty() || rows.empty()) {
+        return;
+    }
+    const nlohmann::json document =
+        nlohmann::json::parse(text.begin(), text.end(), nullptr, /*allow_exceptions=*/false);
+    if (document.is_discarded() || !document.is_array()) {
+        shot::Logger(host).warn(
+            "settings_ui：plugin_list 不是合法 JSON 数组，插件描述暂不可用"
+            "（表格按注册表快照降级）");
+        return;
+    }
+    for (const nlohmann::json& entry : document) {
+        if (!entry.is_object()) {
+            continue;
+        }
+        const std::string id = jsonText(entry, "id");
+        if (id.empty()) {
+            continue;
+        }
+        const std::string description = jsonText(entry, "description");
+        for (PluginRow& row : rows) {
+            if (row.status.id == id) {
+                row.description = description;
+                break;
+            }
+        }
+    }
+}
+
 }  // namespace
 
 bool SettingsPanel::Impl::parseBoolValue(std::string_view text) {
@@ -516,6 +559,16 @@ void SettingsPanel::Impl::refreshPlugins() {
         row.enabledNow = (registry.isEnabled(row.status.id.c_str()) == 1);
         row.enabledPending = row.enabledNow;
         plugins.push_back(std::move(row));
+    }
+
+    // 描述来自宿主生成的 plugin_list（document/LISTS.md §5.6）：注册表结构体
+    // 没有 description 字段，而"数据形状不进 ABI"不允许为它加字段。读不到列表
+    // （老宿主 / 初次启动）时行里的 description 保持空串，表格只少一行描述，
+    // 启停与状态显示不受影响。名字/描述的译文在渲染时按插件 id 解析，模型里
+    // 存的是 metadata 原文——语言切换不需要重读列表。
+    shot::PluginLists lists(host);
+    if (lists.available()) {
+        mergePluginDescriptions(host, lists.json("plugin_list"), plugins);
     }
 }
 

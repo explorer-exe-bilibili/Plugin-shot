@@ -1,12 +1,12 @@
 // settings_panel —— SettingsPanel 的公开接口入口：构造/析构、公共接口转发，
-// 以及 render() 的顶层窗口框架（操作条 + 滚动内容区）。
+// 以及 render() 的顶层窗口框架（操作条 + 「常规 / 插件」页签）。
 //
 // 具体实现按职责拆在：
 //   settings_model.cpp        —— config_list JSON 解析、模型刷新与纯值工具
 //   settings_form.cpp         —— 操作条 + 配置节 + 控件渲染
 //   settings_hotkey.cpp       —— 热键组合录入控件（模态弹窗 + suspend/resume）
 //   settings_color.cpp        —— 颜色控件（预设色块 + 自定义取色弹窗）
-//   settings_plugin_table.cpp —— 插件管理表渲染
+//   settings_plugin_table.cpp —— 插件管理页签（表格 + 描述）
 //   settings_apply.cpp        —— 应用状态机 / 事件 / 超时
 // 这个文件只留"进门"的那一层，避免又长回一个上帝类（STYLE.md §6.8）。
 
@@ -37,11 +37,29 @@ void SettingsPanel::Impl::render() {
         renderColorCustomPopup();
         renderActionBar();
         ImGui::Separator();
-        // 内容区单独一个子窗口：操作条固定在上面，只有配置节跟着滚。
-        if (ImGui::BeginChild("##settings_scroll", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None)) {
-            renderConfigSections();
+        // 顶层导航：常规（配置表单）/ 插件（已安装插件清单 + 描述）。
+        // 操作条留在页签外面：「应用」同时提交配置与插件启停，切换页签不应让
+        // 未应用的修改状态消失。每个页签各包一个滚动子窗口，表格/配置节再长
+        // 也只滚动自己的内容区。
+        if (ImGui::BeginTabBar("##settings_tabs", ImGuiTabBarFlags_None)) {
+            if (ImGui::BeginTabItem(tr("settings_ui.tab_general", "常规"))) {
+                if (ImGui::BeginChild("##settings_general_scroll", ImVec2(0.0f, 0.0f),
+                                      ImGuiChildFlags_None)) {
+                    renderConfigSections();
+                }
+                ImGui::EndChild();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(tr("settings_ui.tab_plugins", "插件"))) {
+                if (ImGui::BeginChild("##settings_plugins_scroll", ImVec2(0.0f, 0.0f),
+                                      ImGuiChildFlags_None)) {
+                    renderPluginPage();
+                }
+                ImGui::EndChild();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
-        ImGui::EndChild();
     }
     ImGui::End();
     ImGui::PopStyleVar(2);

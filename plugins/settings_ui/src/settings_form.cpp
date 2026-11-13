@@ -103,9 +103,9 @@ void SettingsPanel::Impl::renderActionBar() {
 
 void SettingsPanel::Impl::renderConfigSections() {
     if (configUnavailable) {
-        // 老宿主没有列表服务 / config_list 暂时读不到：显示具体原因，插件管理照常渲染。
+        // 老宿主没有列表服务 / config_list 暂时读不到：显示具体原因。
+        // 插件管理在独立的「插件」页签，不随配置区一起消失。
         ImGui::TextDisabled("%s", configUnavailableReason.c_str());
-        renderPluginTable();
         // 刚被热卸载的提供者：还显示一节灰色的"插件已卸载"，下一次刷新就消失。
         for (ProviderSection& section : removedSections) {
             renderProviderSection(section);
@@ -119,14 +119,13 @@ void SettingsPanel::Impl::renderConfigSections() {
             break;
         }
     }
-    renderPluginTable();
     if (sections.empty()) {
         ImGui::TextDisabled("%s",
                             tr("settings_ui.no_config_items", "宿主与插件都没有声明配置项。"));
     }
     for (ProviderSection& section : sections) {
         if (section.id == "core") {
-            continue;  // 已经在插件管理表之前画过
+            continue;  // 已经画过
         }
         renderProviderSection(section);
     }
@@ -318,7 +317,11 @@ bool SettingsPanel::Impl::renderItemControl(ConfigItem& item, const std::string&
                     break;
                 }
             }
-            // 显示名走 display(owner, option) ?? option；存储值仍是原技术值（item.value）。
+            // ENUM 的候选值本身就是 i18n key（插件负责命名空间，如 format.png /
+            // source.monitor），设置页只做 resolve(owner, 候选值) 解析显示：
+            // 有译文就显示译文，查不到时 resolve 原样返回候选值（即 key 本身）。
+            // 存储与写值仍然是 item.value / item.enumOptions 里的原始 key，不做
+            // 任何转换或剥离；插件读配置时必须兼容旧版本存下的技术值。
             // 先把解析结果拷成 std::string，再取 c_str：i18n 返回的指针只保证到下次列表变化。
             std::vector<std::string> displayOptions;
             displayOptions.reserve(item.enumOptions.size());

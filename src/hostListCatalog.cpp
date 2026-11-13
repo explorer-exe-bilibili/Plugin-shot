@@ -29,11 +29,12 @@
 // ============================================================================
 //  hostListCatalog.cpp —— 通用列表目录的实现
 //
-//  三块职责都落在这里（一个类对应一个实现文件）：
+//  四块职责都落在这里（一个类对应一个实现文件）：
 //    1. 只读服务：list_count / list_id / list_json（两段式、按列表缓存序列化）；
 //    2. 事件协议：lists.add / lists.remove / lists.update / lists.commit 的宿主端，
 //       以及 lists.updated / lists.changed 的发布；
-//    3. config_list 的生成：core + 所有 shot.configurable 实例的实时投影。
+//    3. config_list 的生成：core + 所有 shot.configurable 实例的实时投影；
+//    4. plugin_list 的生成：已安装插件记录 + metadata 的只读投影（设置页插件页）。
 //
 //  编译期约定（与头文件里的线程模型一一对应）：
 //    · m_mutex 只保护数据，绝不在持锁时调用插件；
@@ -66,6 +67,12 @@ const char kTrayCommandListId[] = "tray_command_list";  /**< 插件可贡献：�
 const char kI18nSourceListId[] = "i18n_source_list";    /**< 插件可贡献：语言表 */
 const char kI18nListId[] = "i18n_list";                 /**< 宿主生成：当前语言快照 */
 const char kHotkeyListId[] = "hotkey_list";             /**< 插件可贡献：全局热键目录 */
+const char kPluginListId[] = "plugin_list";              /**< 宿主生成：已安装插件清单 */
+
+// 入口插件 id：设置页就活在这个插件里，插件管理表据此把它的复选框置灰。
+// 宿主只投影一个 entry 标记，不把"入口"做成通用能力/ABI 字段——它是设置页
+// 这一层的约定（document/SETTINGS.md §3.1），换入口插件时只改这一处与设置页。
+const char kEntryPluginId[] = "settings_ui.main";
 
 // "core" 是宿主自己的 owner：core 的托盘命令是预置项，插件既不能添加、也不能删除，
 // 否则用户可能把「退出」菜单从托盘里弄丢。
@@ -420,6 +427,54 @@ std::string currentThreadId() {
     return out.str();
 }
 
+/**
+ * @brief 把注册表状态值投影成稳定字符串（plugin_list 的 state 字段）。
+ *
+ * 数值枚举是 ABI（SHOT_PLUGIN_STATE_*），但列表 schema 用字符串表达，原因是
+ * 消费方（设置页/第三方 UI）不该为了显示状态而硬编码宿主枚举值。字符串就是
+ * 注册表状态的规范名，未知值统一给 "unknown"——比让整个列表解析失败好。
+ *
+ * @param[in] state SHOT_PLUGIN_STATE_* 的值。
+ * @return "loaded" / "disabled" / "failed" / "unknown" 之一。
+ */
+const char* pluginStateName(std::uint32_t state) {
+    switch (state) {
+        case SHOT_PLUGIN_STATE_LOADED:
+            return "loaded";
+        case SHOT_PLUGIN_STATE_DISABLED:
+            return "disabled";
+        case SHOT_PLUGIN_STATE_FAILED:
+            return "failed";
+        default:
+            return "unknown";
+    }
+}
+
+/**
+ * @brief 把 metadata 里的 provides 名字 / requires 声明转成 JSON 数组。
+ * @param[in] meta        metadata 条目；nullptr 表示插件没有 metadata，返回空数组。
+ * @param[in] forRequires true = 取 requires 原文；false = 取 provides 名字。
+ * @return provides 是名字数组；requires 保留 metadata 原文（如 "core>=0.1.0"），
+ *         让消费方能拿到版本约束，而不是只有提供者名字。
+ * @note 参数不叫 requires：那是 C++20 关键字（与 metadata 字段同名也不能当标识符）。
+ */
+nlohmann::json pluginMetaArray(const Plugin::PluginMetaEntry* meta, bool forRequires) {
+    nlohmann::json out = nlohmann::json::array();
+    if (meta == nullptr) {
+        return out;
+    }
+    if (forRequires) {
+        for (const Plugin::PluginRequirement& requirement : meta->requireList) {
+            out.push_back(requirement.getRaw());
+        }
+        return out;
+    }
+    for (const std::string& name : meta->provides) {
+        out.push_back(name);
+    }
+    return out;
+}
+
 }  // namespace
 
 namespace Host {
@@ -490,6 +545,13 @@ HostListCatalog::HostListCatalog(std::mutex& lifecycleMutex)
     i18n.generated = true;
     i18n.cache = "[]";
     i18n.cacheValid = true;
+
+    // plugin_list 同理：设置页打开时可能早于第一次 rebuildConfigListLocked，
+    // 先注册成空列表让消费方读到 []（"还没有插件清单"），而不是未知 list id。
+    ListState& pluginList = m_lists[kPluginListId];
+    pluginList.generated = true;
+    pluginList.cache = "[]";
+    pluginList.cacheValid = true;
 
     spdlog::info("HostListCatalog: 列表写路径绑定到宿主 main 线程（thread={}）", currentThreadId());
 }
@@ -571,9 +633,10 @@ void HostListCatalog::handleAdd(const std::string& payload) {
         spdlog::warn("lists.add 缺少 list/owner 字段，已丢弃");
         return;
     }
-    // 宿主生成的只读投影（config_list / i18n_list）：插件只能通过 lists.update
-    // 写 config_list 的值，直接 add 会造出第二份真相，宁可拒绝也别让消费方看到
-    // 两种数据来源。注意这个判断必须对"当前已注册为 generated 的任意列表"生效。
+    // 宿主生成的只读投影（config_list / i18n_list / plugin_list）：插件只能通过
+    // lists.update 写 config_list 的值，直接 add 会造出第二份真相，宁可拒绝也别让
+    // 消费方看到两种数据来源。注意这个判断必须对"当前已注册为 generated 的任意
+    // 列表"生效。
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         const auto stateIt = m_lists.find(list);
@@ -1108,6 +1171,88 @@ void HostListCatalog::rebuildConfigListLocked() {
     // 语言目录变化引起的重建到此完成：core/language 的 options 已经与目录一致，
     // 再置着标记会让下一轮 tick 白重建一次。
     m_configListStale = false;
+
+    // 插件清单与配置清单共享同一个刷新时机（插件加载完成、启停、配置提交），
+    // 在这里顺带重建 plugin_list：调用方不必记两个入口，也不会出现"配置刷新了、
+    // 插件描述还是上一次"的半旧状态。metadata 是声明、不随语言变化，所以内容
+    // 没变时 installGeneratedList 不会发 lists.changed。
+    rebuildPluginListLocked();
+}
+
+void HostListCatalog::rebuildPluginListLocked() {
+    // 管理器未绑定（启动早期）时安装空清单：消费方读到 []，走注册表快照兜底。
+    Plugin::PluginManager* manager = managerPointer();
+    std::vector<Plugin::InstalledPlugin> installed;
+    if (manager != nullptr) {
+        installed = manager->getInstalledPlugins();
+    }
+
+    // 同一个 DLL 可能声明多个插件：一次重建里按 dllPath 只读一次 metadata 尾部。
+    // 不做跨重建缓存：metadata 可能在宿主运行期间被重装/替换，重建频率又低
+    // （插件加载/启停、配置提交），读文件尾比维护失效规则更简单可靠。
+    struct PackageMeta {
+        bool attempted = false;          /**< 是否已尝试读过这个 DLL 的 metadata */
+        bool available = false;          /**< metadata 是否读取成功 */
+        Plugin::PluginPackageMeta meta;  /**< 解析结果；available 为 false 时无意义 */
+    };
+    std::map<std::string, PackageMeta> packages;
+
+    std::vector<Entry> entries;
+    entries.reserve(installed.size());
+    for (const Plugin::InstalledPlugin& info : installed) {
+        if (info.id.empty()) {
+            continue;  // 记录缺少 id 说明管理器内部数据异常，跳过而不是投影坏条目
+        }
+        PackageMeta& package = packages[info.dllPath];
+        if (!package.attempted) {
+            package.attempted = true;
+            std::string error;
+            // 读失败是正常情况（第三方包可能没有 metadata），不逐条 WARN。
+            package.available = package.meta.readFromFile(info.dllPath, error);
+        }
+        const Plugin::PluginMetaEntry* meta = nullptr;
+        if (package.available) {
+            for (const Plugin::PluginMetaEntry& candidate : package.meta.getMetaData()) {
+                if (candidate.id == info.id) {
+                    meta = &candidate;
+                    break;
+                }
+            }
+        }
+
+        // name/version 优先取 metadata 的声明值（注册表里的 name 是 metadata 名，
+        // 但 get_info 运行期可能覆盖成别的文本）；没有 metadata 时退回已安装记录，
+        // 记录本身也没有可用名字时用 id 兜底。
+        std::string name;
+        if (meta != nullptr && !meta->name.empty()) {
+            name = meta->name;
+        } else if (!info.name.empty()) {
+            name = info.name;
+        } else {
+            name = info.id;
+        }
+        std::string version;
+        if (meta != nullptr && !meta->version.empty()) {
+            version = meta->version;
+        } else {
+            version = info.version;
+        }
+
+        nlohmann::json entry = {
+            {"id", info.id},
+            {"name", name},
+            {"description", (meta != nullptr) ? meta->description : std::string()},
+            {"version", version},
+            {"state", pluginStateName(info.state)},
+            // enabled 与注册表 is_enabled 语义一致：加载失败但用户没关它 → true。
+            {"enabled", manager != nullptr && manager->isPluginEnabled(info.id)},
+            {"entry", info.id == kEntryPluginId},
+            {"provides", pluginMetaArray(meta, /*forRequires=*/false)},
+            {"requires", pluginMetaArray(meta, /*forRequires=*/true)},
+        };
+        entries.push_back(Entry{info.id, info.id, 0, dumpJson(entry)});
+    }
+    installGeneratedList(kPluginListId, std::move(entries));
 }
 
 bool HostListCatalog::configListStale() const { return m_configListStale; }
@@ -1339,7 +1484,7 @@ void HostListCatalog::removeOwner(const std::string& owner) {
         std::lock_guard<std::mutex> lock(m_mutex);
         for (auto& [listId, state] : m_lists) {
             if (state.generated) {
-                continue;  // config_list 由 rebuildConfigListLocked 重建
+                continue;  // config_list / i18n_list / plugin_list 由宿主按当前状态重建
             }
             const std::size_t before = state.entries.size();
             std::erase_if(state.entries,

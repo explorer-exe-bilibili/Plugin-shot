@@ -112,8 +112,9 @@ nlohmann::json items = nlohmann::json::parse(text, nullptr, false);
 - `list` / `owner` 必须是非空字符串，否则整条事件丢弃；
 - `owner` **必须等于发布插件自己的 id**（约定，见 §7）；宿主只校验"这个 id 当前有已加载实例"，
   不是已加载插件就丢弃。`owner` 保留给宿主自己（`"core"`），插件不得使用；
-- 宿主生成的列表（`config_list` / `i18n_list`）**不能 add/remove**（`config_list`
-  写值走 `lists.update`）；宿主对任意 `generated` 列表都拒绝写入口，另有一道双保险；
+- 宿主生成的列表（`config_list` / `i18n_list` / `plugin_list`）**不能 add/remove**
+  （`config_list` 写值走 `lists.update`）；宿主对任意 `generated` 列表都拒绝写入口，
+  另有一道双保险；
 - `items` 必须是数组；数组里每个元素必须是 JSON 对象且带**非空字符串 `id`**，否则跳过该条，
   其余条目照常接受；
 - 同 `(list, owner, id)` 再 add = **upsert**：只更新内容与 `order`，不新增条目；
@@ -139,8 +140,8 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 - `ids` 省略、`null` 或空数组 = 移除该 owner 在这个列表里的**全部**条目；非空数组 = 只移除
   列出的 id（非字符串项被忽略）；
 - 列表本来就不存在 = **幂等空操作**，不报错；
-- 宿主生成的列表（`config_list` / `i18n_list`）不能 remove；`owner = "core"` 不能 remove
-  （宿主预置项插件删不掉）；
+- 宿主生成的列表（`config_list` / `i18n_list` / `plugin_list`）不能 remove；
+  `owner = "core"` 不能 remove（宿主预置项插件删不掉）；
 - `owner` 不是已加载插件就丢弃；
 - 只有真的删掉了条目（`removed > 0`）才标记 `lists.changed`。
 
@@ -212,8 +213,8 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 
 - 列表内容变化的**唯一**通知；负载只有 list id（消费方必须自己回读快照拿新内容）；
 - 宿主把同一轮里的多次变化合并成一个集合，由 `HostRuntime::tick` 统一 flush，**每 list 一条**；
-- 触发来源：`lists.add` / `lists.remove` 真的改了内容；`config_list` 重建后内容真的变了；
-  插件被禁用/卸载时清掉它的贡献（§6）；
+- 触发来源：`lists.add` / `lists.remove` 真的改了内容；`config_list` / `plugin_list`
+  重建后内容真的变了；插件被禁用/卸载时清掉它的贡献（§6）；
 - 消费方按 `list` 过滤（托盘对空负载按"可能是任意列表"保守处理，见插件 README）；
 - 消费方刷新时机见 §4。
 
@@ -224,7 +225,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | 时机 | 消费方应做什么 |
 | --- | --- |
 | `init` 之后（或第一次显示窗口） | 读一次需要的列表，建立初始模型 |
-| `settings.open` | 设置页打开：重读 `config_list`（并保留未应用的本地修改） |
+| `settings.open` | 设置页打开：重读 `config_list` / `plugin_list`（并保留未应用的本地修改） |
 | `lists.changed` 且 `list` 与本消费方相关 | 重读该列表，重建模型（`i18n_list` 变化 = 语言变了：设置页/托盘刷新显示文本） |
 | `config.applied` | 一批配置已落盘：结束等待、可重算派生状态 |
 | `plugins.changed` | 已加载集合变了，`config_list` 可能变：整表重读 |
@@ -246,6 +247,7 @@ list id 的 schema 与消费方解释（见 §5）。因此给条目加字段只
 | list id | 类型 | 谁写 | 主要读方 | schema |
 | --- | --- | --- | --- | --- |
 | `config_list` | 宿主生成（只读投影） | 宿主从 `core` + 所有 `shot.configurable` 实例生成；插件写值走 `lists.update`、落盘走 `lists.commit` | 设置页 | §5.1 |
+| `plugin_list` | 宿主生成（只读投影） | 宿主从 `PluginManager` 的已安装记录 + 每个包 DLL 尾部的 metadata 生成；插件不能 add/remove/update | 设置页 | §5.6 |
 | `tray_command_list` | 宿主预置 core 四项 + 插件贡献 | 宿主预置 core；插件 `lists.add` / `lists.remove` | 托盘 | §5.2 |
 | `i18n_source_list` | 插件 / 语言包贡献 | 插件在 `create()`/`init()` 里 `lists.add` 语言表（helper 拼好）；外部语言包由翻译插件贡献 `target`/`priority` 与 `@language/` 声明；宿主只读、合并生成 `i18n_list` | 宿主 | §5.3 |
 | `i18n_list` | 宿主生成（只读快照） | 宿主按当前语言把 core 文案 + `i18n_source_list` 投影；插件不能 add/remove | 设置页 / 托盘 / 插件 helper | §5.4 |
@@ -463,7 +465,52 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
 - **平台**：非 Windows（Wayland）仍然贡献/读取本列表与配置项，但 provider 不注册
   全局热键，启动 WARN 指向 `session_control` 的 D-Bus 入口。
 
-### 5.6 登记一个新列表的规则
+### 5.6 `plugin_list`
+
+宿主生成的**已安装插件清单**，只读：插件 `lists.add` / `lists.remove` 一律被宿主拒绝
+（任意 `generated` 列表都拒绝写入口）。设置页的「插件」页签用它显示 metadata 描述；
+状态与启停仍以 `shot.host.plugin_registry` 为准（注册表带拒绝/失败原因文本，
+`plugin_list` 只投影静态声明与状态名）。
+
+```json
+[
+  {"id":"image_saver.main","name":"Image Saver","description":"PNG/JPEG 图片保存",
+   "version":"0.1.0","state":"loaded","enabled":true,"entry":false,
+   "provides":[],"requires":["core>=0.1.0"]}
+]
+```
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `id` | string | ✅ | 插件 id（如 `image_saver.main`） |
+| `name` | string | ✅ | metadata 的 `name` 原文；没有 metadata 时用已安装记录里的显示名，仍为空则用 id 兜底。**不是译文**，消费方按 `display(id,"plugin.name") ?? name` 解析 |
+| `description` | string | ✅ | metadata 的 `description` 原文；没有 metadata / 没写描述时为空串。消费方按 `display(id,"plugin.description") ?? description` 解析 |
+| `version` | string | ✅ | metadata 的 `version`；缺省用已安装记录的版本，可能为空串 |
+| `state` | string | ✅ | 注册表状态名的字符串形式：`loaded` / `disabled` / `failed` / `unknown`（对应 `SHOT_PLUGIN_STATE_*`） |
+| `enabled` | bool | ✅ | 用户是否启用（与注册表 `is_enabled` 语义一致；`failed` 仍可能是 `true`——用户没关它，只是这次没起来） |
+| `entry` | bool | ✅ | 是否是设置页入口插件（`id == "settings_ui.main"`）。宿主只投影标记，消费方据此把入口行置灰；"入口"不是通用 ABI 概念 |
+| `provides` | array&lt;string&gt; | ✅ | metadata 的 `provides` 名字列表；没有 metadata 时 `[]` |
+| `requires` | array&lt;string&gt; | ✅ | metadata 的 `requires` **原文**（含版本运算符，如 `"core>=0.1.0"`）；没有 metadata 时 `[]` |
+
+读写与刷新：
+
+- **谁写**：只有宿主（`HostListCatalog::rebuildPluginListLocked`）。插件不能 add/remove，
+  也不能用 `lists.update` 写它（`lists.update` 只支持 `config_list`）。
+- **数据来源**：`PluginManager::getInstalledPlugins()`（含被禁用与加载失败的记录）+
+  每个包 DLL 尾部的 metadata（`description` / `provides` / `requires` 只在 metadata 里）。
+  宿主**不调用插件能力**；同一 DLL 声明多个插件时只读一次 metadata。
+- **顺序**：已安装记录顺序（扫描/加载顺序），插件被禁用后记录仍在，`state` 变
+  `disabled`；加载失败记录变 `failed`。条目不会因为禁用而从列表里消失。
+- **刷新时机**：与 `config_list` 共用同一个重建入口——`HostRuntime::init` 插件加载完成、
+  `HostRuntime::tick` 的插件启停、`lists.update` / `lists.commit`、语言目录变化。只有内容
+  真的变化才发布 `lists.changed`（`{"list":"plugin_list"}`）。语言切换**不会改这些原文**
+  （名字/描述的译文由消费方按当前 `i18n_list` 解析），所以通常不需要因语言变化重建。
+- **降级**：列表读不到（老宿主 / 初始化早期读到 `[]`）时，设置页退回
+  `shot.host.plugin_registry` 的 id / name / version / state，只是没有描述行，启停不受影响。
+- **为什么不给 `ShotPluginStatus` 加 `description`**：数据形状不进 ABI（§1）。新增字段
+  一律开新 list id + JSON schema，注册表结构体保持冻结。
+
+### 5.7 登记一个新列表的规则
 
 1. 选 list id：全小写 + 下划线，建议以 `_list` 结尾；宿主内置列表用 `<名词>_list`
    （如 `config_list`），第三方列表加作者前缀避免与将来的内置列表撞名
@@ -482,9 +529,10 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
 ## 6. 生命周期
 
 **启动**（`HostRuntime::init`）：加载插件 → 绑定列表目录 → `applyStoredLocked`（把已存值 /
-默认值推给插件）→ `rebuildConfigListLocked`（生成 `config_list`）→ 订阅 `lists.*` 与
-`app.quit`。插件在 `create()` 里就 `publish("lists.add", ...)` 不会丢：事件只是入队，宿主
-加载完成后才订阅，主循环分发时才取订阅快照。
+默认值推给插件）→ `rebuildConfigListLocked`（生成 `config_list`，同一入口顺带生成
+`plugin_list`）→ 订阅 `lists.*` 与 `app.quit`。插件在 `create()` 里就
+`publish("lists.add", ...)` 不会丢：事件只是入队，宿主加载完成后才订阅，主循环分发时才取
+订阅快照。
 
 **启停（`HostRuntime::tick`）**，每轮按顺序做：
 
@@ -492,7 +540,8 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
 2. 对比启停前后的已加载实例集合，对**消失的插件**逐个 `removeOwner(pluginId)`：清掉它在
    **所有插件贡献列表**里的条目并记 `lists.changed`（`config_list` 是宿主生成的，不在这里清）；
 3. 重新启用的插件先回灌已存配置（`applyStoredLocked`）；
-4. 无论本轮是启用、禁用还是只有失败，都按当前已加载集合**重建 `config_list`**；
+4. 无论本轮是启用、禁用还是只有失败，都按当前已加载集合**重建 `config_list`**
+   （同一入口顺带重建 `plugin_list`）；
 5. `flushChanged()`：把本轮 dispatch 处理的事件与上面生命周期清理产生的变化合并，
    每个 list 发布一条 `lists.changed`；
 6. 把脏配置落盘（`lists.commit` 是显式同步落盘的例外）。

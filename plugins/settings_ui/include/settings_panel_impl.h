@@ -13,7 +13,8 @@
 //  数据来源（ABI 2.0 起，旧的 shot.host.plugin_config 已删除）：
 //    · 配置项 = 宿主列表服务 shot.host.plugin_lists 的 config_list JSON 快照，
 //      条目 schema 见 document/LISTS.md；本头的 ConfigDesc 是它的一份本地副本；
-//    · 插件启停 = shot.host.plugin_registry（同步快照 + 异步登记）；
+//    · 插件清单 = 同一个列表服务的 plugin_list（name/description/version/state/
+//      provides/requires），状态与启停仍以 shot.host.plugin_registry 为准；
 //    · 写值/提交 = 事件总线上的 lists.update / lists.commit（不再有同步写接口），
 //      结果由 lists.updated / config.applied 回来。
 //
@@ -22,7 +23,7 @@
 //    settings_form.cpp         —— 操作条 + 配置节 + 7 种 kind 的控件
 //    settings_hotkey.cpp       —— STRING + options="hotkey" 的"按组合键录入"控件
 //    settings_color.cpp        —— STRING + options="#..." 的"预设色块 + 自定义取色"控件
-//    settings_plugin_table.cpp —— 插件管理表
+//    settings_plugin_table.cpp —— 插件管理页签（表格 + 描述）
 //    settings_apply.cpp        —— 应用状态机 / 事件 / 等待超时
 // ============================================================================
 
@@ -291,6 +292,7 @@ struct ProviderSection {
 /** @brief 插件管理表的一行：注册表快照 + 本地"想改成什么"。 */
 struct PluginRow {
     shot::PluginStatus status;   /**< 注册表快照（字符串已拷成本地副本）。 */
+    std::string description;     /**< plugin_list 的 metadata description；读不到列表时为空。 */
     bool enabledNow = false;     /**< 宿主当前状态，用来判断这一行脏不脏。 */
     bool enabledPending = false; /**< 用户勾选后的目标状态，应用时才 set_enabled。 */
     std::string message;         /**< plugins.changed 带回的拒绝/失败原因；空 = 正常。 */
@@ -468,6 +470,13 @@ struct SettingsPanel::Impl {
     void renderProviderSection(ProviderSection& section);
     void renderConfigItem(ConfigItem& item, const std::string& owner);
     bool renderItemControl(ConfigItem& item, const std::string& owner);
+    /**
+     * @brief 画「插件」页签：注册表不可用/没有插件时的降级文本 + 插件管理表。
+     *
+     * 拆成独立页签后，插件管理不再是配置流中的一节：可用性降级只影响本页，
+     * 不会把「常规」页的配置区一起挤掉（反过来也一样）。
+     */
+    void renderPluginPage();
     void renderPluginTable();
     void renderPluginRow(PluginRow& row);
 

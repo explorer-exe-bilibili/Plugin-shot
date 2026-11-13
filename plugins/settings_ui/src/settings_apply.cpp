@@ -332,8 +332,10 @@ void SettingsPanel::Impl::onListsUpdated(std::string_view payload) {
 }
 
 void SettingsPanel::Impl::onListsChanged(std::string_view payload) {
-    // 负载 {"list":"config_list"} / {"list":"i18n_list"}。语言快照变化时配置项的
-    // label/tooltip/ENUM 显示名都会变，所以两种列表都刷新一次配置区（保留本地修改）。
+    // 负载 {"list":"config_list"} / {"list":"i18n_list"} / {"list":"plugin_list"}。
+    // 语言快照变化时配置项的 label/tooltip/ENUM 显示名都会变，插件页的名字/描述
+    // 也要按新 i18n_list 重新解析；plugin_list 变化 = 插件清单变了（启停/加载失败），
+    // 都要重读插件表。
     if (host == nullptr) {
         return;
     }
@@ -342,14 +344,16 @@ void SettingsPanel::Impl::onListsChanged(std::string_view payload) {
         const nlohmann::json document = parseObject(payload);
         if (!document.is_discarded() && document.is_object()) {
             listId = document.value("list", std::string());
-            if (!listId.empty() && listId != "config_list" && listId != "i18n_list") {
+            if (!listId.empty() && listId != "config_list" && listId != "i18n_list" &&
+                listId != "plugin_list") {
                 return;
             }
         }
     }
-    if (listId == "i18n_list") {
+    if (listId == "i18n_list" || listId == "plugin_list") {
         // 语言变了：注册表快照里的 reason 文本已按新语言重建（宿主 tick 里 refresh），
-        // 这里重读插件管理表，已经显示在界面上的失败原因才会换成新语言。
+        // 这里重读插件管理表，已经显示在界面上的失败原因才会换成新语言；
+        // plugin_list 变化则带来新的 description（渲染时再按 plugin.description 解析）。
         refreshPlugins();
     }
     // 收到事件才刷新，不要每帧读 JSON；刷新会按 owner+id 合并回未应用的本地修改。

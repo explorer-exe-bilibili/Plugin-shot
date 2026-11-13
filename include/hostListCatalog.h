@@ -36,8 +36,10 @@ class PluginBase;
 //  两类列表：
 //    · 宿主生成（generated）：config_list 由 core + 所有实现了 shot.configurable
 //      的已加载实例实时生成（相当于旧配置目录的只读投影）；i18n_list 由宿主把
-//      core 文案 + 各插件贡献的 i18n_source_list 条目按当前语言投影出来。插件
-//      不能 add/remove 它们；写值走 lists.update、落盘走 lists.commit。
+//      core 文案 + 各插件贡献的 i18n_source_list 条目按当前语言投影出来；
+//      plugin_list 由宿主把 PluginManager 的已安装记录 + metadata 投影出来
+//      （设置页插件管理页的数据源）。插件不能 add/remove 它们；写值走
+//      lists.update、落盘走 lists.commit。
 //    · 插件贡献：任意 list id 在第一次 lists.add 时自动注册；宿主按 owner
 //      （= 贡献者插件 id）记账，插件被禁用/卸载时 removeOwner 清掉它的全部贡献。
 //      tray_command_list 由宿主预置 core 三项（截屏 / 打开设置 / 退出），
@@ -86,7 +88,8 @@ class HostListCatalog {
         std::vector<Entry> entries; /**< 已按 order 稳定排序；generated 列表按生成顺序 */
         std::string cache;          /**< list_json 返回的内容（JSON 数组文本） */
         bool cacheValid = false;    /**< false = 下次读取时从 entries 重建缓存 */
-        bool generated = false;     /**< true = 宿主生成（config_list / i18n_list），不接受插件贡献 */
+        /** true = 宿主生成（config_list / i18n_list / plugin_list），不接受插件贡献 */
+        bool generated = false;
     };
 
     /** @brief 一个可配置提供者：core（instance 为空）或某个插件实例。 */
@@ -170,6 +173,10 @@ public:
      * 只有内容真的变了才标记 lists.changed，避免每次插件启停都向所有订阅者发
      * 一份"什么都没变"的通知。插件没有 get_config / 声明了非法项时安静跳过并
      * warn，不让一个坏插件把整个列表带崩。
+     *
+     * 结尾顺带调用 rebuildPluginListLocked()：插件清单与配置清单的刷新时机完全
+     * 相同（插件加载完成、启停状态变化），复用同一个入口就不必在 HostRuntime
+     * 里再加一处调用点，也不会漏掉未来的刷新路径。
      */
     void rebuildConfigListLocked();
 
@@ -315,7 +322,7 @@ private:
 
     /**
      * @brief 安装一份宿主生成的列表内容，内容变化时记入 pending changed。
-     * @param[in] list    列表 id（config_list 或 i18n_list）。
+     * @param[in] list    列表 id（config_list / i18n_list / plugin_list）。
      * @param[in] entries 新条目（按生成顺序，不排序）。
      */
     void installGeneratedList(const std::string& list, std::vector<Entry> entries);
@@ -337,6 +344,23 @@ private:
      * @return JSON 数组文本；条目为空时是 "[]"。
      */
     static std::string serializeEntries(const std::vector<Entry>& entries);
+
+    /**
+     * @brief 重建 plugin_list：把已安装插件记录 + metadata 投影成只读清单。
+     *
+     * 数据来源是 PluginManager::getInstalledPlugins()（含被禁用与加载失败的记录）
+     * 以及每个包 DLL 尾部的 metadata（description / provides / requires 只在
+     * metadata 里）。metadata 通过 PluginPackageMeta::readFromFile 读取，不缓存：
+     * 重建只发生在插件加载/启停与配置提交这些低频路径上，而缓存会在重装/替换
+     * DLL 后变旧；逐包读一次文件尾比维护失效规则更不容易出错。
+     *
+     * 插件没有 metadata（或 metadata 里找不到自己的 id）时按 id 兜底：name 用 id、
+     * description 为空、provides/requires 为空数组——宁可少显示，不把别的插件
+     * 的元数据张冠李戴。
+     *
+     * @note 只允许宿主 main 线程调用；由 rebuildConfigListLocked() 统一触发。
+     */
+    void rebuildPluginListLocked();
 
     /** @brief 服务表 list_count 的实现。 */
     static std::uint32_t listCount(void* ctx);

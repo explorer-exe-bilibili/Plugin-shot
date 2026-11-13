@@ -16,14 +16,16 @@
 | 配置声明 | 各插件的 `shot.configurable` | 插件说自己有哪些配置项（`ShotConfigDesc`） |
 | 宿主设置 | `core` 伪插件（宿主内部实现 `ShotConfigurableV1`） | 宿主自己的设置，和插件配置用同一套描述符 |
 | 配置数据 | `shot.host.plugin_lists` → `config_list` | 把上面两者聚成**只读 JSON 快照**；写值 / 落盘走 `lists.update` / `lists.commit` 事件 |
+| 插件清单 | `shot.host.plugin_lists` → `plugin_list` | 宿主把已安装记录 + metadata 投影成只读 JSON（name/description/version/state/provides/requires），给「插件」页签显示描述 |
 | 插件注册表 | `shot.host.plugin_registry` → `ShotHostPluginRegistryV1` | 已安装插件清单 + 异步启停（热卸载/重新加载） |
-| 设置窗口 | `plugins/settings_ui` | 读 `config_list` 渲染描述符表单 + 插件管理页 + 应用/取消 |
+| 设置窗口 | `plugins/settings_ui` | 读 `config_list` 渲染「常规」页、读 `plugin_list` + 注册表渲染「插件」页 + 应用/取消 |
 
 数据流（设置页 UI 线程发起，宿主在 main 线程串行处理）：
 
 ```
 settings_ui（自己的 UI 线程）                  宿主（main 线程）
   │ shot::PluginLists.json("config_list") ───▶ list_count/list_id/list_json（只读快照）
+  │ shot::PluginLists.json("plugin_list") ───▶ 已安装记录 + metadata 的只读投影
   │ query_interface(plugin_registry) ────────▶ installed_count/info/is_enabled（快照）
   │ publish lists.update {tag, changes} ─────▶ 逐项 set_config → 重建 config_list
   │                                            → publish lists.updated（同 tag，逐项结果）
@@ -62,6 +64,11 @@ UI 线程里发生（见 `document/EVENT_BUS.md` 的线程模型）。
 - **存盘键是 `<owner>/<id>`**（如 `example.invert/keep_alpha`、`core/language`），值一律
   字符串，落在宿主配置 JSON 的 `configItems` 里。插件只负责 `get_config` / `set_config`，
   **落盘归宿主**——插件不需要也不应该自己写配置文件。
+- **插件管理的描述不在 `config_list` 里**：注册表结构体 `ShotPluginStatus` 没有
+  description，按"数据形状不进 ABI"新增了宿主生成的只读列表 `plugin_list`
+  （`document/LISTS.md` §5.6），条目带 metadata 的 name/description/version/
+  provides/requires 与状态名。设置页「插件」页签以注册表为状态/启停权威、
+  以 `plugin_list` 补描述；列表读不到时退回注册表，只少描述行。
 - **启动时序**：`core::Config::init()` → 扫描并加载插件 → 宿主回灌已存值（没有已存值就用
   `default_value`，并记进配置）→ 重建 `config_list`。第一次运行后配置文件就是完整的。
 - **写值与落盘分离**：`lists.update` 只改插件内存与宿主内存配置，`lists.commit` 才写
@@ -202,8 +209,8 @@ UI 线程里发生（见 `document/EVENT_BUS.md` 的线程模型）。
   "为什么没生效"）；
 - 状态没变、也没有拒绝/失败原因的请求不发通知（幂等请求不打扰设置页；设置页的
   "应用中…"有 5 秒超时兜底）；
-- 设置页每收到一条通知就重新枚举注册表并重读 `config_list`；如果它正在"应用中…"，
-  第一条通知就会结束等待，后续通知继续刷新列表。
+- 设置页每收到一条通知就重新枚举注册表并重读 `config_list` / `plugin_list`；如果它正在
+  "应用中…"，第一条通知就会结束等待，后续通知继续刷新列表。
 
 ### 3.3 `PluginType::Generic`：纯订阅者 / 纯配置项插件
 
@@ -325,21 +332,29 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
   Latin Extended / Greek / Cyrillic，启动日志打印字体与字形覆盖统计。全部候选都
   找不到时退回 ImGui 默认字体（显示降级，不影响功能）；非 Windows 字体路径未真机
   验证。详见 `document/I18N.md` §3.1。
-- **布局**：一页滚动，按提供者分节（`CollapsingHeader`，宿主 `core` 在最前）：
-  1. 宿主设置；
-  2. 插件管理（注册表表格：插件 / 版本 / 状态 / 启用复选框）；
-  3. 每个可配置插件一节。
+- **布局**：顶部 `BeginTabBar` 分「常规 / 插件」两个页签，操作条（应用 / 取消 /
+  恢复全部默认 / 状态文本）固定在页签上方、两页共用一个提交状态：
+  1. 「常规」：按提供者分节的配置表单（`CollapsingHeader`，宿主 `core` 在最前）；
+     宿主设置 → 每个可配置插件一节。
+  2. 「插件」：已安装插件表（启用 / 插件（名称 + id）/ 版本 / 状态），插件名下方用
+     `ImGui::TextWrapped` 显示描述；行高由 ImGui 按描述换行后的高度自动撑开
+     （不写死行高，长描述不会被裁掉）。
 - **控件映射**（`ShotConfigDesc::kind`）：
 
 | kind | 控件 | 值格式 |
 | --- | --- | --- |
 | BOOL | Checkbox | `"1"` / `"0"` |
 | INT / FLOAT | Slider + Input（用 `min/max/step`，越界 clamp） | 十进制字符串 |
-| ENUM | Combo（`options` 按 `\|` 切） | 选项字符串 |
+| ENUM | Combo（`options` 按 `\|` 切；显示名按 `display(owner, 候选值)` 解析，未命中回退候选值） | 选项 key（原样存回） |
 | STRING | InputText；`options == "hotkey"` 时换成"当前组合键 + 录入…"（见下方热键约定）；`options` 以 `#` 开头时换成颜色控件（见下方颜色约定） | 原样 / 规范化组合键 / `#RRGGBB` |
 | COLOR | ColorEdit4 + hex 输入 | `"#RRGGBB"` 或 `"R,G,B,A"`（统一成 `#RRGGBBAA` 存盘） |
 | PATH | InputText + "浏览…"（对话框类型见下方约定） | 原样 |
 | 未知 kind | 跳过并显示灰色"不支持的配置类型" | —— |
+
+- **ENUM 的候选值是 i18n key（插件负责命名空间，如 `format.png` / `source.monitor`）**：
+  设置页只 `display(owner, 候选值)` 解析显示，存储与写值都是原始 key，不做任何拼接/
+  剥离；查不到译文时回退显示候选值本身。插件读配置时必须兼容旧版本存下的技术值
+  （例如 `png` / `monitor`），不能假设配置里一定是新 key。
 
 - **PATH 的对话框类型**：描述符的 `options` 用来声明该 PATH 指文件还是目录——
   `"directory"`（也接受 `"dir"` / `"folder"`）弹"选择文件夹"，`"file"` 弹"打开文件"，
@@ -371,12 +386,18 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
   "写入失败：reason"并保留脏标记；插件已被卸载 → 该节灰掉；窗口位置/大小存宿主配置的
   `settings_ui.window`（`"x,y,w,h"`），下次显示时恢复。
 - **插件管理**：只有 `settings_ui.main` 自己那一行置灰（入口插件不能禁用自己）；禁用行
-  显示原因；勾选只改本地状态，应用时才 `set_enabled`。
-- **插件显示名**：配置分区标题优先 `resolve(owner, "plugin.name")`，没有译文时退回
+  显示原因；勾选只改本地状态，应用时才 `set_enabled`。表格数据 = 注册表快照
+  （状态 / 启停 / 拒绝原因）+ `plugin_list`（description）；`plugin_list` 读不到时退回
+  注册表，只少描述行。
+- **插件名称/描述的多语言**：表格里插件名按 `display(插件id, "plugin.name")` 解析，
+  结果等于 key（没有译文）时回退 `plugin_list.name`（metadata 原文），再为空则显示 id；
+  描述按 `display(插件id, "plugin.description")` 解析，回退 `plugin_list.description`，
+  仍为空就不显示描述行。两个 key 的 owner 都是插件 id，由插件或 `target=<插件id>` 的
+  语言包贡献译文；metadata 本身仍是单语言原文。
+- **配置分区标题的显示名**：优先 `resolve(owner, "plugin.name")`，没有译文时退回
   `resolve(owner, owner_name) ?? owner_name`；`config_list.owner_name_key` 固定为
   `plugin.name`（core 用 `core.owner_name`）。插件贡献 `target=自己, id=plugin.name`
-  的译文即可本地化配置分区标题。插件管理表格显示注册表里的 metadata name，不随界面
-  语言变化；metadata 的 description 仍不本地化。
+  的译文即可本地化配置分区标题。
 
 - **颜色控件的约定**：`kind == STRING` 且 `options` 以 `#` 开头时，设置页渲染成颜色控件
   （实现见 `plugins/settings_ui/src/settings_color.cpp`）：一行预设色块（`options` 按 `|`
@@ -448,5 +469,7 @@ version 来自 `version.h`），`config_list` 里 `owner = "core"` 的条目排�
       §5.1 与本文件 §6 的控件映射表，以及提供方/消费方插件的 `README.md`
 - [ ] 改了两个宿主服务之一？→ 同步 `include/plugin_api.h`、`document/ABI_POLICY.md`
       登记表与布局锚点、`SHOT_ABI_MINOR`、各插件 `metadata.json` 的 `abi.minor`
+- [ ] 新增 ENUM 候选值的文案时，i18n key 就是候选值本身（插件负责命名空间），
+      设置页只解析显示、存储原 key；插件同时兼容旧配置里的技术值？
 - [ ] 涉及插件卸载？→ 插件 `deinit` 里停线程、退订总线、销毁窗口了吗？
 - [ ] 改了启停/级联/入口兜底或 `plugins.changed` 语义？→ 同步本文件 §3.1–§3.2 与 README

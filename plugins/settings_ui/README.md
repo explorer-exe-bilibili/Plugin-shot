@@ -35,7 +35,7 @@ plugins/settings_ui/
     ├── settings_form.cpp           # 操作条 + 配置节 + 7 种 kind 的控件渲染
     ├── settings_hotkey.cpp         # STRING + options="hotkey" 的"按组合键录入"控件（模态弹窗 + suspend/resume）
     ├── settings_color.cpp          # STRING + options="#..." 的颜色控件（预设色块 + 自定义取色弹窗 + hex 输入）
-    ├── settings_plugin_table.cpp   # 插件管理表渲染
+    ├── settings_plugin_table.cpp   # 插件管理页签（表格 + 描述）
     └── settings_apply.cpp          # 应用状态机（lists.update / commit）、取消 / 恢复默认、事件 / 等待超时
 ```
 
@@ -122,14 +122,18 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 
 ## 4. 表单与编辑模型
 
-顶部固定操作条（`应用` / `取消` / `恢复全部默认` / 状态文本），下面是一页按提供者分
-`CollapsingHeader` 的滚动内容，宿主 `core` 固定在最前，插件管理表紧随其后。
+顶部固定操作条（`应用` / `取消` / `恢复全部默认` / 状态文本），下面用 `BeginTabBar`
+分「常规 / 插件」两个页签（`document/SETTINGS.md` §6）：
+
+- 「常规」：按提供者分 `CollapsingHeader` 的滚动内容，宿主 `core` 固定在最前；
+- 「插件」：已安装插件表（启用 / 插件名 + id / 版本 / 状态），名称下方用
+  `TextWrapped` 显示描述，行高由 ImGui 按描述换行后的高度自动撑开。
 
 | `SHOT_CONFIG_KIND_*` | 控件 | 值格式 |
 | --- | --- | --- |
 | `BOOL` | Checkbox | `"1"` / `"0"` |
 | `INT` / `FLOAT` | Slider + Input（用 `min/max/step`，越界 clamp，非法输入回退） | 十进制字符串 |
-| `ENUM` | Combo（`options` 按 `\|` 切） | 选项字符串 |
+| `ENUM` | Combo（`options` 按 `\|` 切；显示名 `resolve(owner, 候选值)`） | 选项 key（原样存回） |
 | `STRING` | InputText；`options` 是 `"hotkey"` 时换成"当前组合键 + 录入…"（见 §4.1） | 原样 / 规范化组合键 |
 | `STRING` + `options` 以 `#` 开头 | 颜色控件：预设色块 + `自定义…` 取色弹窗 + `#RRGGBB` 输入框（见 §4.2） | 统一存大写 `#RRGGBB` |
 | `COLOR` | ColorEdit4 + hex 输入 | 统一存 `#RRGGBBAA`，读取兼容 `#RRGGBB` / `R,G,B,A` |
@@ -156,10 +160,13 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
    （5 秒超时兜底）；
 5. 点「取消」丢弃全部未应用修改；「恢复全部默认」只把值改回 `default`，仍要点「应用」。
 
-插件管理表列：启用复选框 / 插件名(id) / 版本 / 状态（已加载、已禁用、加载失败：原因）。
-勾选只改本地 pending，应用时才 `set_enabled`；入口插件（`settings_ui.main` 自己）的
-复选框置灰——禁用入口插件等于把当前设置页一起卸载，`document/SETTINGS.md` §3.1 明确
-这一行由设置页负责置灰，宿主不加特判。
+插件管理表列：启用复选框 / 插件名(id) + 描述 / 版本 / 状态（已加载、已禁用、加载失败：
+原因）。名称按 `display(插件id,"plugin.name")` 解析，没译文时回退 metadata 名；描述按
+`display(插件id,"plugin.description")` 解析，回退宿主生成的 `plugin_list` 里的
+metadata description（`document/LISTS.md` §5.6）；`plugin_list` 读不到时只显示注册表
+快照里的 id/name/version/state，不显示描述。勾选只改本地 pending，应用时才 `set_enabled`；
+入口插件（`settings_ui.main` 自己）的复选框置灰——禁用入口插件等于把当前设置页一起卸载，
+`document/SETTINGS.md` §3.1 明确这一行由设置页负责置灰，宿主不加特判。
 
 ### 4.1 热键组合录入（`options == "hotkey"`）
 
@@ -245,6 +252,7 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 | --- | --- |
 | 宿主没有 `shot.host.plugin_lists`（老宿主） | 配置区显示「宿主不支持列表服务（shot.host.plugin_lists）」降级，插件管理照常渲染 |
 | `config_list` 读不到 / 不是合法 JSON | 配置区显示具体降级原因（并记一条 WARN），插件管理照常渲染，不崩 |
+| `plugin_list` 读不到 / 不是合法 JSON | 插件表退回注册表快照（id/name/version/state），不显示描述；记一条 WARN，启停不受影响 |
 | 宿主没有 `shot.host.plugin_registry` | 显示"宿主未提供插件注册表服务"提示，配置表单照常渲染 |
 | 宿主没有事件总线 | 记一条 WARN，窗口不会自动弹出（只能靠宿主 `post_to_plugin` 投递 `settings.open`）；配置写不出去，插件启停仍可用 |
 | 配置提供者被热卸载 | 收到 `plugins.changed` 后整表重读；消失的节显示成灰色"插件已卸载"一节，下一次刷新消失 |
@@ -262,9 +270,12 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 
 ### 6.1 多语言（i18n）
 
+> 语言表同时包含插件自身的 `plugin.name` / `plugin.description`：设置页的插件分区标题按
+> `display(插件 id, "plugin.name")` 解析（查不到时回退成 key 本身）。
+
 设置页自身文案与从别处读来的 label/tooltip 都跟随界面语言（`document/I18N.md`）：
 
-- 语言表：`src/settings_window.cpp` 的 `kLangTables[]`（zh-CN / en-US 各一张 JSON，79 个
+- 语言表：`src/settings_window.cpp` 的 `kLangTables[]`（zh-CN / en-US 各一张 JSON，
   `settings_ui.*` key，`@meta` 必填）；`SettingsWindow::start()` 里
   `shot::I18n(host, "settings_ui.main")` + `loadTables()`，并把只读解析器经
   `SettingsPanel::setI18n()` 借给面板；`stop()` 在 UI 线程 join 之后先
@@ -272,10 +283,15 @@ clamp 的坐标语义与边框处理（实测确认）：GLFW 的窗口位置/�
 - 自己文案用 `Impl::tr(key, 中文兜底)`；窗口标题 `Plugin-shot 设置 / Plugin-shot Settings`
   也按当前语言生成。
 - 配置区按**谁渲染谁解析**：`config_list` 的 `label`/`tooltip` 与 ENUM 候选值都可能
-  是文本 key，渲染时 `Impl::resolve(owner, 值)` → `i18n_list[(owner,值)] ?? 值`；
-  存储值仍是技术值（`auto` / `debug` / `png`），只有显示名变。
-- 刷新：`lists.changed` 同时接受 `config_list` 与 `i18n_list`——语言快照变化时重读配置区，
-  `resolve` 在下一次渲染自然取到新语言文本。
+  是文本 key，渲染时 `Impl::resolve(owner, 值)` → `i18n_list[(owner,值)] ?? 值`。
+  **ENUM 的候选值本身就是 i18n key**（插件负责命名空间，如 `format.png` /
+  `source.monitor`）：设置页只解析显示，存储与写值都是原始 key，不做拼接/剥离；
+  插件读配置时需兼容旧版本存下的技术值（如 `png` / `monitor`）。
+- 插件表的名字/描述也按同一规则解析：名字用 `plugin.name`，描述用
+  `plugin.description`（owner 都是插件 id）；解析不到时分别回退 `plugin_list` 里的
+  metadata name / description（`document/LISTS.md` §5.6）。
+- 刷新：`lists.changed` 接受 `config_list` / `i18n_list` / `plugin_list`——语言快照变化时
+  重读配置区与插件表，`config_list` / `plugin_list` 变化时重读对应模型。
 - 降级：`i18n` 为空（老宿主 / 未启动）时 `tr` 返回中文原文、`resolve` 原样返回 key，
   界面行为与改造前一致。**日志不翻译**（e2e 按中文日志断言）。
 

@@ -36,6 +36,8 @@ namespace {
 // 长行按 88 字符切成相邻 raw 字面量，编译期拼回一条合法 JSON。
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
+    R"json("plugin.name":"设置页",)json"
+    R"json("plugin.description":"设置页：按配置描述符生成表单，并管理插件的启用与禁用（ImGui + GLFW + OpenGL3）",)json"
     R"json("settings_ui.window_title":"设置",)json"
     R"json("settings_ui.apply":"应用",)json"
     R"json("settings_ui.cancel":"取消",)json"
@@ -99,6 +101,8 @@ const char* const kLangTables[] = {
     R"json("settings_ui.color_pick_title":"自定义颜色",)json"
     R"json("settings_ui.color_custom_done":"确定",)json"
     R"json("settings_ui.color_hex_hint":"#RRGGBB，例如 #4C9AFF",)json"
+    R"json("settings_ui.tab_general":"常规",)json"
+    R"json("settings_ui.tab_plugins":"插件",)json"
     R"json("settings_ui.plugin_table_title":"插件管理（勾选后要点「应用」才生效）",)json"
     R"json("settings_ui.registry_unavailable":"宿主未提供插件注册表服务（shot.host.plugin_registry）：当前宿主不能管理插件启停)json"
     R"json(。",)json"
@@ -119,6 +123,8 @@ const char* const kLangTables[] = {
     R"json("settings_ui.dialog_error_prefix":"：",)json"
     R"json("settings_ui.dialog_error_suffix":"，请直接输入路径"})json",
     R"json({"@meta":"en-US",)json"
+    R"json("plugin.name":"Settings",)json"
+    R"json("plugin.description":"Settings window: builds the form from config descriptors and enables or disables plugins (ImGui + GLFW + OpenGL3)",)json"
     R"json("settings_ui.window_title":"Settings",)json"
     R"json("settings_ui.apply":"Apply",)json"
     R"json("settings_ui.cancel":"Cancel",)json"
@@ -196,6 +202,8 @@ const char* const kLangTables[] = {
     R"json("settings_ui.color_pick_title":"Custom color",)json"
     R"json("settings_ui.color_custom_done":"OK",)json"
     R"json("settings_ui.color_hex_hint":"#RRGGBB, e.g. #4C9AFF",)json"
+    R"json("settings_ui.tab_general":"General",)json"
+    R"json("settings_ui.tab_plugins":"Plugins",)json"
     R"json("settings_ui.plugin_table_title":"Plugins (changes apply after clicking Apply)",)json"
     R"json("settings_ui.registry_unavailable":"The host has no plugin registry service (shot.host.p)json"
     R"json(lugin_registry): plugins cannot be managed.",)json"

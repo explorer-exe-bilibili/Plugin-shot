@@ -1,10 +1,15 @@
-// settings_plugin_table —— 插件管理表的渲染：启用复选框 / 插件名(id) / 版本 / 状态。
+// settings_plugin_table —— 「插件」页签的渲染：启用复选框 / 插件名(id) + 描述 /
+// 版本 / 状态。
 //
-// 数据来自 settings_model.cpp 读出的注册表快照（PluginRow）；勾选只改本地
-// enabledPending，真正 set_enabled 在 settings_apply.cpp。
-// 入口插件（settings_ui.main 自己）的复选框在这里置灰：禁用它会连设置页一起卸载。
+// 数据来自 settings_model.cpp 读出的注册表快照（PluginRow）。名字与描述先按
+// i18n_list 的 plugin.name / plugin.description 解析（owner = 插件 id），解析
+// 不到时分别退回 metadata 名与 plugin_list 的 description；两者都没有就只显示
+// id / 不显示描述。勾选只改本地 enabledPending，真正 set_enabled 在
+// settings_apply.cpp。入口插件（settings_ui.main 自己）的复选框在这里置灰：
+// 禁用它会连设置页一起卸载。
 
 #include <string>
+#include <string_view>
 
 #include "imgui.h"
 
@@ -13,12 +18,7 @@
 
 namespace settings_ui {
 
-void SettingsPanel::Impl::renderPluginTable() {
-    if (!ImGui::CollapsingHeader(
-            tr("settings_ui.plugin_table_title", "插件管理（勾选后要点「应用」才生效）"),
-            ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+void SettingsPanel::Impl::renderPluginPage() {
     if (registryUnavailable) {
         ImGui::TextDisabled(
             "%s", tr("settings_ui.registry_unavailable",
@@ -30,6 +30,14 @@ void SettingsPanel::Impl::renderPluginTable() {
         ImGui::TextDisabled("%s", tr("settings_ui.no_plugins", "没有已安装的插件。"));
         return;
     }
+    renderPluginTable();
+}
+
+void SettingsPanel::Impl::renderPluginTable() {
+    // 页签本身已经叫「插件」，这里只留一句操作提示，不再套 CollapsingHeader：
+    // 再套一层折叠标题会让表格默认折起来，用户要点两次才能看到内容。
+    ImGui::TextUnformatted(tr(
+        "settings_ui.plugin_table_title", "插件管理（勾选后要点「应用」才生效）"));
     const ImGuiTableFlags tableFlags =
         ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg;
     if (ImGui::BeginTable("##plugins", 4, tableFlags)) {
@@ -73,10 +81,21 @@ void SettingsPanel::Impl::renderPluginRow(PluginRow& row) {
     }
 
     ImGui::TableNextColumn();
+    // 名字的解析顺序：plugin.name 译文 → metadata name（注册表快照）→ id。
+    // 另一个 agent 正在给各插件补 plugin.name 文案，不能假设它一定存在；
+    // i18n 查不到时 resolve 原样返回 key，所以"结果 == key"就是没有译文。
+    const char* const kPluginNameKey = "plugin.name";
+    const char* const localizedName = resolve(row.status.id.c_str(), kPluginNameKey);
+    const bool hasLocalizedName =
+        (localizedName != nullptr) && (std::string_view(localizedName) != kPluginNameKey);
+    std::string displayName = hasLocalizedName ? std::string(localizedName) : row.status.name;
+    if (displayName.empty()) {
+        displayName = row.status.id;  // metadata 名缺失时用 id 兜底（宿主已按此投影）
+    }
     const std::string label =
-        (row.status.name.empty() || row.status.name == row.status.id)
-            ? row.status.id
-            : trFormat("settings_ui.name_with_id", "%s（%s）", row.status.name.c_str(),
+        (displayName == row.status.id)
+            ? displayName
+            : trFormat("settings_ui.name_with_id", "%s（%s）", displayName.c_str(),
                        row.status.id.c_str());
     ImGui::TextUnformatted(label.c_str());
     if (isEntry) {
@@ -87,6 +106,24 @@ void SettingsPanel::Impl::renderPluginRow(PluginRow& row) {
         ImGui::SameLine();
         ImGui::TextColored(kToneWarning, "%s",
                            tr("settings_ui.pending_marker", "（待应用）"));
+    }
+
+    // 描述：plugin.description 译文 → plugin_list.description（metadata 原文）→ 不显示。
+    // TextWrapped 按插件列宽自动换行，ImGui 据此把行高撑到放得下名称 + 描述两行；
+    // 这里不写死行高，否则长描述会被裁掉、短描述又留下大块空白。
+    const char* const kPluginDescriptionKey = "plugin.description";
+    const char* const localizedDescription =
+        resolve(row.status.id.c_str(), kPluginDescriptionKey);
+    const bool hasLocalizedDescription =
+        (localizedDescription != nullptr) &&
+        (std::string_view(localizedDescription) != kPluginDescriptionKey);
+    const std::string description =
+        hasLocalizedDescription ? std::string(localizedDescription) : row.description;
+    if (!description.empty()) {
+        // 描述是辅助信息：用禁用文字色压一级，避免和插件名抢注意力。
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+        ImGui::TextWrapped("%s", description.c_str());
+        ImGui::PopStyleColor();
     }
 
     ImGui::TableNextColumn();
