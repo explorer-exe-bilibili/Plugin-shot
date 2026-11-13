@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -343,8 +344,52 @@ std::string I18n::detectSystemLanguage() {
             }
         }
     }
+#else
+    // POSIX：按 gettext 的惯例从环境变量取 locale，优先 LANGUAGE（可能是
+    // "zh_CN:en_US" 这样的优先级列表），再 LC_ALL / LC_MESSAGES / LANG。
+    // 值形如 "zh_CN.UTF-8@modifier"：去掉编码与修饰符、把 '_' 换成 '-'，再按
+    // 语言目录做精确匹配；目录里没有就落到同主语言族（zh_CN → zh-CN）。
+    const char* const names[] = {"LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"};
+    const std::vector<CatalogLanguage> languages = instance().catalog();
+    for (const char* name : names) {
+        const char* value = std::getenv(name);
+        if (value == nullptr || *value == '\0') {
+            continue;
+        }
+        std::string raw(value);
+        const std::size_t listEnd = raw.find(':');
+        if (listEnd != std::string::npos) {
+            raw.resize(listEnd);
+        }
+        const std::size_t encoding = raw.find('.');
+        if (encoding != std::string::npos) {
+            raw.resize(encoding);
+        }
+        const std::size_t modifier = raw.find('@');
+        if (modifier != std::string::npos) {
+            raw.resize(modifier);
+        }
+        if (raw.empty()) {
+            continue;
+        }
+        std::replace(raw.begin(), raw.end(), '_', '-');
+        if (raw == "C" || raw == "POSIX") {
+            continue;  // C locale 不是用户语言，继续看下一个变量
+        }
+        const std::string tag = normalizeTag(raw);
+        if (findInCatalog(languages, tag) != nullptr) {
+            return tag;
+        }
+        const std::string primary = primaryTag(tag);
+        if (!primary.empty()) {
+            for (const CatalogLanguage& language : languages) {
+                if (primaryTag(language.tag) == primary) {
+                    return language.tag;
+                }
+            }
+        }
+    }
 #endif
-    // 非 Windows 平台本期不做系统语言探测：统一回退默认语言（document/I18N.md 限制）。
     return defaultLanguage();
 }
 

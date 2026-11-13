@@ -17,7 +17,8 @@
 //      的 `@language/` 声明（运行期由 HostListCatalog 从 i18n_source_list 投影，
 //      调 setExternalLanguages 灌进来）。目录顺序 = 设置页 ENUM 的顺序；
 //    · 当前语言：core/language 配置项（auto|<目录里的标签>），auto 解析 Windows
-//      的 GetUserDefaultLocaleName，其它平台回退 en-US；
+//      的 GetUserDefaultLocaleName，POSIX 依次读 LANGUAGE / LC_ALL / LC_MESSAGES / LANG，
+//      都匹配不到时回退 en-US；
 //    · 宿主自己的文案表：托盘命令 label、配置项 label/tooltip、ENUM 候选的原生
 //      显示名，以及宿主产生、被消费方原样展示的动态文案（注册表 reason、
 //      capture.failed.reason 等）；
@@ -212,7 +213,9 @@ public:
     /**
      * @brief 检测 OS 界面语言并映射到目录里的标签。
      *
-     * Windows 用 GetUserDefaultLocaleName；系统标签不在目录里时按主语言族匹配，
+     * Windows 用 GetUserDefaultLocaleName；POSIX 读 LANGUAGE（冒号分隔的优先级列表）、
+     * LC_ALL / LC_MESSAGES / LANG，去掉 .编码 与 @修饰符、把下划线换成连字符；
+     * 系统标签不在目录里时按主语言族匹配，
      * 仍没有才回退 en-US。其它平台本期不做探测、直接返回默认语言。
      * @return 目录里的规范标签或默认语言。
      */
