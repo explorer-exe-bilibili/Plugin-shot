@@ -372,18 +372,21 @@ bool RegionWindow::Impl::x11CaptureBackground() {
     glBindTexture(GL_TEXTURE_2D, backgroundTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, imageWidth, imageHeight, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, pixels.data());
     glBindTexture(GL_TEXTURE_2D, 0);
-    if (glGetError() != GL_NO_ERROR) {
+    const GLenum textureError = glGetError();
+    if (textureError != GL_NO_ERROR) {
         // 超过 GPU 纹理上限（多屏 8K）等：删掉半成品，按"没有背景"处理，绘制层会用纯色底。
         glDeleteTextures(1, &backgroundTexture);
         backgroundTexture = 0;
-        log.warn("region_selector：X11 快照纹理上传失败（超过 GPU 纹理上限？），"
-                 "覆盖层退化为纯色遮罩");
+        log.warn("region_selector：X11 快照纹理上传失败（宽x高=" +
+                 std::to_string(imageWidth) + "x" + std::to_string(imageHeight) + "，GL error=" +
+                 std::to_string(static_cast<unsigned int>(textureError)) +
+                 "，可能是 GPU 纹理上限或核心 Profile 不支持的参数），覆盖层退化为纯色遮罩");
         return false;
     }
     backgroundWidth = imageWidth;

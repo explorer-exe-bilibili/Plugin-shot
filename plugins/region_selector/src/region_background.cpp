@@ -23,6 +23,13 @@
 
 #include <GLFW/glfw3.h>  // 这里主要用它提供的 GL 1.1 声明（纹理）
 
+// Windows 的 <GL/gl.h> 只到 OpenGL 1.1：GL_CLAMP_TO_EDGE 是 1.2 的常量，必须自己补。
+// 不能继续用 GL_CLAMP——它在核心 Profile 里已被移除，会报 GL_INVALID_ENUM，导致
+// glGetError 把一次成功的上传误判成失败（Wayland/X11 的灰遮罩就是这么来的）。
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+
 #include "region_window_impl.h"
 #include "shot_plugin_helpers.h"
 
@@ -96,8 +103,8 @@ bool RegionWindow::Impl::captureBackground() {
     glBindTexture(GL_TEXTURE_2D, backgroundTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, monitorRect.width, monitorRect.height, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, pixels.data());
