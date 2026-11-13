@@ -5,7 +5,8 @@
 //
 // 状态机（每次覆盖层显示都是一次全新的会话）：
 //   显示覆盖层        → 定位光标；若左键还按着，先等它松开（waitRelease）
-//   空闲（无按键）    → 每帧枚举/命中光标下的顶层窗口，选框用指数平滑吸附过去
+//   空闲（无按键）    → 每帧判定悬停目标（屏幕四角 / 任务栏面板 / 顶层窗口），
+//                       选框用指数平滑吸附过去
 //   左键按下          → 记下起点与时刻（pressed）；此时还可能是单击
 //   位移 > 4px        → 进入拖动模式（dragging）：选框严格跟手，**禁用**吸附与动画
 //   松开（单击）      → 位移 ≤4px 且按住 ≤400ms：直接用悬停窗口矩形确认采集
@@ -23,8 +24,12 @@
 // 换算一次，万一将来窗口被系统缩放也不会画歪。content scale 只放大字号与折角/边框
 // 这类装饰，绝不乘进区域坐标。
 //
+// 悬停判定（resolveHoverHit）的优先级：屏幕四角 → 任务栏/面板 → 普通窗口。前两者都
+// 映射成"当前显示器全屏"这个伪窗口矩形（用户要求：悬停在任务栏或屏幕四角时选中整屏），
+// 所以绘制与确认路径完全复用窗口吸附那一套，不新增事件、也不改 ABI。
+//
 // 悬停枚举按平台层分派：Windows 走 EnumWindows + DWM 边界；X11 走 XQueryTree +
-// EWMH 类型过滤；Wayland 恒为空列表（协议不允许枚举，吸附关闭）。交互代码本身与
+// EWMH 类型过滤；Wayland 恒为空结果（协议不允许枚举，吸附关闭）。交互代码本身与
 // 平台无关，两种新会话共用。X11 的鼠标/键盘同样用 GLFW 轮询（覆盖层拿焦点）。
 
 #include <algorithm>
@@ -89,6 +94,40 @@ void approachValue(float& value, float target, float alpha) {
     value += delta * alpha;
 }
 
+/** @brief 点是否落在矩形内（左闭右开，与命中测试一致；宽高为 0 的矩形永不命中）。 */
+bool rectContains(const ScreenRect& rect, int x, int y) {
+    return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+}
+
+/** @brief 点是否落在窗口/面板矩形内（同一套左闭右开语义）。 */
+bool rectContains(const WindowTarget& target, int x, int y) {
+    return x >= target.x && x < target.x + target.width && y >= target.y &&
+           y < target.y + target.height;
+}
+
+/**
+ * @brief 光标是否落在当前显示器四角的方块里（距两条相邻边都 < kCornerSnapSize）。
+ *
+ * 用**显示器矩形**而不是虚拟桌面/整个 X screen 矩形：多显示器时只有光标所在那块屏
+ * 的四角才算"屏幕四角"（用户要求）。右/下边用"离最后一行/列多远"来算，否则右下角
+ * 的方块会变成 21 像素宽（差 1 的经典 off-by-one）。
+ */
+bool isInMonitorCorner(const ScreenRect& monitor, int screenX, int screenY) {
+    if (monitor.width <= 0 || monitor.height <= 0) {
+        return false;
+    }
+    const int left = screenX - monitor.x;
+    const int top = screenY - monitor.y;
+    const int right = monitor.x + monitor.width - 1 - screenX;
+    const int bottom = monitor.y + monitor.height - 1 - screenY;
+    if (left < 0 || top < 0 || right < 0 || bottom < 0) {
+        return false;  // 光标不在这块显示器上
+    }
+    const bool nearVerticalEdge = (left < kCornerSnapSize) || (right < kCornerSnapSize);
+    const bool nearHorizontalEdge = (top < kCornerSnapSize) || (bottom < kCornerSnapSize);
+    return nearVerticalEdge && nearHorizontalEdge;
+}
+
 }  // namespace
 
 void RegionWindow::Impl::normalizeRect(int ax, int ay, int bx, int by, int& x, int& y,
@@ -119,6 +158,52 @@ void RegionWindow::Impl::loadThemeColor() {
 }
 
 // ---------------------------------------------------------------------------
+// 悬停目标判定：屏幕四角 / 任务栏面板 / 普通窗口（列表顺序即优先级）
+// ---------------------------------------------------------------------------
+HoverHit RegionWindow::Impl::resolveHoverHit(int screenX, int screenY) const {
+    HoverHit hit;
+    // 没有显示器矩形（还没开始框选）时退化成纯窗口命中：绝不拿一块 0x0 的"全屏"去吸附。
+    const bool hasMonitor = monitorRect.width > 0 && monitorRect.height > 0;
+
+    // 1) 屏幕四角：优先级最高。角落方块常常整个压在最大化窗口（甚至任务栏）上，
+    //    用户要的是"这块屏"，而不是被压住的那个窗口（用户要求）。
+    if (hasMonitor && isInMonitorCorner(monitorRect, screenX, screenY)) {
+        hit.kind = HoverTargetKind::Corner;
+        hit.rect = monitorRect;
+        return hit;
+    }
+
+    // 2) 任务栏 / 面板：矩形一律用 monitorRect（鼠标所在显示器），不是面板自己的矩形。
+    //    副屏任务栏命中时也要选"鼠标所在那块屏的全屏"（用户要求）。面板在 Z 序最上层，
+    //    命中它就不该再选中它下面的窗口，所以这里直接返回。
+    if (hasMonitor) {
+        for (const WindowTarget& panel : windowScan.panels) {
+            if (rectContains(panel, screenX, screenY)) {
+                hit.kind = HoverTargetKind::Panel;
+                hit.hwnd = panel.hwnd;
+                hit.rect = monitorRect;
+                return hit;
+            }
+        }
+    }
+
+    // 3) 普通窗口：列表已按 Z 序排好，第一个包含点的就是最上层窗口。
+    for (const WindowTarget& target : windowScan.windows) {
+        if (!rectContains(target, screenX, screenY)) {
+            continue;
+        }
+        hit.kind = HoverTargetKind::Window;
+        hit.hwnd = target.hwnd;
+        hit.rect.x = target.x;
+        hit.rect.y = target.y;
+        hit.rect.width = target.width;
+        hit.rect.height = target.height;
+        return hit;
+    }
+    return hit;
+}
+
+// ---------------------------------------------------------------------------
 // 悬停窗口：节流枚举 + 命中 + 指数平滑
 // ---------------------------------------------------------------------------
 void RegionWindow::Impl::updateHover() {
@@ -136,15 +221,15 @@ void RegionWindow::Impl::updateHover() {
     if (!windowScanValid ||
         now - lastWindowScan >= std::chrono::milliseconds(kWindowScanIntervalMs)) {
 #if defined(__linux__)
-        // Linux 两套实现都编进来了：运行期按会话类型调用对应的窗口枚举。
+        // Linux 两套实现都编进来了：运行期按会话类型调用对应的窗口扫描。
         if (linuxBackend == LinuxSessionBackend::X11) {
-            windowTargets = listWindowTargetsX11(overlayHwnd);
+            windowScan = scanWindowTargetsX11(overlayHwnd);
         } else {
-            // Wayland：空实现（协议不允许枚举），返回空列表。
-            windowTargets = listWindowTargets(overlayHwnd);
+            // Wayland：空实现（协议不允许枚举），返回空结果。
+            windowScan = scanWindowTargets(overlayHwnd);
         }
 #else
-        windowTargets = listWindowTargets(overlayHwnd);
+        windowScan = scanWindowTargets(overlayHwnd);
 #endif
         lastWindowScan = now;
         windowScanValid = true;
@@ -172,38 +257,34 @@ void RegionWindow::Impl::updateHover() {
         hover.active = false;
         hover.initialized = false;
         hover.hwnd = 0;
+        hover.kind = HoverTargetKind::NoTarget;
         return;
     }
     const int screenX = windowX + static_cast<int>(cursorX);
     const int screenY = windowY + static_cast<int>(cursorY);
 
-    const WindowTarget* hit = nullptr;
-    for (const WindowTarget& target : windowTargets) {
-        if (screenX >= target.x && screenX < target.x + target.width && screenY >= target.y &&
-            screenY < target.y + target.height) {
-            hit = &target;  // 列表已按 Z 序排好，第一个包含点的就是最上层窗口
-            break;
-        }
-    }
-
-    if (hit == nullptr) {
+    const HoverHit hit = resolveHoverHit(screenX, screenY);
+    if (hit.kind == HoverTargetKind::NoTarget) {
         if (hover.active) {
-            shot::Logger(host).debug("region_selector：光标下没有候选窗口，隐藏悬停框");
+            shot::Logger(host).debug(
+                "region_selector：光标下没有可吸附目标（窗口 / 任务栏面板 / 屏幕四角），"
+                "隐藏悬停框");
         }
-        // 下次从"无框"变"有框"时直接落位，不要从上一个窗口的旧位置飞进来。
+        // 下次从"无框"变"有框"时直接落位，不要从上一个目标的旧位置飞进来。
         hover.active = false;
         hover.initialized = false;
         hover.hwnd = 0;
+        hover.kind = HoverTargetKind::NoTarget;
         return;
     }
 
     ScreenRect local;
-    local.x = hit->x - windowX;
-    local.y = hit->y - windowY;
-    local.width = hit->width;
-    local.height = hit->height;
+    local.x = hit.rect.x - windowX;
+    local.y = hit.rect.y - windowY;
+    local.width = hit.rect.width;
+    local.height = hit.rect.height;
 
-    const bool changed = !hover.active || hover.hwnd != hit->hwnd ||
+    const bool changed = !hover.active || hover.hwnd != hit.hwnd || hover.kind != hit.kind ||
                          hover.target.x != local.x || hover.target.y != local.y ||
                          hover.target.width != local.width ||
                          hover.target.height != local.height;
@@ -220,15 +301,26 @@ void RegionWindow::Impl::updateHover() {
         hover.lastTick = now;
     }
     if (changed) {
-        char text[192] = {};
-        std::snprintf(text, sizeof(text),
-                      "region_selector：悬停窗口 hwnd=0x%llx rect=(%d,%d) %dx%d（已换算到覆盖层坐标）",
-                      static_cast<unsigned long long>(hit->hwnd), local.x, local.y, local.width,
-                      local.height);
+        char text[224] = {};
+        if (hit.kind == HoverTargetKind::Window) {
+            std::snprintf(text, sizeof(text),
+                          "region_selector：悬停窗口 hwnd=0x%llx rect=(%d,%d) %dx%d"
+                          "（已换算到覆盖层坐标）",
+                          static_cast<unsigned long long>(hit.hwnd), local.x, local.y,
+                          local.width, local.height);
+        } else {
+            // "全屏"伪目标没有真实窗口，日志里写清是哪种命中，排查时不用猜。
+            std::snprintf(text, sizeof(text),
+                          "region_selector：悬停%s → 当前显示器全屏 rect=(%d,%d) %dx%d"
+                          "（已换算到覆盖层坐标）",
+                          (hit.kind == HoverTargetKind::Panel) ? "任务栏/面板" : "屏幕四角",
+                          local.x, local.y, local.width, local.height);
+        }
         shot::Logger(host).debug(text);
     }
     hover.active = true;
-    hover.hwnd = hit->hwnd;
+    hover.hwnd = hit.hwnd;
+    hover.kind = hit.kind;
     hover.target = local;
     animateHover();
 }
@@ -297,7 +389,7 @@ void RegionWindow::Impl::updateSelection() {
 
     if (drag.dragging) {
         // 拖动中**不枚举窗口、不做动画**：需求要求选框严格跟手。这里提前返回，
-        // 连 windowTargets 都不刷新，避免拖拽时每 30ms 偷偷枚举一次。
+        // 连 windowScan 都不刷新，避免拖拽时每 30ms 偷偷枚举一次。
         if (leftDown) {
             return;  // drag.cursor 每帧已刷新，绘制直接用
         }

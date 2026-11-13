@@ -6,6 +6,14 @@
 //   唯一可行的做法是自己 EnumWindows 枚举顶层窗口，跳过不该被选中的窗口，再按
 //   Z 序做矩形命中测试。
 //
+// 任务栏 / 面板为什么单独一份（需求：悬停任务栏 = 选中当前显示器全屏）：
+//   任务栏带 WS_EX_TOOLWINDOW，按候选窗口的排除规则永远进不了列表——这正是旧版
+//   "光标停在任务栏上什么都不选中"的原因。这里改为先按窗口类名认出来，放进
+//   WindowScan::panels；交互层（region_overlay.cpp）命中它时把"当前显示器全屏"当作
+//   悬停目标。任务栏本身不能当截图目标（存一张任务栏条没有意义），所以不进 windows。
+//   Windows 11 每块显示器可能有自己的任务栏：主屏 Shell_TrayWnd、副屏
+//   Shell_SecondaryTrayWnd，两块都收，命中的那块所在显示器由交互层决定。
+//
 // 为什么用 DWMWA_EXTENDED_FRAME_BOUNDS：
 //   Win10/11 的普通窗口在 DWM 里有一圈肉眼不可见的调整边框（阴影/拖拽热区），
 //   GetWindowRect 会把这圈算进去。直接拿它当截图区域，图四周会多出几像素的桌面
@@ -23,6 +31,9 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstddef>
+#include <cwchar>
+#include <iterator>
 #include <unordered_map>
 #include <vector>
 
@@ -36,6 +47,34 @@ namespace {
 
 /** @brief Z 序链的最大步数：防止异常情况下 GetWindow 链成环把渲染线程卡死。 */
 constexpr int kMaxZOrderWindows = 10000;
+
+/**
+ * @brief 任务栏 / 面板的窗口类名。
+ *
+ * Windows 11 每块显示器都可能有一条任务栏：主屏 Shell_TrayWnd，副屏
+ * Shell_SecondaryTrayWnd。两块都要认出来——需求是"命中任何一块都按鼠标所在显示器
+ * 全屏处理"。按类名而不是按"置顶 + 贴屏幕边"之类启发式判断：类名是 Shell 的稳定
+ * 契约，启发式会把贴边的自绘窗口误判成任务栏。
+ */
+const wchar_t* const kPanelWindowClasses[] = {L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd"};
+
+constexpr std::size_t kPanelWindowClassCount = std::size(kPanelWindowClasses);
+
+/** @brief 窗口类名是否是任务栏 / 面板（见 kPanelWindowClasses 的理由）。 */
+bool isPanelWindowClass(HWND hwnd) {
+    wchar_t className[64] = {};
+    // 任务栏类名只有二十来个字符；64 个 wchar_t 足够，读不到就按"不是任务栏"处理。
+    const int length = GetClassNameW(hwnd, className, static_cast<int>(std::size(className)));
+    if (length <= 0) {
+        return false;
+    }
+    for (std::size_t index = 0; index < kPanelWindowClassCount; ++index) {
+        if (wcscmp(className, kPanelWindowClasses[index]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /**
  * @brief 窗口是否被 DWM 标记为 cloaked（不可见）。
@@ -89,6 +128,52 @@ bool clipToVirtualDesktop(RECT& rect) {
 }
 
 /**
+ * @brief 把 Win32 RECT 转成内部使用的 WindowTarget（绝对屏幕坐标，物理像素）。
+ */
+WindowTarget makeTarget(HWND hwnd, const RECT& rect) {
+    WindowTarget target;
+    target.hwnd = reinterpret_cast<std::uintptr_t>(hwnd);
+    target.x = rect.left;
+    target.y = rect.top;
+    target.width = rect.right - rect.left;
+    target.height = rect.bottom - rect.top;
+    return target;
+}
+
+/**
+ * @brief 判断一个 HWND 是不是任务栏 / 面板，并取它的屏幕矩形。
+ *
+ * 排除规则照抄候选窗口的"用户看不看得见"，但**故意不过滤 `WS_EX_TOOLWINDOW`**：
+ * 任务栏自己就带这个样式，而那正是我们要找的窗口。
+ *
+ * 矩形用 `GetWindowRect` 而不是 DWM 扩展帧边界：任务栏是 WS_POPUP 窗口，没有不可见
+ * 的调整边框，`GetWindowRect` 就是它的真实轮廓；而 DWM 对部分 shell 窗口会返回 0 矩形，
+ * 那会让任务栏整块被丢掉（悬停又变回"什么都不选中"）。自动隐藏的任务栏矩形在屏幕外，
+ * 会被 clipToVirtualDesktop 裁掉——它在屏幕外本来也点不到。
+ */
+bool isPanelWindow(HWND hwnd, std::uintptr_t excludeHwnd, RECT& rect) {
+    if (hwnd == reinterpret_cast<HWND>(excludeHwnd)) {
+        return false;
+    }
+    if (IsWindowVisible(hwnd) == FALSE || IsIconic(hwnd) != FALSE) {
+        return false;
+    }
+    if (!isPanelWindowClass(hwnd)) {
+        return false;
+    }
+    if (isDwmCloaked(hwnd)) {
+        return false;
+    }
+    if (GetWindowRect(hwnd, &rect) == FALSE) {
+        return false;
+    }
+    if (rect.right <= rect.left || rect.bottom <= rect.top) {
+        return false;
+    }
+    return clipToVirtualDesktop(rect);
+}
+
+/**
  * @brief 判断一个 HWND 是否可以作为框选目标。
  *
  * 排除清单（每一条的原因见对应的行内注释）：
@@ -96,6 +181,7 @@ bool clipToVirtualDesktop(RECT& rect) {
  *   · 不可见 / 最小化 / 零尺寸：用户看不到，选中它没有意义；
  *   · DWM cloaked：UWP 挂起窗口、其它虚拟桌面窗口（IsWindowVisible 仍为真）；
  *   · WS_EX_TOOLWINDOW：工具窗口、浮动提示、输入法候选框，不是用户想截的窗口。
+ *     （任务栏也带这个样式，但它已经在 isPanelWindow 里单独收走，不会走到这里。）
  */
 bool isCandidateWindow(HWND hwnd, std::uintptr_t excludeHwnd, RECT& rect) {
     if (hwnd == reinterpret_cast<HWND>(excludeHwnd)) {
@@ -123,10 +209,10 @@ bool isCandidateWindow(HWND hwnd, std::uintptr_t excludeHwnd, RECT& rect) {
     return clipToVirtualDesktop(rect);
 }
 
-/** @brief EnumWindows 回调的上下文：排除句柄 + 收集结果。 */
+/** @brief EnumWindows 回调的上下文：排除句柄 + 收集结果（候选窗口与任务栏各一份）。 */
 struct EnumContext {
     std::uintptr_t excludeHwnd = 0;
-    std::vector<WindowTarget> targets;
+    WindowScan scan;
 };
 
 BOOL CALLBACK collectWindow(HWND hwnd, LPARAM param) {
@@ -135,16 +221,15 @@ BOOL CALLBACK collectWindow(HWND hwnd, LPARAM param) {
         return FALSE;
     }
     RECT rect = {};
+    // 先认任务栏：它带 WS_EX_TOOLWINDOW，走候选窗口的排除规则会被丢掉。
+    if (isPanelWindow(hwnd, context->excludeHwnd, rect)) {
+        context->scan.panels.push_back(makeTarget(hwnd, rect));
+        return TRUE;  // 继续枚举
+    }
     if (!isCandidateWindow(hwnd, context->excludeHwnd, rect)) {
         return TRUE;  // 继续枚举
     }
-    WindowTarget target;
-    target.hwnd = reinterpret_cast<std::uintptr_t>(hwnd);
-    target.x = rect.left;
-    target.y = rect.top;
-    target.width = rect.right - rect.left;
-    target.height = rect.bottom - rect.top;
-    context->targets.push_back(target);
+    context->scan.windows.push_back(makeTarget(hwnd, rect));
     return TRUE;
 }
 
@@ -166,42 +251,34 @@ std::unordered_map<HWND, int> buildZOrder() {
     return rank;
 }
 
-}  // namespace
-
-std::vector<WindowTarget> listWindowTargets(std::uintptr_t excludeHwnd) {
-    EnumContext context;
-    context.excludeHwnd = excludeHwnd;
-    EnumWindows(&collectWindow, reinterpret_cast<LPARAM>(&context));
-    if (context.targets.size() <= 1) {
-        return context.targets;
-    }
-
-    const std::unordered_map<HWND, int> rank = buildZOrder();
-    std::stable_sort(context.targets.begin(), context.targets.end(),
+/** @brief 按 buildZOrder 的表稳定排序；不在表里的窗口排到最后（顺序保持枚举顺序）。 */
+void sortByZOrder(std::vector<WindowTarget>& targets, const std::unordered_map<HWND, int>& rank) {
+    std::stable_sort(targets.begin(), targets.end(),
                      [&rank](const WindowTarget& left, const WindowTarget& right) {
-                         const auto leftRank =
-                             rank.find(reinterpret_cast<HWND>(left.hwnd));
-                         const auto rightRank =
-                             rank.find(reinterpret_cast<HWND>(right.hwnd));
+                         const auto leftRank = rank.find(reinterpret_cast<HWND>(left.hwnd));
+                         const auto rightRank = rank.find(reinterpret_cast<HWND>(right.hwnd));
                          const int leftIndex =
                              (leftRank != rank.end()) ? leftRank->second : INT_MAX;
                          const int rightIndex =
                              (rightRank != rank.end()) ? rightRank->second : INT_MAX;
                          return leftIndex < rightIndex;
                      });
-    return context.targets;
 }
 
-bool findWindowAt(int x, int y, std::uintptr_t excludeHwnd, WindowTarget& out) {
-    const std::vector<WindowTarget> targets = listWindowTargets(excludeHwnd);
-    for (const WindowTarget& target : targets) {
-        if (x >= target.x && x < target.x + target.width && y >= target.y &&
-            y < target.y + target.height) {
-            out = target;
-            return true;  // 列表已按 Z 序排好，第一个包含点的就是最上层窗口
-        }
+}  // namespace
+
+WindowScan scanWindowTargets(std::uintptr_t excludeHwnd) {
+    EnumContext context;
+    context.excludeHwnd = excludeHwnd;
+    EnumWindows(&collectWindow, reinterpret_cast<LPARAM>(&context));
+    if (context.scan.windows.size() <= 1 && context.scan.panels.size() <= 1) {
+        return context.scan;
     }
-    return false;
+
+    const std::unordered_map<HWND, int> rank = buildZOrder();
+    sortByZOrder(context.scan.windows, rank);
+    sortByZOrder(context.scan.panels, rank);
+    return context.scan;
 }
 
 }  // namespace region_selector

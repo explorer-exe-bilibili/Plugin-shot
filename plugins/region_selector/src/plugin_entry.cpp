@@ -149,11 +149,15 @@ namespace {
 // ---------------------------------------------------------------------------
 const char* const kLangTables[] = {
     R"json({"@meta":"zh-CN",)json"
+    R"json("plugin.name":"区域框选",)json"
+    R"json("plugin.description":"区域框选覆盖层：悬停吸附窗口、单击截窗口或拖拽选区，Esc / 右键取消",)json"
     R"json("region.hint":"单击截取窗口 · 拖拽选择区域 · Esc / 右键取消",)json"
     R"json("region.hint.wayland":"拖拽选择区域 · Esc / 右键取消",)json"
     R"json("overlay.size.unit":"像素",)json"
     R"json("overlay.window_title":"Plugin-shot 区域选择"})json",
     R"json({"@meta":"en-US",)json"
+    R"json("plugin.name":"Region Selector",)json"
+    R"json("plugin.description":"Region selection overlay: hover to snap to a window and click to capture it, or drag to select a region",)json"
     R"json("region.hint":"Click a window to capture · Drag to select · Esc / right-click to cancel",)json"
     R"json("region.hint.wayland":"Drag to select · Esc / right-click to cancel",)json"
     R"json("overlay.size.unit":"px",)json"

@@ -108,6 +108,16 @@ inline constexpr double kHoverSmoothTimeConstantSeconds = 0.1;
 /** @brief 窗口枚举节流间隔（毫秒）：覆盖层铺满屏幕，每帧枚举上百个窗口太浪费。 */
 inline constexpr int kWindowScanIntervalMs = 30;
 
+/**
+ * @brief 屏幕四角"吸附当前显示器全屏"的方块边长（物理像素）。
+ *
+ * 用户要求：光标落在**当前显示器**四角的 20x20 像素方块里（距两条相邻边都 < 20px）
+ * 时，把"当前显示器全屏"当作悬停目标——那里通常是桌面/任务栏边缘，直接框整屏比
+ * "选中被角落盖住的那个窗口"更符合直觉。角落优先于窗口命中，原因见
+ * RegionWindow::Impl::resolveHoverHit。
+ */
+inline constexpr int kCornerSnapSize = 20;
+
 /** @brief 单击判定：按下到松开的最大位移（物理像素）。超过就进入拖动模式。 */
 inline constexpr int kClickMaxMovePixels = 4;
 
@@ -146,16 +156,43 @@ struct DragState {
 };
 
 /**
+ * @brief 悬停吸附命中的类别（决定日志文案与"要不要换成当前显示器全屏"）。
+ *
+ * 枚举值刻意不叫 `None`：Xlib 的 `X11/Xlib.h` 把 `None` 定义成宏（0L），而本插件
+ * 的 X11 平台层先包含 Xlib 再包含本头，用 `None` 会被预处理成数字，编译直接报
+ * "expected identifier before numeric constant"（Linux 构建实测）。
+ */
+enum class HoverTargetKind {
+    NoTarget, /**< 光标下没有可吸附的目标。 */
+    Window,   /**< 普通顶层窗口：吸附到该窗口矩形。 */
+    Panel,    /**< 任务栏 / 面板（Windows Shell_TrayWnd、X11 DOCK）：吸附到当前显示器全屏。 */
+    Corner,   /**< 屏幕四角方块（见 kCornerSnapSize）：吸附到当前显示器全屏。 */
+};
+
+/**
+ * @brief 一次悬停判定的结果：命中的类别 + 吸附矩形 + 原生句柄。
+ *
+ * 矩形是**绝对屏幕坐标**（物理像素），由调用方减去覆盖层窗口位置换成绘制用的
+ * 内容坐标。Panel / Corner 的目标是"当前显示器全屏"这个伪窗口，所以没有真实句柄。
+ */
+struct HoverHit {
+    HoverTargetKind kind = HoverTargetKind::NoTarget; /**< 命中类别。 */
+    std::uintptr_t hwnd = 0; /**< 仅 Window 有值（原生句柄）；其余类别恒为 0。 */
+    ScreenRect rect;         /**< 吸附矩形（绝对屏幕坐标）；kind == NoTarget 时无意义。 */
+};
+
+/**
  * @brief 悬停吸附框：锚点目标矩形 + 当前显示矩形 + 上次动画时刻。
  *
  * 坐标是覆盖层内容坐标（物理像素）。当前显示矩形用 float：每帧按指数曲线逼近
  * 目标，若存整数会因反复取整产生 ±1px 抖动。目标矩形保持整数——它是真实窗口
- * 矩形，单击确认时直接用 target，而不是动画中的 current。
+ * 矩形（或当前显示器全屏），单击确认时直接用 target，而不是动画中的 current。
  */
 struct HoverBox {
-    bool active = false;       /**< 光标当前是否落在某个候选窗口上。 */
+    bool active = false;       /**< 光标当前是否落在某个候选目标上。 */
     bool initialized = false;  /**< 是否已经有过显示位置：显示首帧直接对齐，不从 (0,0) 飞入。 */
     std::uintptr_t hwnd = 0;   /**< 当前目标窗口句柄（只用于变化时打 debug 日志）。 */
+    HoverTargetKind kind = HoverTargetKind::NoTarget; /**< 当前目标的类别（日志用）。 */
     ScreenRect target;         /**< 目标矩形（内容坐标）；单击确认时用这个。 */
     float x = 0.0f;            /**< 当前显示矩形左边缘（内容坐标）。 */
     float y = 0.0f;            /**< 当前显示矩形上边缘。 */
@@ -213,9 +250,10 @@ struct RegionWindow::Impl {
     std::string selectionPurpose;  // 非空 = 本次选择由 region.select.request 发起，确认后回 region.selected
     DragState drag;               // 当前框选状态
     HoverBox hover;               // 悬停窗口吸附框（目标 + 动画中的显示矩形）
-    std::vector<WindowTarget> windowTargets;  // 最近一次枚举结果（绝对物理像素，Z 序）
+    // 最近一次窗口扫描结果（绝对物理像素，Z 序）：候选窗口 + 任务栏/面板。
+    WindowScan windowScan;
     std::chrono::steady_clock::time_point lastWindowScan;  // 上次枚举时刻（30ms 节流）
-    bool windowScanValid = false;      // windowTargets 是否有有效快照
+    bool windowScanValid = false;      // windowScan 是否有有效快照
     std::uintptr_t overlayHwnd = 0;    // 覆盖层自己的 HWND：枚举时必须排除
     std::uint32_t themeColorRgb = 0x4C9AFFu;  // 主题色（0xRRGGBB，每次显示读一次配置）
     float uiScale = 1.0f;              // 当前显示器 content scale：只放大字号与装饰
@@ -256,6 +294,21 @@ struct RegionWindow::Impl {
     // ---- 覆盖层交互与绘制（region_overlay.cpp / region_overlay_draw.cpp） ----
     void updateSelection();
     void updateHover();
+    /**
+     * @brief 判定光标下的悬停吸附目标：窗口 / 任务栏面板 / 屏幕四角。
+     *
+     * 优先级从高到低：屏幕四角 → 任务栏面板 → 普通窗口。角落方块可能整个压在某个
+     * 窗口（尤其最大化窗口）上，用户要的是"这块屏"；任务栏/面板本身在 Z 序最上层，
+     * 命中它就不要再去看它下面的窗口。三者统一返回绝对屏幕坐标矩形，调用方再换算成
+     * 覆盖层内容坐标——这样"全屏"和其他窗口走同一条绘制/确认路径（不新增事件/ABI）。
+     *
+     * @param[in] screenX 光标的绝对屏幕横坐标（物理像素）。
+     * @param[in] screenY 光标的绝对屏幕纵坐标（物理像素）。
+     * @return 命中结果；没有目标时 kind == HoverTargetKind::NoTarget。
+     * @note 只读最近一次 windowScan 与 monitorRect（30ms 节流由 updateHover 负责），
+     *       不自己枚举窗口，所以可以在同一帧里被重复调用。
+     */
+    HoverHit resolveHoverHit(int screenX, int screenY) const;
     void animateHover();
     void loadThemeColor();
     void drawOverlay() const;

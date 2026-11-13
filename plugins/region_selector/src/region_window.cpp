@@ -545,43 +545,14 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     drag.waitRelease = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
 #endif
 
-    // 初始悬停目标：显示第一帧就落在光标下的窗口矩形上，**不从 (0,0) 飞入**
-    // （需求：动画只在非拖动、非显示首帧时生效）。找不到窗口就保持无框状态。
+    // 初始悬停目标：显示第一帧就落在光标下的目标矩形上，**不从 (0,0) 飞入**
+    // （需求：动画只在非拖动、非显示首帧时生效）。这里直接复用 updateHover()：
+    // 悬停判定（屏幕四角 / 任务栏面板 / 窗口）只有一份实现，首帧与之后的每帧行为一致；
+    // windowScanValid 刚被清掉，它会立刻做一次枚举；命中不到目标就保持无框状态。
     hover = HoverBox{};
-    windowTargets.clear();
+    windowScan = WindowScan{};
     windowScanValid = false;
-    int windowX = 0;
-    int windowY = 0;
-    glfwGetWindowPos(window, &windowX, &windowY);
-    WindowTarget initialTarget;
-#if defined(__linux__)
-    const bool initialHit =
-        overlayHwnd != 0 &&
-        ((linuxBackend == LinuxSessionBackend::X11)
-             ? findWindowAtX11(windowX + static_cast<int>(cursorX),
-                               windowY + static_cast<int>(cursorY), overlayHwnd, initialTarget)
-             : findWindowAt(windowX + static_cast<int>(cursorX),
-                            windowY + static_cast<int>(cursorY), overlayHwnd, initialTarget));
-#else
-    const bool initialHit =
-        overlayHwnd != 0 &&
-        findWindowAt(windowX + static_cast<int>(cursorX), windowY + static_cast<int>(cursorY),
-                     overlayHwnd, initialTarget);
-#endif
-    if (initialHit) {
-        hover.active = true;
-        hover.initialized = true;
-        hover.hwnd = initialTarget.hwnd;
-        hover.target.x = initialTarget.x - windowX;
-        hover.target.y = initialTarget.y - windowY;
-        hover.target.width = initialTarget.width;
-        hover.target.height = initialTarget.height;
-        hover.x = static_cast<float>(hover.target.x);
-        hover.y = static_cast<float>(hover.target.y);
-        hover.width = static_cast<float>(hover.target.width);
-        hover.height = static_cast<float>(hover.target.height);
-        hover.lastTick = std::chrono::steady_clock::now();
-    }
+    updateHover();
 
     if (crosshairCursor != nullptr) {
         glfwSetCursor(window, crosshairCursor);
@@ -765,7 +736,7 @@ void RegionWindow::Impl::hideOverlay() {
     // 取消/完成时复位吸附动画与枚举缓存：下次显示必须从"首帧直接对齐"开始，
     // 不能带着上一次会话的动画中间值飞入。
     hover = HoverBox{};
-    windowTargets.clear();
+    windowScan = WindowScan{};
     windowScanValid = false;
 #if defined(__linux__)
     if (window != nullptr) {
@@ -1077,7 +1048,7 @@ void RegionWindow::stop() {
     m_impl->overlayVisible = false;
     m_impl->drag = DragState{};
     m_impl->hover = HoverBox{};
-    m_impl->windowTargets.clear();
+    m_impl->windowScan = WindowScan{};
     m_impl->windowScanValid = false;
     m_impl->overlayHwnd = 0;
     m_impl->uiScale = 1.0f;

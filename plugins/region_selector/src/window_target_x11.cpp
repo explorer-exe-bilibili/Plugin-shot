@@ -19,13 +19,20 @@
 // 避免异常窗口把渲染线程卡住）；没有 WM 时窗口自己就是 root 子窗口。
 //
 // 类型过滤与 Windows 版的对应关系：
-//   _NET_WM_WINDOW_TYPE_DOCK / TOOLBAR   ≈ 任务栏、面板（WS_EX_TOOLWINDOW 类目标）
+//   _NET_WM_WINDOW_TYPE_DOCK             ≈ 任务栏、面板、Dock 栏（Windows 的 Shell_TrayWnd）
+//   _NET_WM_WINDOW_TYPE_TOOLBAR          ≈ 工具栏窗口（WS_EX_TOOLWINDOW 类目标）
 //   _NET_WM_WINDOW_TYPE_TOOLTIP / MENU / DROPDOWN_MENU / POPUP_MENU / COMBO / DND
 //                                        = 弹出层，用户不会想截它们
 //   _NET_WM_WINDOW_TYPE_DESKTOP          = 桌面窗口，几乎铺满全屏，命中它会盖住一切
 //   _NET_WM_WINDOW_TYPE_NOTIFICATION     = 通知气泡
 //   _NET_WM_WINDOW_TYPE_SPLASH / UTILITY = 启动画面 / 工具面板（与 WS_EX_TOOLWINDOW 对齐）
 // 未知/没有类型的窗口照常作为候选：宁可多列一个，也不要漏掉用户想截的窗口。
+//
+// DOCK 为什么**不跳过**（需求：悬停任务栏/面板 = 选中当前显示器全屏）：
+//   DOCK 就是面板/任务栏（GNOME 顶栏、dash-to-dock、xfce4-panel、polybar 等）。
+//   旧版把它和 MENU/TOOLTIP 一起跳过，结果是"光标停在面板上什么都不选中"——这正是
+//   本次要修的行为。现在 DOCK 窗口收进 WindowScan::panels，由交互层映射成"当前
+//   显示器全屏"；它本身不能作为截图目标，所以不进 windows 列表。
 //
 // 坐标：root 窗口坐标即像素（X 没有 DPI 缩放，Xft 的缩放只影响字体）。矩形用
 // XTranslateCoordinates(frame, root, 0, 0, ...) 换算，再裁剪到 X screen 范围
@@ -57,17 +64,20 @@ namespace {
 /** @brief 向 frame 子树里找 client 的最大层数：一般 1 层，个别 WM 会多包一层。 */
 constexpr int kClientSearchDepth = 3;
 
-/** @brief 不能作为框选目标的 EWMH 窗口类型（完整理由见文件头）。 */
+/** @brief 不能作为框选目标的 EWMH 窗口类型（完整理由见文件头；DOCK 不在此列）。 */
 const char* const kSkippedTypeNames[] = {
-    "_NET_WM_WINDOW_TYPE_DESKTOP", "_NET_WM_WINDOW_TYPE_DOCK",
-    "_NET_WM_WINDOW_TYPE_TOOLBAR", "_NET_WM_WINDOW_TYPE_MENU",
-    "_NET_WM_WINDOW_TYPE_UTILITY", "_NET_WM_WINDOW_TYPE_SPLASH",
-    "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU", "_NET_WM_WINDOW_TYPE_POPUP_MENU",
-    "_NET_WM_WINDOW_TYPE_TOOLTIP", "_NET_WM_WINDOW_TYPE_NOTIFICATION",
-    "_NET_WM_WINDOW_TYPE_COMBO", "_NET_WM_WINDOW_TYPE_DND",
+    "_NET_WM_WINDOW_TYPE_DESKTOP",      "_NET_WM_WINDOW_TYPE_TOOLBAR",
+    "_NET_WM_WINDOW_TYPE_MENU",         "_NET_WM_WINDOW_TYPE_UTILITY",
+    "_NET_WM_WINDOW_TYPE_SPLASH",       "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+    "_NET_WM_WINDOW_TYPE_POPUP_MENU",   "_NET_WM_WINDOW_TYPE_TOOLTIP",
+    "_NET_WM_WINDOW_TYPE_NOTIFICATION", "_NET_WM_WINDOW_TYPE_COMBO",
+    "_NET_WM_WINDOW_TYPE_DND",
 };
 
 constexpr std::size_t kSkippedTypeCount = std::size(kSkippedTypeNames);
+
+/** @brief 面板 / 任务栏的 EWMH 类型：命中的窗口收进 WindowScan::panels（理由见文件头）。 */
+constexpr char kDockTypeName[] = "_NET_WM_WINDOW_TYPE_DOCK";
 
 /**
  * @brief 窗口上是否存在某个属性（值不看，只看属性在不在）。
@@ -142,17 +152,18 @@ Window clientWindowOf(Display* display, Window window, Atom wmState) {
 }
 
 /**
- * @brief 窗口的 `_NET_WM_WINDOW_TYPE` 里是否含有"不可框选"的类型。
+ * @brief 窗口的 `_NET_WM_WINDOW_TYPE` 里是否含有 types 里的任何一个类型。
  *
  * @param[in] display  X11 连接。
  * @param[in] window   通常是 client 窗口（属性挂在它上面）。
  * @param[in] wmType   `_NET_WM_WINDOW_TYPE` atom。
- * @param[in] skipped  预 intern 过的"跳过类型" atom 列表。
- * @return true = 应该跳过；false = 没有类型或类型不在跳过列表里。
+ * @param[in] types    待匹配的类型 atom 列表（DOCK 或"跳过"类型）。
+ * @param[in] typeCount 列表长度。
+ * @return true = 至少命中一个类型；false = 没有类型属性或类型都不在列表里。
  * @note 一次最多读 32 个 atom（窗口类型列表实际只有 1~2 个），bytesAfter 不追问。
  */
-bool hasSkippedWindowType(Display* display, Window window, Atom wmType,
-                          const Atom* skipped, std::size_t skippedCount) {
+bool hasAnyWindowType(Display* display, Window window, Atom wmType, const Atom* types,
+                      std::size_t typeCount) {
     Atom actualType = None;
     int actualFormat = 0;
     unsigned long itemCount = 0;
@@ -161,13 +172,13 @@ bool hasSkippedWindowType(Display* display, Window window, Atom wmType,
     const int status = XGetWindowProperty(display, window, wmType, 0, 32, False, XA_ATOM,
                                           &actualType, &actualFormat, &itemCount, &bytesAfter,
                                           &data);
-    bool skip = false;
+    bool matched = false;
     if (status == Success && actualType == XA_ATOM && actualFormat == 32 && data != nullptr) {
         const auto* atoms = reinterpret_cast<const Atom*>(data);
-        for (unsigned long index = 0; index < itemCount && !skip; ++index) {
-            for (std::size_t candidate = 0; candidate < skippedCount; ++candidate) {
-                if (atoms[index] == skipped[candidate]) {
-                    skip = true;
+        for (unsigned long index = 0; index < itemCount && !matched; ++index) {
+            for (std::size_t candidate = 0; candidate < typeCount; ++candidate) {
+                if (atoms[index] == types[candidate]) {
+                    matched = true;
                     break;
                 }
             }
@@ -176,7 +187,7 @@ bool hasSkippedWindowType(Display* display, Window window, Atom wmType,
     if (data != nullptr) {
         XFree(data);
     }
-    return skip;
+    return matched;
 }
 
 /** @brief 把 root 坐标矩形裁剪到 X screen；裁剪后为空返回 false。 */
@@ -200,12 +211,12 @@ bool clipToScreen(Display* display, WindowTarget& target) {
 
 }  // namespace
 
-std::vector<WindowTarget> listWindowTargetsX11(std::uintptr_t excludeXid) {
-    std::vector<WindowTarget> targets;
+WindowScan scanWindowTargetsX11(std::uintptr_t excludeXid) {
+    WindowScan scan;
     Display* display = glfwGetX11Display();
     if (display == nullptr) {
         // GLFW 没初始化 / X11 连接失败：没有窗口列表，覆盖层仍可纯拖框。
-        return targets;
+        return scan;
     }
     const Window root = DefaultRootWindow(display);
     Window rootReturn = 0;
@@ -213,7 +224,7 @@ std::vector<WindowTarget> listWindowTargetsX11(std::uintptr_t excludeXid) {
     Window* children = nullptr;
     unsigned int childCount = 0;
     if (XQueryTree(display, root, &rootReturn, &parentReturn, &children, &childCount) == 0) {
-        return targets;
+        return scan;
     }
 
     const auto wmState = XInternAtom(display, "WM_STATE", True);
@@ -222,6 +233,8 @@ std::vector<WindowTarget> listWindowTargetsX11(std::uintptr_t excludeXid) {
     for (std::size_t index = 0; index < kSkippedTypeCount; ++index) {
         skippedTypes[index] = XInternAtom(display, kSkippedTypeNames[index], True);
     }
+    // 面板/任务栏类型单独 intern：命中它可以吸附到"当前显示器全屏"（见文件头）。
+    const auto dockType = (wmType != None) ? XInternAtom(display, kDockTypeName, True) : None;
 
     // children 是底 → 顶，反向遍历得到"最上层优先"，与 Windows 的 Z 序列表一致。
     for (unsigned int index = childCount; index > 0; --index) {
@@ -256,8 +269,12 @@ std::vector<WindowTarget> listWindowTargetsX11(std::uintptr_t excludeXid) {
         }
         // EWMH 类型属性挂在 client 上：reparenting WM 的 frame 上没有这个属性，
         // 所以统一检查 client（没有 WM_STATE 时 client 就是窗口自己）。
-        if (wmType != None &&
-            hasSkippedWindowType(display, client, wmType, skippedTypes, kSkippedTypeCount)) {
+        bool isDock = false;
+        if (dockType != None) {
+            isDock = hasAnyWindowType(display, client, wmType, &dockType, 1);
+        }
+        if (!isDock && wmType != None &&
+            hasAnyWindowType(display, client, wmType, skippedTypes, kSkippedTypeCount)) {
             continue;
         }
 
@@ -278,24 +295,17 @@ std::vector<WindowTarget> listWindowTargetsX11(std::uintptr_t excludeXid) {
         if (!clipToScreen(display, target)) {
             continue;
         }
-        targets.push_back(target);
+        if (isDock) {
+            // 面板/任务栏：不进候选窗口（它不该被当成截图目标），只参与悬停判定。
+            scan.panels.push_back(target);
+        } else {
+            scan.windows.push_back(target);
+        }
     }
     if (children != nullptr) {
         XFree(children);
     }
-    return targets;
-}
-
-bool findWindowAtX11(int x, int y, std::uintptr_t excludeXid, WindowTarget& out) {
-    const std::vector<WindowTarget> targets = listWindowTargetsX11(excludeXid);
-    for (const WindowTarget& target : targets) {
-        if (x >= target.x && x < target.x + target.width && y >= target.y &&
-            y < target.y + target.height) {
-            out = target;
-            return true;
-        }
-    }
-    return false;
+    return scan;
 }
 
 }  // namespace region_selector

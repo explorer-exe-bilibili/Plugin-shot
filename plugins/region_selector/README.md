@@ -2,7 +2,9 @@
 
 在**鼠标所在显示器**上弹出一个无边框、置顶、**半透明**、整屏的覆盖层。覆盖层显示后：
 鼠标停在某个顶层窗口上时，选框会**吸附到该窗口**并带 100ms 指数平滑地平移/缩放过去；
-**单击**（位移 ≤4px、按住 ≤400ms）直接把当前悬停窗口的矩形作为采集区域；**拖动**则退化成
+停在**任务栏/面板**或**屏幕四角**（距两条相邻边都 < 20 像素的方块）上时，选框吸附到
+**当前显示器全屏**（同样高亮、单击即选中整屏）；
+**单击**（位移 ≤4px、按住 ≤400ms）直接把当前悬停目标的矩形作为采集区域；**拖动**则退化成
 原来的手绘选区（拖动期间严格跟手，不做吸附和动画）。确认后先隐藏覆盖层、等遮罩从屏幕上
 消失，再发布带 `region` 的 `capture.request`（**Windows 与 Linux/X11 都是这套行为**；
 Linux/Wayland 是同一套窗口与交互，但背景来自 xdg-desktop-portal 截图、确认后直接裁剪落盘，
@@ -56,19 +58,19 @@ plugins/region_selector/
 │   ├── plugin_entry.h              # PluginEntry / PluginInstance / state_of（插件样板）
 │   ├── region_window.h             # RegionWindow 公共接口（契约层，不含任何图形库类型）
 │   ├── region_window_impl.h        # 内部头：Impl 声明 / 事件队列 / 拖拽与悬停吸附状态 / Wayland、X11 段
-│   ├── window_target.h             # 内部头：窗口目标结构 + 枚举/命中接口（Windows + X11）
+│   ├── window_target.h             # 内部头：候选窗口 + 任务栏/面板结构与扫描接口（Windows + X11）
 │   ├── region_portal.h             # Linux：xdg-desktop-portal Screenshot 门户 + 会话探测
 │   ├── region_image.h              # Linux/Wayland：截图解码 / 裁剪 / PNG 编码（stb）
 │   └── region_output.h             # Linux/Wayland：输出目录（image_saver 配置 / Pictures）+ 文件名
 └── src/
     ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + kEntries + ABI 胶水 + 语言表
     ├── region_window.cpp           # 生命周期 / 窗口线程 / 事件循环 / 触发解析 / 提交（平台分派）
-    ├── region_overlay.cpp          # 交互状态机 + 悬停吸附动画 + 主题色读取（三平台共用）
+    ├── region_overlay.cpp          # 交互状态机 + 悬停判定（四角/任务栏/窗口）+ 吸附动画 + 主题色（三平台共用）
     ├── region_overlay_draw.cpp     # ImGui 遮罩 / 选区 / 折角 / 十字线 / 标签绘制
     ├── region_graphics.cpp         # ImGui 后端 / 中文字体 / DPI 字号缩放 / 每帧渲染
     ├── region_background.cpp       # Windows：触发瞬间的桌面快照（GDI）+ 上传 GL 纹理
     ├── region_geometry.cpp         # Windows：显示器矩形 / 光标 / 物理坐标换算 + 实测日志
-    ├── window_target.cpp           # Windows：顶层窗口枚举 / Z 序 / DWM 边界 / 命中测试
+    ├── window_target.cpp           # Windows：顶层窗口枚举 / 任务栏类名 / Z 序 / DWM 边界
     ├── region_portal.cpp           # Linux/Wayland：libportal 异步截图 + GMainLoop + URI→路径 + 超时
     ├── region_image.cpp            # Linux/Wayland：stb PNG 解码 / 裁剪 / 编码（唯一定义 stb 实现的 TU）
     ├── region_output_linux.cpp     # Linux/Wayland：读 config_list 的 image_saver 目录 + shot_时间戳.png
@@ -79,7 +81,7 @@ plugins/region_selector/
     ├── region_geometry_x11.cpp     # Linux/X11：X screen 几何 / XQueryPointer 光标 / 显示器矩形 + 日志
     ├── region_background_x11.cpp   # Linux/X11：XGetImage 整屏快照 → 像素解包 → GL 纹理
     ├── region_overlay_x11.cpp      # Linux/X11：覆盖层定位 / 实际几何日志 / 确认后发布（Windows 同时序）
-    └── window_target_x11.cpp       # Linux/X11：XQueryTree + EWMH 类型过滤 + XTranslateCoordinates 命中
+    └── window_target_x11.cpp       # Linux/X11：XQueryTree + EWMH 类型过滤（DOCK→面板）+ root 坐标
 ```
 
 公共头 `region_window.h` 只声明一个类；内部头 `region_window_impl.h` 与 `window_target.h`
@@ -149,9 +151,9 @@ ImGui 调用都在插件的 UI 线程上执行（GLFW 和 ImGui 都不是线程�
 | --- | --- | --- |
 | 1 | 任意线程 | 发布 `capture.request`，负载 `{"mode":"region"}`（**没有** `region` 对象） |
 | 2 | 总线分发线程 | 插件回调只把事件入队并唤醒 UI 线程 |
-| 3 | UI 线程 | 取鼠标位置 → 找所在显示器 → 把隐藏窗口搬过去铺满整屏；读主题色、记录覆盖层原生句柄（HWND / X11 Window）、按 Z 序枚举顶层窗口命中光标下的窗口 → 显示并聚焦 |
-| 4 | UI 线程 | 空闲：每 30ms 枚举一次顶层窗口，命中窗口后选框用 100ms 指数平滑吸附过去；鼠标移到别的窗口就平滑平移/缩放 |
-| 5 | UI 线程 | 单击（位移 ≤4px 且按住 ≤400ms）：直接把当前悬停窗口矩形当 region 确认；拖动（位移 >4px）：选框严格跟手，松开左键确认；右键 / Esc = 取消 |
+| 3 | UI 线程 | 取鼠标位置 → 找所在显示器 → 把隐藏窗口搬过去铺满整屏；读主题色、记录覆盖层原生句柄（HWND / X11 Window）、按 Z 序扫描顶层窗口与任务栏/面板 → 按悬停优先级定位首帧选框 → 显示并聚焦 |
+| 4 | UI 线程 | 空闲：每 30ms 扫描一次，命中"屏幕四角 / 任务栏面板 / 顶层窗口"后选框用 100ms 指数平滑吸附过去；鼠标移到别的目标就平滑平移/缩放 |
+| 5 | UI 线程 | 单击（位移 ≤4px 且按住 ≤400ms）：直接把当前悬停目标矩形当 region 确认（窗口 = 该窗口，任务栏/四角 = 当前显示器全屏）；拖动（位移 >4px）：选框严格跟手，松开左键确认；右键 / Esc = 取消 |
 | 6 | UI 线程 | 确认后先 `glfwHideWindow` + `glfwPollEvents`，再 `sleep 100ms`（`kHideSettleDelayMs`） |
 | 7 | UI 线程 | Windows / X11：发布 `capture.request`：`{"mode":"region","region":{"x","y","width","height"}}`；Wayland：内存裁剪写 PNG 后发 `capture.done` |
 | 8 | 宿主 worker | Windows / X11：抓整屏 → 按 `region` 裁剪 → 处理 → 保存，发 `capture.done`；Wayland 不经过流水线 |
@@ -194,6 +196,9 @@ settings_ui 的 deinit**（实测：本插件 deinit 14ms 返回，宿主 30s+ �
 （见 §7）。
 
 ### 3.2 多语言（i18n）
+
+> 语言表同时包含插件自身的 `plugin.name` / `plugin.description`：设置页的插件分区标题按
+> `display(插件 id, "plugin.name")` 解析（查不到时回退成 key 本身）。
 
 覆盖层的用户可见文案跟随宿主当前界面语言；**日志固定中文，不进语言表**（`tools/verify/`
 的 e2e 按中文日志断言，翻译日志会让验证失败）。语言表写在 `src/plugin_entry.cpp` 的
@@ -313,12 +318,27 @@ X 像素就是物理像素（`Xft.dpi` 只影响字体渲染），`content scale
 
 | 输入 | 行为 |
 | --- | --- |
-| 鼠标移动（未拖动） | 每 30ms 枚举一次顶层窗口，命中光标下的窗口后把选框**平滑吸附**到它的矩形（100ms 指数平滑）；命中不到窗口时只显示遮罩与十字线 |
-| 单击（位移 ≤4px 且按住 ≤400ms） | 直接用当前悬停窗口的矩形确认采集，不经过拖动 |
-| 左键按下并拖动（位移 >4px） | 进入拖动模式：选框**严格跟手**，不做窗口吸附、不做动画；松开确认，任一边 < 8 物理像素按取消处理 |
+| 鼠标移动（未拖动） | 每 30ms 扫描一次，按优先级判定悬停目标：**屏幕四角**（距当前显示器两条相邻边都 < 20px）→ **任务栏/面板** → **顶层窗口**；后两种之外的命中都吸附到目标矩形（100ms 指数平滑），其中四角与任务栏/面板吸附到**当前显示器全屏**；命中不到任何目标时只显示遮罩与十字线 |
+| 单击（位移 ≤4px 且按住 ≤400ms） | 直接用当前悬停目标的矩形确认采集，不经过拖动（任务栏/四角 = 当前显示器全屏） |
+| 左键按下并拖动（位移 >4px） | 进入拖动模式：选框**严格跟手**，不做吸附、不做动画；松开确认，任一边 < 8 物理像素按取消处理 |
 | 松开左键（未越过阈值但按住 >400ms） | 按取消处理（不发布事件） |
 | 右键 / Esc | 取消 |
 | 鼠标移动 | 全屏十字线 + 选区尺寸标签（`宽 x 高` + 单位，物理像素） |
+
+悬停目标有明确的优先级（`resolveHoverHit`，三平台共用，见 `region_overlay.cpp`）：
+
+1. **屏幕四角**：光标距当前显示器矩形的两条相邻边都 < 20 像素（`kCornerSnapSize`，
+   即四角各 20x20 的方块）。角落方块常常整个压在最大化窗口甚至任务栏上，用户要的是
+   "这块屏"，所以它优先于后面两种；
+2. **任务栏 / 面板**：Windows 按窗口类名认（`Shell_TrayWnd` / `Shell_SecondaryTrayWnd`），
+   X11 按 `_NET_WM_WINDOW_TYPE_DOCK` 认。命中任何一块（含副屏任务栏）都按**鼠标所在
+   显示器全屏**处理；
+3. **普通顶层窗口**：按 Z 序取第一个包含光标的窗口。
+
+前两者把"当前显示器全屏"当成一个**伪窗口矩形**喂给同一套悬停/绘制/确认路径，所以
+高亮、平滑动画、单击确认与窗口吸附完全一致，不新增事件、也不改 ABI。多显示器时
+"当前显示器"是覆盖层正在覆盖的那一块（Windows `monitorRect` / X11 `monitor`），
+不是整个虚拟桌面。
 
 Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表）：上表的单击一行退化为
 **取消**，拖动与 Esc/右键完全相同；尺寸标签显示的是换算后的**输出像素**，与落盘文件一致
@@ -341,13 +361,17 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 窗口检测算法（`window_target.cpp`，**刻意不用 Win32 的逐点窗口命中 API**）：
 
 1. `EnumWindows` 枚举顶层窗口（不遍历子控件；本版本明确不做 UIA / 子控件命中）；
-2. 排除：覆盖层自身 HWND、不可见、最小化、零尺寸、DWM cloaked（`DWMWA_CLOAKED`）、
+2. 任务栏先单独认出来：类名 `Shell_TrayWnd` / `Shell_SecondaryTrayWnd`，矩形用
+   `GetWindowRect`（任务栏没有不可见的调整边框，而 DWM 对部分 shell 窗口会返回 0 矩形），
+   裁剪到虚拟桌面后收进 `WindowScan::panels`。它们带 `WS_EX_TOOLWINDOW`，如果沿用下面
+   的排除规则会永远找不到——这正是旧版"悬停任务栏什么都不选中"的原因；
+3. 其余窗口排除：覆盖层自身 HWND、不可见、最小化、零尺寸、DWM cloaked（`DWMWA_CLOAKED`）、
    `WS_EX_TOOLWINDOW`（工具窗口/提示/输入法候选）；
-3. 矩形优先 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`（去掉 Win10/11 不可见
+4. 矩形优先 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`（去掉 Win10/11 不可见
    边框），失败退回 `GetWindowRect`；再裁剪到虚拟桌面内；
-4. `EnumWindows` 的顺序不保证是 Z 序，代码用 `GetTopWindow + GW_HWNDNEXT` 建立真实的
-   Z 序排名后稳定排序，命中测试取第一个包含光标的窗口；
-5. 枚举节流：最多每 30ms 一次（`kWindowScanIntervalMs`），120Hz 渲染循环里不会每帧枚举。
+5. `EnumWindows` 的顺序不保证是 Z 序，代码用 `GetTopWindow + GW_HWNDNEXT` 建立真实的
+   Z 序排名后稳定排序（候选窗口与任务栏两份各自排），命中测试取第一个包含光标的项；
+6. 枚举节流：最多每 30ms 一次（`kWindowScanIntervalMs`），120Hz 渲染循环里不会每帧枚举。
 
 覆盖层显示时鼠标换成十字光标；DPI 变化只影响字号与折角/边框尺寸（100% 屏 18px 字号、
 150% 屏 27px 物理像素），坐标不受影响。
@@ -370,7 +394,12 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | `capture.request` 已带合法 `region`（本插件自己发布的那条 / 别处选好区域的请求） | 安静忽略，避免自触发循环 |
 | 光标不在任何显示器矩形里（显示器缝隙 / 远程会话刚断开） | 退回主显示器并记 WARN |
 | 框选过程中再次收到触发 | 忽略重复触发，不覆盖用户正在拖的选区 |
-| 光标下没有候选窗口（桌面空白 / 枚举到的最小化或 cloaked 窗口） | 不显示悬停框；单击只取消，不发布事件 |
+| 光标下没有可吸附目标（桌面空白 / 枚举到的最小化或 cloaked 窗口 / 既不在四角也不在任务栏） | 不显示悬停框；单击只取消，不发布事件 |
+| 光标停在任务栏 / 面板上（Windows `Shell_TrayWnd` / `Shell_SecondaryTrayWnd`，X11 DOCK） | 悬停框 = **鼠标所在显示器全屏**；单击即采集整屏（不显示任务栏条本身） |
+| 光标停在屏幕四角（距当前显示器两条相邻边都 < 20px，`kCornerSnapSize`） | 同上：悬停框 = **当前显示器全屏**；角落优先于窗口命中 |
+| 任务栏设成自动隐藏 | 它的窗口矩形在屏幕外，被裁掉后不再参与命中（屏幕外也点不到）；屏幕四角仍然有效 |
+| 副屏任务栏 / 多块面板 | 命中任何一块都按**鼠标所在显示器**全屏处理，不会选到另一块屏 |
+| 显示器矩形未知（`monitorRect` 为 0） | 四角与任务栏判定跳过，退化成纯窗口命中，不会吸附到 0x0 矩形 |
 | 光标移出覆盖层所在显示器 | 悬停框隐藏（不在另一块屏上"盲吸附"）；覆盖层本身仍只覆盖原显示器 |
 | 悬停目标在枚举间隔内被关闭 / 移到别处 | 下一次枚举（≤30ms）后自动换成新目标；选框平滑过去 |
 | 按下后位移 ≤4px、按住 >400ms 才松开 | 不算单击也不算拖动，按取消处理（与旧版的 0x0 选区一致） |
@@ -393,7 +422,7 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | 限制 | 说明 |
 | --- | --- |
 | 只支持单显示器框选 | 覆盖层铺满鼠标所在显示器，拖动选区被夹在该屏内；跨屏选择需要在虚拟桌面矩形上开一个覆盖所有显示器的窗口（代码里有 `// TODO:` 说明）。悬停窗口可以横跨多屏：矩形会裁剪到虚拟桌面，绘制只显示落在覆盖层里的部分 |
-| 窗口枚举依赖 Z 序假设 | Z 序用 `GetTopWindow + GW_HWNDNEXT` 显式排序，但仍有一些特殊窗口可能不符合用户直觉：置顶工具窗口（任务栏、自绘浮层）会按 Z 序优先命中；完全透明的点击穿透窗口（`WS_EX_TRANSPARENT` + layered）没有被额外过滤 |
+| 窗口枚举依赖 Z 序假设 | Z 序用 `GetTopWindow + GW_HWNDNEXT` 显式排序，但仍有一些特殊窗口可能不符合用户直觉：置顶工具窗口（自绘浮层）会按 Z 序优先命中；任务栏单独走"当前显示器全屏"映射（见 §5），不再参与窗口命中；完全透明的点击穿透窗口（`WS_EX_TRANSPARENT` + layered）没有被额外过滤 |
 | 不做子控件检测 | 用户明确取消：不实现 UIA / 子控件命中，命中单位是顶层窗口（浏览器内部分栏、IDE 内部编辑器都算整个窗口） |
 | 主题色只在显示覆盖层时读取 | 覆盖层显示期间改设置不会实时生效；下次弹出覆盖层才用新颜色（需求约定） |
 | 负虚拟桌面原点未实测 | 本机虚拟桌面原点 `(0,0)`，左侧/上方有显示器时的负 origin 布局无法在这台机器上验证；换算公式按"绝对坐标 − 最小显示器坐标"实现，理论上正确 |
@@ -557,9 +586,11 @@ region_selector：框选结果已保存 ...，已发布 capture.done
 
 ## 9. Linux（X11）
 
-X11 会话下本插件走**真正的全屏覆盖层**，交互与 Windows 一致：悬停窗口吸附、单击截窗、
-拖框、主题色折角、Esc/右键取消。平台层全部在 `*_x11.cpp`，共享的交互/绘制代码
-（`region_overlay.cpp` / `region_overlay_draw.cpp` / `region_graphics.cpp`）一行不用改。
+X11 会话下本插件走**真正的全屏覆盖层**，交互与 Windows 一致：悬停窗口吸附、悬停
+任务栏/面板或屏幕四角 = 当前显示器全屏、单击截窗、拖框、主题色折角、Esc/右键取消。
+平台层全部在 `*_x11.cpp`，共享的交互/绘制代码
+（`region_overlay.cpp` / `region_overlay_draw.cpp` / `region_graphics.cpp`）只按平台
+调用不同的窗口扫描函数。
 
 同一份 `.so` 同时编进 Wayland（门户定格图）与 X11（Xlib）两套实现，**运行期按会话类型
 二选一**——不是编译期开关，用户不需要为不同会话装两份插件。
@@ -652,11 +683,14 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
    - 排除覆盖层自己（frame 与 client 都排除，否则永远命中自己的全屏矩形）；
    - 用 client 上的 `_NET_WM_WINDOW_TYPE` 做类型过滤；
 3. 排除：覆盖层自身、`map_state != IsViewable`（最小化/其它虚拟桌面）、`InputOnly`、
-   零尺寸，以及 `_NET_WM_WINDOW_TYPE` 里的 DESKTOP / DOCK / TOOLBAR / MENU / UTILITY /
+   零尺寸，以及 `_NET_WM_WINDOW_TYPE` 里的 DESKTOP / TOOLBAR / MENU / UTILITY /
    SPLASH / DROPDOWN_MENU / POPUP_MENU / TOOLTIP / NOTIFICATION / COMBO / DND
    （与 Windows 的 `WS_EX_TOOLWINDOW` / cloaked 过滤对应）；
-4. 矩形用 `XTranslateCoordinates(frame → root)` 换算到 root 坐标，再裁剪到 X screen；
-   命中测试取第一个包含光标的窗口。枚举节流与其他平台相同（30ms）。
+4. `_NET_WM_WINDOW_TYPE_DOCK` **不排除**：它就是面板/任务栏（GNOME 顶栏、dash-to-dock、
+   xfce4-panel、polybar 等），命中后按"鼠标所在显示器全屏"处理（与 Windows 任务栏对齐，
+   见 §5），所以收进 `WindowScan::panels`；DOCK 本身不作为截图目标；
+5. 矩形用 `XTranslateCoordinates(frame → root)` 换算到 root 坐标，再裁剪到 X screen；
+   命中测试按"四角 → 面板 → 窗口"的优先级取目标。枚举节流与其他平台相同（30ms）。
 
 ### 9.4 产出事件
 
@@ -689,6 +723,10 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 - `XGetImage` 在不同 depth/visual（24/30bpp、compositing 开关、Xvfb）下的像素解包；
 - reparenting frame 的 Z 序与 `_NET_WM_WINDOW_TYPE` 过滤在 GNOME/KDE 下的实际效果
   （桌面窗口、面板、通知、工具提示是否都正确跳过）；
+- **悬停面板 / 屏幕四角**：面板是否真的带 `_NET_WM_WINDOW_TYPE_DOCK`（GNOME 顶栏、
+  dash-to-dock、xfce4-panel 各自如何声明）、命中后是否稳定发布"当前显示器全屏"、
+  面板位于屏幕中间/侧边时的表现；四角方块与面板重叠时按四角优先（结果相同）。
+  这一条**没有真机结论**；
 - 多显示器在同一 X screen 内时，只覆盖鼠标所在显示器；跨屏拖选仍受 §7 的"单显示器"
   限制。**多 X screen 不支持**；
 - 分数缩放 / 大字体：`content scale` 只影响字号，X 像素即物理像素；150%/200% 下的
@@ -708,6 +746,8 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 - [ ] 窗口枚举排除了覆盖层自己的 HWND（否则永远命中自己）？
 - [ ] 窗口矩形优先用 `DWMWA_EXTENDED_FRAME_BOUNDS`，失败才退回 `GetWindowRect`？
 - [ ] 拖动时真的没有走窗口枚举/动画（选框严格跟手）？
+- [ ] 悬停优先级是"屏幕四角 → 任务栏/面板 → 普通窗口"，前两者都用 `monitorRect`（鼠标所在显示器），不是整个虚拟桌面？
+- [ ] 任务栏/面板没有被当成截图目标（只在 `WindowScan::panels` 里参与命中），`kCornerSnapSize = 20` 是命名常量？
 - [ ] 单击阈值是位移 ≤4px 且按住 ≤400ms，用的是悬停**目标**矩形而不是动画中间值？
 - [ ] 每次显示覆盖层只读一次 `core/theme_color`，非法值回退 `#4C9AFF`？
 - [ ] 枚举有 30ms 节流，没有在 120Hz 渲染循环里每帧 `EnumWindows`？
