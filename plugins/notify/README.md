@@ -24,16 +24,20 @@ plugins/notify/
 ├── README.md
 ├── include/
 │   ├── plugin_entry.h              # PluginEntry / PluginInstance / state_of（插件样板）
-│   ├── notify_config.h             # NotifyConfig：4 个配置项声明与当前值（shot.configurable）
+│   ├── notify_config.h             # NotifyConfig：6 个配置项声明与当前值（shot.configurable）
+│   ├── notify_title.h              # 内部头：通知标题模板的 {path}/{width}/{height} 展开
 │   ├── notify_toast.h              # NotifyToast 公共接口（PIMPL，不含平台类型）
-│   ├── notify_toast_impl.h         # 内部头：Windows 的隐藏窗口/图标/事件队列
-│   └── notify_toast_linux_impl.h   # 内部头：Linux 的 libnotify 状态与事件分发
+│   ├── notify_toast_impl.h         # 内部头：Windows 的隐藏窗口/图标/事件队列/点击处理
+│   └── notify_toast_linux_impl.h   # 内部头：Linux 的 libnotify + GLib 主循环状态
 └── src/
     ├── plugin_entry.cpp            # 唯一导出符号 shot_module_entry + ABI 胶水 + 配置回调 + 语言表
     ├── notify_config.cpp           # 配置项声明表（label/tooltip 是 i18n key）/ 值读写
+    ├── notify_title.cpp            # 标题模板展开（单趟扫描替换，不引入模板引擎）
     ├── notify_toast.cpp            # Windows 生命周期：订阅 capture.* / app.quit，起停通知线程
-    ├── notify_toast_window.cpp     # Windows 隐藏窗口 + 占位图标 + 按当前语言拼气泡文本并发送
-    └── notify_toast_linux.cpp      # Linux libnotify：订阅 capture.done / capture.failed 并提交通知
+    ├── notify_toast_window.cpp     # Windows 隐藏窗口 + 消息循环 + 占位图标 + 事件出队
+    ├── notify_toast_balloon.cpp    # Windows 气泡文本（默认/自定义标题）与发送 + UTF-8→UTF-16
+    ├── notify_toast_click.cpp      # Windows 点击成功通知：打开图片 / explorer /select
+    └── notify_toast_linux.cpp      # Linux libnotify：提交通知、点击动作、GLib 主循环
 ```
 
 公共头 `notify_toast.h` 不包含 `<windows.h>` 或 `<libnotify/notify.h>`：`HWND` /
@@ -80,7 +84,7 @@ libnotify)`，缺包时 configure 直接失败）。
 
 ## 3. 能力与事件
 
-- **能力**：`shot.configurable`（v1，4 个 BOOL 配置项）。没有 `ui_provider`，所以宿主
+- **能力**：`shot.configurable`（v1，6 个配置项：4 个 BOOL + 1 个 STRING + 1 个 ENUM）。没有 `ui_provider`，所以宿主
   不会给本插件投 `post_to_plugin` 事件；`host.shutdown` 收不到。Windows 用 `app.quit`
   提前收通知线程，`destroy` 路径仍会 `stop()`；Linux 没有线程，不订阅 `app.quit`。
 - **订阅**（事件总线，回调在宿主 main 线程）：
@@ -115,6 +119,27 @@ libnotify)`，缺包时 configure 直接失败）。
 （GNOME Shell / KDE Plasma / dunst 等），没有“先挂一个图标”的限制，也没有
 `TaskbarCreated` 之类的 Shell 重启问题。
 
+### 3.2 点击通知：打开图片 / 打开所在文件夹
+
+Windows：隐藏占位图标在 `NIM_ADD` 时注册 `NIF_MESSAGE` + `uCallbackMessage`
+（`kMsgNotifyIconEvent`），Shell 在用户点击气泡时把 `NIN_BALLOONUSERCLICK` 投到隐藏
+消息窗口。通知线程记住**最近一次成功通知**的图片路径（失败通知会清空它），点击时按
+`click_action` 执行：
+
+| `click_action` | 动作 |
+| --- | --- |
+| `click.open_image` | `ShellExecuteW(L"open", <图片路径>)`：交给系统默认看图程序，等同双击文件 |
+| `click.open_folder` | `ShellExecuteW(L"explorer.exe", L"/select,\"<图片路径>\"")`：打开父目录并选中文件 |
+
+图片已被删除时只记 WARN，**不弹错误框**；ShellExecuteW 返回值 ≤ 32 记 WARN；失败
+通知没有图片路径，点击不做任何事。
+
+Linux：`notify_notification_add_action(notification, "default", <动作文案>, ...)`，
+点击后由 `g_spawn_async` 执行 `xdg-open <图片>` 或 `xdg-open <父目录>`（不经过 shell、
+子进程由 GLib 回收）。动作回调由 **GLib 主上下文**分发，而宿主主循环不是 GLib 的，
+所以插件起了一个只跑 `GMainLoop` 的后台线程；`stop()` 先 quit + join，再释放还挂着
+动作的通知对象，DLL 卸载后不会留下指向本插件的回调。桌面没有 `xdg-open` 时只 WARN。
+
 ## 4. 配置项
 
 | key | kind | 默认 | 说明 |
@@ -123,8 +148,10 @@ libnotify)`，缺包时 configure 直接失败）。
 | `show_on_success` | BOOL | `1` | 成功时提示「已保存到 `<path>`」 |
 | `show_on_error` | BOOL | `1` | 失败时提示「截图失败：`<reason>`」 |
 | `sound` | BOOL | `1` | 提示音：Windows 用 `NIIF_NOSOUND` 静音；Linux 只是给桌面通知服务的 hint，见 §4.2 |
+| `title` | STRING | 空串 | 通知标题模板：留空 = 默认多语言标题（「截屏成功 / 截屏失败」）；支持 `{path}` / `{width}` / `{height}`，见 §4.4 |
+| `click_action` | ENUM | `click.open_image` | 点击成功通知时：`click.open_image` 打开图片 / `click.open_folder` 打开所在文件夹；兼容旧值 `open_image` / `open_folder`（get 一律返回新键） |
 
-所有值一律字符串（`"1"` / `"0"`），存盘键是 `notify.main/<key>`；本插件只负责
+所有值一律字符串（BOOL 是 `"1"` / `"0"`，ENUM 是候选键），存盘键是 `notify.main/<key>`；本插件只负责
 get/set，落盘与回灌归宿主（`document/SETTINGS.md` §2）。只把 `"0"` / `"false"` 当关，
 其它写法按开处理（与 tray / clipboard 的约定一致）。
 
@@ -156,7 +183,8 @@ get/set，落盘与回灌归宿主（`document/SETTINGS.md` §2）。只把 `"0"
   `capture.failed` 的 `reason` 原样展示（`reason` 已由宿主本地化），只有 `reason`
   整个缺失时才用 `toast.reason_unknown` 补一句。
 
-语言表 key 一览（共 17 个，`zh-CN` / `en-US` 一一对应）：
+语言表 key 一览（共 23 个，`zh-CN` / `en-US` 一一对应；不含 `plugin.name` /
+`plugin.description`）：
 
 | key | zh-CN | en-US |
 | --- | --- | --- |
@@ -168,6 +196,12 @@ get/set，落盘与回灌归宿主（`document/SETTINGS.md` §2）。只把 `"0"
 | `config.show_on_error.tooltip` | 失败时显示"截图失败：<原因>"；截屏结果提示统一由本插件负责（托盘不弹截屏气泡） | Show "Capture failed: <reason>" (the tray does not show balloons) |
 | `config.sound.label` | 提示音 | Sound |
 | `config.sound.tooltip` | 通知气泡是否播放系统提示音；关掉后使用 NIIF_NOSOUND 静音 | Play the system sound for the notification; off uses NIIF_NOSOUND |
+| `config.title.label` | 通知标题 | Notification title |
+| `config.title.tooltip` | 留空使用默认标题；支持占位符 `{path}`（图片路径）、`{width}` / `{height}`（像素） | Leave empty for the default title; supports `{path}`, `{width}` and `{height}` (pixels) |
+| `config.click_action.label` | 点击通知 | On click |
+| `config.click_action.tooltip` | 点击成功通知时打开图片，或在文件管理器里定位该文件；失败通知没有图片路径，不响应点击 | Open the image or reveal it in the file manager; failure notifications carry no path and ignore clicks |
+| `click.open_image` | 打开图片 | Open image |
+| `click.open_folder` | 打开所在文件夹 | Open containing folder |
 | `toast.success_title` | 截屏成功 | Capture saved |
 | `toast.failed_title` | 截屏失败 | Capture failed |
 | `toast.saved_prefix` | `"已保存到 "`（末尾空格） | `"Saved to "` |
@@ -194,15 +228,51 @@ libnotify **没有播放声音的接口**，本插件也**不 spawn** `paplay` /
   守护进程决定（GNOME/KDE 可能播放，dunst 等可能直接忽略）。所以 **Linux 上不保证
   有声，也不保证静音**；README 与设置页 tooltip 里的 `NIIF_NOSOUND` 是 Windows 说法。
 
+### 4.3 Linux 通知头部的应用名（乱码修复）
+
+用户报过 Ubuntu 24 的通知**头部应用名**显示 `Plugin-shot è®¾ç½®`（标题与正文都正常）：
+`è®¾ç½®` 是 UTF-8 的「设置」被按 Latin-1 渲染的结果，来源不是本插件拼的字符串，而是
+桌面通知服务在缺少 `.desktop` 关联时把**应用名回退成窗口标题**——我们的设置窗口标题
+是本地化的「Plugin-shot 设置」。修法（`notify_toast_linux.cpp`）：
+
+1. 每条通知 `notify_notification_set_app_name(notification, "Plugin-shot")`：显式给
+   ASCII 应用名，不再依赖回退；
+2. `desktop-entry = plugin-shot` hint：桌面上有 `plugin-shot.desktop` 时 GNOME/KDE
+   用它取图标与显示名，没有也不影响通知；
+3. `g_set_application_name("Plugin-shot")`：GLib 全局兜底，给只认 GLib 应用名的守护
+   进程一个 ASCII 名字（`notify_init("Plugin-shot")` 的 app name 仍然保留）。
+
+标题/正文走 `toast.*` / 配置模板的正常 UTF-8 路径，不受影响。
+
+### 4.4 编码自检与标题模板
+
+Windows 的完整链路是：语言表 / 配置值是 UTF-8（源文件用 `/utf-8` 编译）→ `toWide()`
+（`MultiByteToWideChar(CP_UTF8, ...)`）→ `NOTIFYICONDATAW` + `Shell_NotifyIconW`，全程
+没有 ANSI/GBK 转换，也没有 `char*` 直接塞进宽字符缓冲的路径。`showBalloon()` 每次会记
+一行：
+
+`[notify] 气泡标题自检：<字符数> 个 UTF-16 单元，首字符 U+XXXX`
+
+- 首字符是预期汉字码点（如 `U+622A`「截」）→ 送进 Shell 的文本正确，乱码只可能来自
+  显示侧（系统通知中心缓存、旧构建、用 ANSI 编辑器看 UTF-8 的 `host.log`）；
+- 0 个字符 → `toWide` 失败（输入不是合法 UTF-8），气泡会退化成空标题；
+- 首字符 `U+FFFD` → 转换过程中出现了替换字符。
+
+`title` 的模板展开规则（`notify_title.cpp`）：一次从左到右的单趟扫描，把 `{path}` /
+`{width}` / `{height}` 换成实际值，替换结果不再参与匹配（路径里含 `{path}` 也不会死
+循环）；不解析嵌套、不递归、不引入模板引擎。失败通知没有路径与宽高，对应占位符展开成
+空串；展开结果为空时回落到默认多语言标题。
+
 ## 5. 生命周期与线程
 
 | 时机 | Windows | Linux |
 | --- | --- | --- |
-| `create(index, host)` | 分配状态、加载语言表、订阅 `capture.done` / `capture.failed` / `app.quit`、起通知线程；线程就绪前到达的事件先入队 | 分配状态、加载语言表、`notify_init`、订阅 `capture.done` / `capture.failed`；无后台线程 |
+| `create(index, host)` | 分配状态、加载语言表、订阅 `capture.done` / `capture.failed` / `app.quit`、起通知线程；线程就绪前到达的事件先入队 | 分配状态、加载语言表、`notify_init`、订阅 `capture.done` / `capture.failed`、起 GLib 主循环线程（只用于分发点击动作） |
 | 事件到达 | 总线回调只「拷负载 + `PostMessage` 唤醒」；通知线程出队后按配置弹气泡 | 总线回调在 main 线程直接解析并 `notify_notification_show`；没有跨线程队列 |
-| `capture.done` / `capture.failed` | 通知线程出队，检查 `enabled` / `show_*`，拼文本后 `Shell_NotifyIconW` | main 线程检查 `enabled` / `show_*`，拼文本后提交 D-Bus 通知 |
-| `app.quit` | 通知线程退出消息循环、删隐藏图标、销毁窗口、注销窗口类 | 不订阅（没有线程可收） |
-| `destroy` | 先退订事件总线，再让通知线程退出并 `join`，然后 `reset` 语言表、释放状态；重复调用是空操作 | 先退订事件总线，再 `notify_uninit`，然后 `reset` 语言表、释放状态；重复调用是空操作 |
+| `capture.done` / `capture.failed` | 通知线程出队，检查 `enabled` / `show_*`，拼标题/正文后 `Shell_NotifyIconW`；成功通知记下路径供点击使用 | main 线程检查 `enabled` / `show_*`，拼标题/正文后提交 D-Bus 通知；成功通知挂 `"default"` 动作 |
+| 点击通知 | 通知线程处理 `NIN_BALLOONUSERCLICK`，`ShellExecuteW` 打开图片 / `explorer /select` | GLib 主循环线程执行动作回调，`g_spawn_async` 调 `xdg-open`（图片或其父目录） |
+| `app.quit` | 通知线程退出消息循环、删隐藏图标、销毁窗口、注销窗口类 | 不订阅（点击动作的 GLib 线程在 `destroy` 里收） |
+| `destroy` | 先退订事件总线，再让通知线程退出并 `join`，然后 `reset` 语言表、释放状态；重复调用是空操作 | 先退订事件总线，再 quit GLib 主循环并 `join`、释放还挂动作的通知对象，然后 `notify_uninit`、`reset` 语言表；重复调用是空操作 |
 
 Windows 线程边界：事件总线回调运行在宿主分发线程，只做拷贝与唤醒；`Shell_NotifyIconW`、
 窗口创建与消息循环全部在插件自己的通知线程上执行（Shell 通知不是线程安全的）。
@@ -210,8 +280,11 @@ Windows 线程边界：事件总线回调运行在宿主分发线程，只做拷
 （禁用→启用）重新加载时窗口过程指针悬空（tray 插件踩过的 `0xC000041D` 教训）。
 
 Linux 线程边界：libnotify 的 `notify_notification_show` 是一次短 D-Bus 调用，不依赖
-窗口类或线程亲和性，所以不需要线程；所有 libnotify 对象都在同一次回调里创建、
-提交、`g_object_unref`，`destroy` 之后没有指向本 DLL 的回调或全局对象。
+窗口类或线程亲和性，所以**显示通知不需要线程**。但点击动作（`ActionInvoked`）是 GLib
+主上下文分发的信号，宿主主循环不是 GLib 的，因此插件起了一个只跑 `GMainLoop` 的后台
+线程——这是 Linux 侧唯一的后台线程。带动作的通知对象会保留创建时的引用，直到收到
+`closed` 信号才 `g_object_unref`；`stop()` 先 quit + join，再把还没关闭的通知统一
+释放，保证 `destroy` 之后没有指向本 DLL 的回调或全局对象。
 
 ## 6. 降级行为
 
@@ -226,6 +299,12 @@ Linux 线程边界：libnotify 的 `notify_notification_show` 是一次短 D-Bus
 | Linux：没有 D-Bus 会话 / `notify_init` 失败 | WARN 一次，插件保留但通知不可用；截屏与其它插件不受影响 |
 | Linux：没有通知守护进程 / 用户关了通知 / `notify_notification_show` 失败 | 记 WARN（带 `GError` 文案），释放 `GError` 与通知对象；不影响下一次截图 |
 | Linux：桌面忽略 `sound-name` / `suppress-sound` | 通知照常显示，只是声音行为由桌面决定（§4.2） |
+| Windows：点击通知但图片已不存在 | 只记 WARN，不打开、不弹任何错误框 |
+| Windows：`ShellExecuteW` 返回 ≤ 32 | 记 WARN（错误码原样进日志），不影响下一次通知 |
+| Linux：点击通知但图片已不存在 | 只记 WARN（`g_file_test`），不打开 |
+| Linux：桌面没有 `xdg-open` | `g_spawn_async` 失败只记 WARN，通知与截屏不受影响 |
+| Linux：GLib 主循环线程起不来 | 通知照常显示，只是点击没有反应；记 WARN |
+| 配置的 `title` 不是合法 UTF-8 | 回退默认多语言标题并记 WARN |
 | 配置关闭（`enabled` / `show_*`） | 跳过对应通知，只记 debug 日志 |
 | 宿主没提供 `shot.configurable` 的渲染/回灌 | 配置用默认值（全开），插件功能不受影响 |
 | 旧宿主 / 没有 `i18n_list` | `shot::I18n` 安静降级：`tr` 用第一张表（zh-CN），界面保持中文，通知不受影响 |
@@ -237,7 +316,7 @@ Linux 线程边界：libnotify 的 `notify_notification_show` 是一次短 D-Bus
 | 平台 | 状态 |
 | --- | --- |
 | Windows（MSVC x64） | ✅ 已验证：构建通过（/W4 无警告）；隐藏占位图标 + `NIF_INFO` 气泡在 Windows 11 26H2 真机显示成功（探针 + 假宿主 harness 截图证据在本地 `build/verify/notify_*`） |
-| Linux（Wayland / X11 会话） | 🟡 代码已接入 CMake（`pkg_check_modules(LIBNOTIFY REQUIRED libnotify)`），使用 libnotify / `org.freedesktop.Notifications`；**未在本机 Ubuntu 24.04 桌面真机验证**，需要安装 `libnotify-dev` 并跑一次通知 e2e |
+| Linux（Wayland / X11 会话） | 🟡 代码已接入 CMake（`pkg_check_modules(LIBNOTIFY REQUIRED libnotify)`），使用 libnotify / `org.freedesktop.Notifications`；**未在本机 Ubuntu 24.04 桌面真机验证**，需要安装 `libnotify-dev` 并跑一次通知 e2e。用户回传的 Ubuntu 24 GNOME 截图确认通知能显示，头部应用名乱码已修（§4.3）；点击动作（`xdg-open`）**未真机点过** |
 | macOS | **未实现**：CMake 在 APPLE 上跳过整个插件；候选方案记在 `CMakeLists.txt` 的 `# TODO:`（`UNUserNotificationCenter`），当前本插件没有 macOS 实现 |
 
 ## 8. 刻意不做的事
@@ -246,7 +325,8 @@ Linux 线程边界：libnotify 的 `notify_notification_show` 是一次短 D-Bus
 | --- | --- |
 | 自己采集/保存/处理图像 | 那是 `screen_capture` / `image_saver` / image_processor 的职责；本插件只读结果事件 |
 | 使用 Windows Toast（WinRT） | 需要 COM/WinRT 初始化与打包身份（AppUserModelID），复杂度远高于 `NIF_INFO`；实测隐藏占位图标方案在本机可用 |
-| 在通知里放缩略图/按钮 | 像素不进事件总线（`document/CAPTURE.md` §3）；Windows `NIF_INFO` 只支持标题+正文，Linux 的 actions 也没有跨桌面的一致 UI |
+| 在通知里放缩略图/按钮组 | 像素不进事件总线（`document/CAPTURE.md` §3）；Windows `NIF_INFO` 只支持标题+正文，Linux 只用一个 `"default"` 动作（点通知本身），不做多按钮 UI |
+| 点击时 spawn 任意程序 | 只做 `xdg-open`（Linux）/ Shell 默认关联（Windows），不读配置拼命令行；失败只记日志 |
 | 常驻可见托盘图标 | 用户已经有托盘插件；Windows 只需要一个不可见的挂载点，Linux 完全不需要 |
 | 队列/去重/节流 | 一次截屏只发一条 `capture.done` 或 `capture.failed`；连发多次时的系统通知叠层由平台自己处理 |
 | Linux 自己 spawn 声音播放器 | 桌面通知服务负责声音；插件只传 hint，避免多一个外部进程依赖与生命周期问题 |
@@ -265,6 +345,11 @@ Linux 线程边界：libnotify 的 `notify_notification_show` 是一次短 D-Bus
 - [ ] 平台类型仍然只出现在内部头与对应平台 `.cpp` 里（公共头不含 `<windows.h>` / `<libnotify/notify.h>`）？
 - [ ] Windows 气泡文案超长时中间截断，不溢出 `NOTIFYICONDATAW` 的定长缓冲？
 - [ ] Linux 的 `sound` 只作为 hint 处理，README 写清“不保证有声/静音”？
+- [ ] Windows 隐藏图标注册了 `NIF_MESSAGE` + `uCallbackMessage`，点击能进 `NIN_BALLOONUSERCLICK` 分支？
+- [ ] 点击打开的目标只来自最近一次**成功**通知，失败通知已清空路径？
+- [ ] 图片不存在时只 WARN、不弹错误框？
+- [ ] Linux 动作回调不依赖 `NotifyToast::Impl` 生命周期（目标拷进 `ClickTarget`）？
+- [ ] Linux `stop()` 先 quit + join GLib 主循环，再释放带动作的通知对象？
 - [ ] 新增/修改的界面文案在 `zh-CN` / `en-US` 两张语言表里都补齐，且 `tr` 的 fallback 是中文原文？
 - [ ] 日志、事件主题、配置键没有跟着翻译？
 - [ ] 改了事件主题/负载？→ 同步 `document/CAPTURE.md` §3 与 `document/EVENT_BUS.md` §4

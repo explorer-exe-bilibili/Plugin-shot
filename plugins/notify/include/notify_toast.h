@@ -20,16 +20,19 @@ class NotifyConfig;
  *
  * 两个平台各有一套后端，但公共接口与生命周期相同：
  *  · Windows：隐藏消息窗口 + 隐藏占位托盘图标 + `Shell_NotifyIconW(NIF_INFO)`
- *    气泡，所有 Shell 调用都在插件自己的通知线程上执行；
+ *    气泡，所有 Shell 调用都在插件自己的通知线程上执行；用户点击气泡时 Shell 投
+ *    `NIN_BALLOONUSERCLICK`，按配置打开图片或打开所在文件夹；
  *  · Linux：`libnotify`（`notify_notification_new` + `notify_notification_show`）
- *    走桌面通知的 D-Bus 服务，不建窗口、不持线程，回调里同步提交（Wayland
- *    同样可用）。
+ *    走桌面通知的 D-Bus 服务，不建窗口；显示通知在调用线程上同步提交，但为了让
+ *    动作回调（`ActionInvoked`）能被分发，插件额外跑一个只含 `GMainLoop` 的后台
+ *    线程（Wayland 同样可用）。
  *
  * 本插件没有 ui_provider 的 init/deinit 生命周期，create(index, host) 是唯一能
  * 拿到宿主服务表的时机，所以 start() 在实例创建路径里调用、stop() 在 destroy 路径。
  * 事件总线回调（宿主分发线程）在 Windows 上只做"拷进队列 + PostMessage 唤醒"，
- * 在 Linux 上直接提交通知；stop()/destroy 返回后一定已退订、停线程（Windows）、
- * 释放 libnotify（Linux），宿主之后 FreeLibrary 不会留下指向本 DLL 的回调。
+ * 在 Linux 上直接提交通知；stop()/destroy 返回后一定已退订、停线程（Windows 通知
+ * 线程 / Linux GLib 主循环）、释放 libnotify，宿主之后 FreeLibrary 不会留下指向
+ * 本 DLL 的回调。
  */
 class NotifyToast {
 public:
@@ -49,7 +52,8 @@ public:
      *
      * Windows 先订阅再起通知线程：订阅之后到达的事件先入队，窗口就绪后统一处理，
      * 不会漏。Linux 在订阅前 `notify_init`（失败只 WARN 并返回 false，不把"没有
-     * 通知服务"升级成"插件加载失败"）。
+     * 通知服务"升级成"插件加载失败"），订阅成功后起 GLib 主循环线程处理点击动作
+     * （起不来只 WARN，通知照常显示、只是点了没反应）。
      *
      * @param[in] host   宿主服务表；可为 nullptr（老宿主），此时安静降级。
      * @param[in] config 配置项；生命周期必须覆盖本对象（插件状态里两者同生共死）。
@@ -63,9 +67,9 @@ public:
     /**
      * @brief 退订事件总线并释放平台通知后端。
      *
-     * Windows 让通知线程退出并 join，最后删掉隐藏托盘图标；Linux 调
-     * `notify_uninit` 释放 libnotify 的全局状态。可重复调用；返回时不会再有
-     * 回调进入本对象，宿主可以安全地卸载 DLL。
+     * Windows 让通知线程退出并 join，最后删掉隐藏托盘图标；Linux 先 quit GLib
+     * 主循环并 join，再释放还挂着动作的通知对象、调 `notify_uninit` 释放全局状态。
+     * 可重复调用；返回时不会再有回调进入本对象，宿主可以安全地卸载 DLL。
      */
     void stop();
 

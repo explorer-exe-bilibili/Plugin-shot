@@ -7,9 +7,11 @@
 //  （HWND / HICON），因为通知线程确实要持有它们；公共头 notify_toast.h 不包含
 //  <windows.h>，宿主与其它插件看不到任何 Win32 句柄。
 //
-//  定义拆成两个 .cpp：
+//  定义拆成四个 .cpp：
 //    notify_toast.cpp        —— 生命周期 / 线程握手 / 事件订阅（start / stop）
-//    notify_toast_window.cpp —— 隐藏窗口 / 消息循环 / 事件出队 / 气泡文本与发送
+//    notify_toast_window.cpp —— 隐藏窗口 / 消息循环 / 事件出队 / 隐藏占位图标
+//    notify_toast_balloon.cpp—— 气泡文本（标题/正文）与发送、UTF-8 → UTF-16
+//    notify_toast_click.cpp  —— 用户点击通知：打开图片 / 打开所在文件夹
 // ============================================================================
 
 #include <condition_variable>
@@ -58,6 +60,14 @@ inline constexpr char kTopicAppQuit[] = "app.quit";
 inline constexpr UINT kMsgDrain = WM_APP + 1;
 /** @brief 请求退出消息循环（stop() 或 app.quit）。 */
 inline constexpr UINT kMsgQuit = WM_APP + 2;
+/**
+ * @brief 隐藏占位图标的 Shell 回调消息（NOTIFYICONDATA::uCallbackMessage）。
+ *
+ * Shell 把图标/气泡事件（lParam 低位是 NIN_*）投到这条自定义消息上；本插件只关心
+ * NIN_BALLOONUSERCLICK（用户点了通知）。不注册这条消息就永远收不到点击，气泡只是
+ * 一条拦截不到输入的横幅。
+ */
+inline constexpr UINT kMsgNotifyIconEvent = WM_APP + 3;
 
 /** @brief 隐藏托盘图标的 id：只用于挂气泡，通知区域不显示。 */
 inline constexpr UINT kNotifyIconId = 2;
@@ -69,9 +79,18 @@ struct QueuedEvent {
 };
 
 /**
+ * @brief 把 UTF-8 文本转成 Win32 需要的 UTF-16；失败返回空串。
+ * @param[in] utf8 UTF-8 文本（可含中文）；空串直接返回空串。
+ * @return UTF-16 文本；输入不是合法 UTF-8 时返回空串，调用方回落成通用提示。
+ * @note 跨 TU 使用（窗口标题 / 气泡正文 / 通知文本都在别的 .cpp 里），所以不是在
+ *       匿名命名空间里的私有辅助函数；定义在 notify_toast_balloon.cpp。
+ */
+std::wstring toWide(const std::string& utf8);
+
+/**
  * @brief NotifyToast 的实现：线程握手、事件队列、隐藏窗口与隐藏图标都在这里。
  *
- * 声明集中在这个结构里，定义按职责分散到两个 .cpp（STYLE.md §6.7 / §6.8）。
+ * 声明集中在这个结构里，定义按职责分散到四个 .cpp（STYLE.md §6.7 / §6.8）。
  */
 struct NotifyToast::Impl {
     // ---- start() / stop() 跨线程共享的状态（mutex 保护） ----
@@ -95,19 +114,16 @@ struct NotifyToast::Impl {
     // ---- 隐藏窗口与占位图标（只在通知线程上访问） ----
     bool iconAdded = false;             /**< Shell_NotifyIconW(NIM_ADD) 是否成功过。 */
     UINT taskbarCreatedMessage = 0;     /**< "TaskbarCreated" 注册消息；explorer 重启后重加图标。 */
+    std::wstring lastImagePath;         /**< 最近一次**成功**通知的图片路径；点击通知时打开它。 */
 
     // ---- 生命周期与线程（notify_toast.cpp） ----
     void run();
     void messageLoop();
     static void onBusEvent(void* user, const char* topic, const void* data, std::uint32_t len);
 
-    // ---- 隐藏窗口 / 消息 / 气泡（notify_toast_window.cpp） ----
+    // ---- 隐藏窗口 / 消息 / 隐藏图标（notify_toast_window.cpp） ----
     void enqueue(const char* topic, const char* data, std::uint32_t len);
     void drainEvents();
-    void onCaptureDone(const std::string& payload);
-    void onCaptureFailed(const std::string& payload);
-    const char* localized(const char* key, const char* fallback) const;
-    void showBalloon(const wchar_t* title, const wchar_t* text, DWORD infoFlags);
     bool ensureWindowClass(HINSTANCE instance);
     static bool registerWindowClass(HINSTANCE instance);
     void unregisterWindowClass(HINSTANCE instance);
@@ -115,6 +131,29 @@ struct NotifyToast::Impl {
     void removeIcon(HWND wnd);
     LRESULT handleMessage(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam);
     static LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam);
+
+    // ---- 气泡文本与发送（notify_toast_balloon.cpp） ----
+    void onCaptureDone(const std::string& payload);
+    void onCaptureFailed(const std::string& payload);
+    const char* localized(const char* key, const char* fallback) const;
+    /**
+     * @brief 取最终通知标题：配置了 `title` 就用展开后的模板，否则用默认多语言标题。
+     * @param[in] defaultKey      默认标题的 i18n key（成功/失败各一条）。
+     * @param[in] defaultFallback 语言表不可用时的中文原文。
+     * @param[in] path            图片路径（UTF-8）；失败通知传空串。
+     * @param[in] width           图片宽度（像素）；未知传 0。
+     * @param[in] height          图片高度（像素）；未知传 0。
+     * @return UTF-16 标题；配置为空、展开为空或不是合法 UTF-8 时返回空串（调用方回落）。
+     */
+    std::wstring configuredTitle(const char* defaultKey, const char* defaultFallback,
+                                 const std::string& path, int width, int height) const;
+    void showBalloon(const wchar_t* title, const wchar_t* text, DWORD infoFlags);
+
+    // ---- 通知点击行为（notify_toast_click.cpp） ----
+    void onNotifyIconEvent(LPARAM lparam);
+    void openLastImage();
+    void openImageFile();
+    void openContainingFolder();
 };
 
 }  // namespace notify

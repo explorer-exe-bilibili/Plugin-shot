@@ -52,6 +52,14 @@ const char* const kLangTables[] = {
     R"json("config.sound.label":"提示音",)json"
     R"json("config.sound.tooltip":)json"
     R"json("通知气泡是否播放系统提示音；关掉后使用 NIIF_NOSOUND 静音",)json"
+    R"json("config.title.label":"通知标题",)json"
+    R"json("config.title.tooltip":)json"
+    R"json("留空使用默认标题（按界面语言显示\"截屏成功/截屏失败\"）；支持占位符 {path}（图片路径）、{width} / {height}（图片宽高，像素）",)json"
+    R"json("config.click_action.label":"点击通知",)json"
+    R"json("config.click_action.tooltip":)json"
+    R"json("点击成功通知时打开图片，或在文件管理器里定位该文件；失败通知没有图片路径，不响应点击",)json"
+    R"json("click.open_image":"打开图片",)json"
+    R"json("click.open_folder":"打开所在文件夹",)json"
     R"json("toast.success_title":"截屏成功",)json"
     R"json("toast.failed_title":"截屏失败",)json"
     R"json("toast.saved_prefix":"已保存到 ",)json"
@@ -76,6 +84,14 @@ const char* const kLangTables[] = {
     R"json("config.sound.label":"Sound",)json"
     R"json("config.sound.tooltip":)json"
     R"json("Play the system sound for the notification; off uses NIIF_NOSOUND",)json"
+    R"json("config.title.label":"Notification title",)json"
+    R"json("config.title.tooltip":)json"
+    R"json("Leave empty for the default title (\"Capture saved\" / \"Capture failed\" in the UI language); supports {path} (image path), {width} and {height} (pixels)",)json"
+    R"json("config.click_action.label":"On click",)json"
+    R"json("config.click_action.tooltip":)json"
+    R"json("Open the image or reveal it in the file manager when a success notification is clicked; failure notifications carry no path and ignore clicks",)json"
+    R"json("click.open_image":"Open image",)json"
+    R"json("click.open_folder":"Open containing folder",)json"
     R"json("toast.success_title":"Capture saved",)json"
     R"json("toast.failed_title":"Capture failed",)json"
     R"json("toast.saved_prefix":"Saved to ",)json"
@@ -87,13 +103,14 @@ const char* const kLangTables[] = {
     R"json("toast.icon_tooltip":"Plugin-shot notifications (hidden placeholder)"})json",
 };
 
-/** @brief 插件状态：一个语言表 + 一个消息提示器 + 四个配置项（覆盖整个实例生命周期）。 */
+/** @brief 插件状态：一个语言表 + 一个消息提示器 + 六个配置项（覆盖整个实例生命周期）。 */
 struct NotifyState {
     // I18n 不可拷贝/移动，用 unique_ptr 放状态里；声明在最前面，析构时最后释放，
     // 保证通知线程（读 tr）在它之前停下。create() 没有 host 参数，实际构造在
     // create_instance 里拿到服务表之后。
     std::unique_ptr<shot::I18n> i18n;
-    NotifyConfig config; /**< shot.configurable：enabled / show_on_success / show_on_error / sound。 */
+    NotifyConfig config; /**< shot.configurable：enabled / show_on_success / show_on_error /
+                              sound / title / click_action。 */
     NotifyToast toast;   /**< 通知后端（Windows 隐藏窗口图标线程 / Linux libnotify）。 */
 };
 
@@ -119,7 +136,7 @@ void destroy_state(void* self) {
     }
 }
 
-// ---- shot.configurable：四个开关由 NotifyConfig 拥有，ABI 层只做参数转发 ----
+// ---- shot.configurable：六个配置项由 NotifyConfig 拥有，ABI 层只做参数转发 ----
 
 std::uint32_t config_count(void* self) {
     auto* state = static_cast<NotifyState*>(state_of(self));

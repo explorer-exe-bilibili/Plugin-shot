@@ -1,10 +1,11 @@
-// 通知线程主体：建隐藏消息窗口、加隐藏占位托盘图标、收事件、发 Shell 通知气泡。
+// 通知线程主体：建隐藏消息窗口、加隐藏占位托盘图标、收事件。
 //
 // 为什么需要一个窗口：Shell_NotifyIconW 要把通知挂在一个窗口的某个图标上；这个
 // 窗口永远不显示（没有 WS_VISIBLE），它只是通知线程的消息泵：
-//   · kMsgDrain        → 事件队列有新内容（capture.done / capture.failed / app.quit）；
-//   · kMsgQuit         → stop() 请求退出消息循环；
-//   · "TaskbarCreated" → explorer.exe 重启后 Shell 丢了旧图标，重新 NIM_ADD。
+//   · kMsgDrain            → 事件队列有新内容（capture.done / capture.failed / app.quit）；
+//   · kMsgQuit             → stop() 请求退出消息循环；
+//   · kMsgNotifyIconEvent  → 图标的 Shell 回调（用户点了通知 = NIN_BALLOONUSERCLICK）；
+//   · "TaskbarCreated"     → explorer.exe 重启后 Shell 丢了旧图标，重新 NIM_ADD。
 //
 // 为什么需要"隐藏的占位图标"（真机实测，Windows 11 26H2）：
 //   · 不做 NIM_ADD 直接 NIM_MODIFY(NIF_INFO)：Shell 返回失败（E_FAIL），系统不显示；
@@ -12,93 +13,23 @@
 //     （Win10/11 上表现为系统通知）正常显示 —— 本插件采用这一种。
 //   证据见 build/verify/notify_probe_*（本地临时探针，不进仓库）。
 //
-// 线程模型：本文件所有函数都只在通知线程上执行（事件总线回调只调 enqueue）。
-// 文本处理：事件负载与配置值按契约是 UTF-8；Win32 的宽字符 API 要 UTF-16，统一在
-// toWide() 里转换，不在调用点各写一遍。
+// 本文件只负责窗口 / 消息循环 / 隐藏图标；气泡文本与发送在 notify_toast_balloon.cpp，
+// 点击行为在 notify_toast_click.cpp。所有函数都只在通知线程上执行（事件总线回调只调
+// enqueue）。文本处理：事件负载与配置值按契约是 UTF-8；Win32 的宽字符 API 要 UTF-16，
+// 统一在 toWide() 里转换（定义在 notify_toast_balloon.cpp）。
 
 #include "notify_toast.h"
 
-#include <cwchar>
 #include <string>
 #include <utility>
 
-#include <nlohmann/json.hpp>
-
-#include "notify_config.h"
 #include "notify_toast_impl.h"
 #include "shot_plugin_helpers.h"
 
-// NIIF_RESPECT_QUIET_TIME 需要 Windows 7+ 的 SDK 目标；工程没显式声明 NTDDI 版本时
-// 老 SDK 可能没有这个宏，这里给数值兜底（0x80 是 Windows SDK 的官方取值）。
-#ifndef NIIF_RESPECT_QUIET_TIME
-#define NIIF_RESPECT_QUIET_TIME 0x00000080
-#endif
-
 namespace notify {
-namespace {
 
-constexpr wchar_t kWindowClass[] = L"PluginShotNotifyWnd";  /**< 进程内唯一；类不随 DLL 卸载消失，必须显式注销。 */
-
-// 气泡显示时长（毫秒）：Vista 之后系统用"轻松使用"里的统一时长，这个值只给老系统兜底。
-constexpr UINT kBalloonTimeoutMs = 5000;
-
-// szInfo 是 256 个 wchar 的定长缓冲（含结尾 NUL）：正文最多 255 个字符。
-// 留一点余量，超过就按"保留头尾、中间用 … 省略"截断（路径末尾通常最关键）。
-constexpr std::size_t kMaxInfoChars = 200;
-
-/**
- * @brief UTF-8 → UTF-16；失败返回空串（调用方回退成通用提示）。
- * @note 无状态的纯工具，与任何类的实例状态无关，放匿名命名空间（STYLE.md §6.7）。
- */
-std::wstring toWide(const std::string& utf8) {
-    if (utf8.empty()) {
-        return std::wstring();
-    }
-    const int length =
-        MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
-    if (length <= 0) {
-        return std::wstring();
-    }
-    std::wstring wide(static_cast<std::size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), length);
-    return wide;
-}
-
-/**
- * @brief 中间截断：超长文本保留头部与尾部，中间用一个省略号（NIF_INFO 定长缓冲不能溢出）。
- * @param[in] text     原始文本。
- * @param[in] maxChars 截断后的最大字符数（含省略号）。
- * @return 不超过 maxChars 个字符的文本；不超长时原样返回。
- */
-std::wstring truncateMiddle(const std::wstring& text, std::size_t maxChars) {
-    if (text.size() <= maxChars || maxChars <= 1) {
-        return text.size() <= maxChars ? text : std::wstring(1, L'…');
-    }
-    const std::size_t head = maxChars * 3 / 5;    // 头多留一点：盘符/目录名比文件名的前缀信息量高
-    const std::size_t tail = maxChars - head - 1;  // 1 个字符给省略号
-    return text.substr(0, head) + L"…" + text.substr(text.size() - tail);
-}
-
-/** @brief 从 JSON 负载里读一个字符串字段；缺失/类型不对返回空串。 */
-std::string jsonString(const nlohmann::json& object, const char* field) {
-    const auto it = object.find(field);
-    if (it == object.end() || !it->is_string()) {
-        return std::string();
-    }
-    return it->get<std::string>();
-}
-
-}  // namespace
-
-// ---------------------------------------------------------------------------
-// 文案：气泡标题/正文与隐藏图标的提示都按当前语言取
-// ---------------------------------------------------------------------------
-
-const char* NotifyToast::Impl::localized(const char* key, const char* fallback) const {
-    // i18n 是可选对象：初始化失败或老宿主没有语言表时用中文原文兜底，
-    // 气泡永远有内容可显示（fallback 必须保持中文，见 I18N 约定）。
-    return (i18n != nullptr) ? i18n->tr(key, fallback) : fallback;
-}
+/** @brief 进程内唯一的隐藏窗口类名；类不随 DLL 卸载消失，必须显式注销。 */
+constexpr wchar_t kWindowClass[] = L"PluginShotNotifyWnd";
 
 // ---------------------------------------------------------------------------
 // 窗口类注册与注销
@@ -287,6 +218,10 @@ LRESULT NotifyToast::Impl::handleMessage(HWND wnd, UINT msg, WPARAM wparam, LPAR
         case kMsgQuit:
             PostQuitMessage(0);
             return 0;
+        case kMsgNotifyIconEvent:
+            // 隐藏图标的 Shell 回调：用户点了通知时打开图片/文件夹（notify_toast_click.cpp）。
+            onNotifyIconEvent(lparam);
+            return 0;
         case WM_DESTROY:
             {
                 std::lock_guard<std::mutex> lock(mutex);
@@ -367,98 +302,6 @@ void NotifyToast::Impl::drainEvents() {
 }
 
 // ---------------------------------------------------------------------------
-// 通知内容（capture.done / capture.failed → 气泡）
-// ---------------------------------------------------------------------------
-
-void NotifyToast::Impl::onCaptureDone(const std::string& payload) {
-    if (config == nullptr) {
-        return;
-    }
-    if (!config->enabled() || !config->showOnSuccess()) {
-        shot::Logger(host).debug("[notify] enabled/show_on_success=0，跳过成功提示");
-        return;
-    }
-    std::string path;
-    const nlohmann::json doc = nlohmann::json::parse(payload, nullptr, /*allow_exceptions=*/false);
-    if (!doc.is_discarded() && doc.is_object()) {
-        path = jsonString(doc, "path");
-    } else {
-        shot::Logger(host).warn("[notify] capture.done 负载不是合法 JSON 对象，只显示通用提示");
-    }
-    const std::wstring widePath = toWide(path);
-    if (!path.empty() && widePath.empty()) {
-        shot::Logger(host).warn("[notify] capture.done 的 path 不是合法 UTF-8，气泡显示通用提示");
-    }
-    std::wstring text;
-    if (path.empty()) {
-        text = toWide(localized("toast.no_path", "已保存（保存插件未回报路径）"));
-    } else {
-        // 路径是宿主/保存插件给的原文（capture.done 的 path），原样拼接、不做二次翻译。
-        text = toWide(localized("toast.saved_prefix", "已保存到 "));
-        text.append(widePath.empty()
-                        ? toWide(localized("toast.path_unavailable", "（路径无法显示）"))
-                        : widePath);
-        text = truncateMiddle(text, kMaxInfoChars);
-    }
-    const std::wstring title = toWide(localized("toast.success_title", "截屏成功"));
-    shot::Logger(host).info("[notify] capture.done：" + (path.empty() ? std::string("<无路径>") : path));
-    showBalloon(title.c_str(), text.c_str(), NIIF_INFO);
-}
-
-void NotifyToast::Impl::onCaptureFailed(const std::string& payload) {
-    if (config == nullptr) {
-        return;
-    }
-    if (!config->enabled() || !config->showOnError()) {
-        shot::Logger(host).debug("[notify] enabled/show_on_error=0，跳过失败提示");
-        return;
-    }
-    std::string reason;
-    const nlohmann::json doc = nlohmann::json::parse(payload, nullptr, /*allow_exceptions=*/false);
-    if (!doc.is_discarded() && doc.is_object()) {
-        reason = jsonString(doc, "reason");
-    }
-    if (reason.empty()) {
-        // capture.failed 的 reason 是宿主已经本地化好的文本，本插件只原样展示；
-        // 只有整个字段缺失时才自己补一句（走本插件语言表）。
-        reason = localized("toast.reason_unknown", "原因未知");
-    }
-    const std::wstring title = toWide(localized("toast.failed_title", "截屏失败"));
-    const std::wstring text =
-        truncateMiddle(toWide(localized("toast.failed_prefix", "截图失败：")) + toWide(reason),
-                       kMaxInfoChars);
-    shot::Logger(host).info("[notify] capture.failed：" + reason);
-    showBalloon(title.c_str(), text.c_str(), NIIF_WARNING);
-}
-
-void NotifyToast::Impl::showBalloon(const wchar_t* title, const wchar_t* text, DWORD infoFlags) {
-    if (!iconAdded || hwnd == nullptr || title == nullptr || text == nullptr) {
-        // 隐藏图标还没加/已被删：没有可挂气泡的对象，安静跳过。
-        return;
-    }
-    NOTIFYICONDATAW data{};
-    data.cbSize = sizeof(data);
-    data.hWnd = hwnd;
-    data.uID = kNotifyIconId;
-    data.uFlags = NIF_INFO;
-    // szInfoTitle / szInfo 是定长缓冲；_TRUNCATE 保证超长时安全截断，不会写坏结构体。
-    wcsncpy_s(data.szInfoTitle, title, _TRUNCATE);
-    wcsncpy_s(data.szInfo, text, _TRUNCATE);
-    // NIIF_RESPECT_QUIET_TIME：系统处于"专注助手/免打扰"时不打扰用户。
-    data.dwInfoFlags = infoFlags | NIIF_RESPECT_QUIET_TIME;
-    if (config != nullptr && !config->soundEnabled()) {
-        data.dwInfoFlags |= NIIF_NOSOUND;  // 用户关了提示音：Windows 10+ 的静音标志
-    }
-    data.uTimeout = kBalloonTimeoutMs;
-    if (!Shell_NotifyIconW(NIM_MODIFY, &data)) {
-        shot::Logger(host).warn("[notify] 提交气泡通知失败（Shell_NotifyIconW NIM_MODIFY）");
-    } else {
-        // 用户看不到通知时（系统关了通知）Shell 也会返回成功，这里只能证明"请求已交给 Shell"。
-        shot::Logger(host).info("[notify] 气泡通知已提交（NIF_INFO）");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // 隐藏占位托盘图标
 // ---------------------------------------------------------------------------
 
@@ -483,7 +326,10 @@ bool NotifyToast::Impl::addIcon(HWND wnd) {
     data.hWnd = wnd;
     data.uID = kNotifyIconId;
     // NIF_STATE + NIS_HIDDEN：图标在 Shell 里存在（可以挂气泡），但通知区域不显示。
-    data.uFlags = NIF_ICON | NIF_TIP | NIF_STATE;
+    // NIF_MESSAGE + uCallbackMessage：Shell 把 NIN_BALLOONUSERCLICK 投到隐藏窗口，
+    // 没有它"点击通知打开图片"永远收不到事件（旧版本就没有这个回调）。
+    data.uFlags = NIF_ICON | NIF_TIP | NIF_STATE | NIF_MESSAGE;
+    data.uCallbackMessage = kMsgNotifyIconEvent;
     data.hIcon = icon;
     const std::wstring tooltip =
         toWide(localized("toast.icon_tooltip", "Plugin-shot 消息提示（隐藏占位）"));

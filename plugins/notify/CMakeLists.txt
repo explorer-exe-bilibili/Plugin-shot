@@ -5,8 +5,10 @@
 #  按平台显示系统通知：
 #    · Windows：Shell_NotifyIconW 的 NIF_INFO 气泡（Windows 10/11 上表现为系统通知）；
 #    · Linux：libnotify（org.freedesktop.Notifications 的 D-Bus 客户端）。
-#  配置项（enabled / show_on_success / show_on_error / sound）由宿主渲染并回灌，
-#  插件只负责 get/set。Linux 的 sound 只能作为 freedesktop 的 hint 建议，不保证有声。
+#  配置项（enabled / show_on_success / show_on_error / sound / title / click_action）
+#  由宿主渲染并回灌，插件只负责 get/set。Linux 的 sound 只能作为 freedesktop 的 hint
+#  建议，不保证有声；点击通知打开图片/文件夹在 Windows 用 ShellExecuteW，Linux 用
+#  libnotify action + xdg-open。
 #
 #  为什么 Windows 需要一个隐藏的占位托盘图标：实测（Windows 11 26H2）不做 NIM_ADD
 #  直接 NIM_MODIFY(NIF_INFO) 会返回失败（E_FAIL），系统不会显示任何通知；而
@@ -73,15 +75,19 @@ find_package(nlohmann_json CONFIG REQUIRED)
 set(_notify_sources
     src/plugin_entry.cpp
     src/notify_config.cpp
+    src/notify_title.cpp
 )
 set(_notify_libraries nlohmann_json::nlohmann_json)
 set(_notify_include_dirs)
 
 if(WIN32)
-    # user32：隐藏消息窗口与 Shell 通知；shell32：Shell_NotifyIconW。
+    # user32：隐藏消息窗口与 Shell 通知；shell32：Shell_NotifyIconW + ShellExecuteW。
+    # 气泡文本与发送、通知点击行为各拆一个 .cpp（STYLE §6.8：一个文件一个关注点）。
     list(APPEND _notify_sources
          src/notify_toast.cpp
-         src/notify_toast_window.cpp)
+         src/notify_toast_window.cpp
+         src/notify_toast_balloon.cpp
+         src/notify_toast_click.cpp)
     list(APPEND _notify_libraries user32 shell32)
 elseif(UNIX AND NOT APPLE)
     # libnotify 只提供 pkg-config 描述（没有 CMake config 包）；用系统包而不是 vcpkg，
