@@ -171,6 +171,7 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         }
         m_canvasTop = 0;
         m_refTop = 0;
+        m_preGapHeight = -1;
         m_bandsLocked = false;
         m_staticTop = 0;
         m_staticBottom = 0;
@@ -185,6 +186,7 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
     if (frame.width != m_width || frame.height != m_height) {
         m_canvasTop = 0;
         m_refTop = 0;
+        m_preGapHeight = -1;
         m_bandsLocked = false;
         m_staticTop = 0;
         m_staticBottom = 0;
@@ -260,6 +262,12 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
             m_refTop = m_alt.refTop;
             m_refTrusted = true;
             clearAltReference();
+            // 缺口期间按"接在末尾"追加的行位置不可信：回滚恢复后截断回缺口前的可信
+            // 高度，用户重新滚下来时会按正确坐标重新追加，等价于"回滚后重新填上内容"。
+            if (m_preGapHeight >= 0 && m_preGapHeight < canvas.height()) {
+                canvas.truncate(m_preGapHeight);
+            }
+            m_preGapHeight = -1;
         }
     }
     match.score = estimate.score;
@@ -270,6 +278,9 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         // 再让基准前进到当前帧，内容坐标按"接在画布末尾"估一个值，让下一次匹配仍能
         // 算增量（否则坐标会永远停在上一次成功的位置）。
         rememberAltReference(bandsTop, bandsBottom);
+        if (m_preGapHeight < 0) {
+            m_preGapHeight = canvas.height();
+        }
         m_refTop = m_canvasTop + canvas.height();
         m_refTrusted = false;
         updateReference(frame, thumb);
@@ -295,6 +306,9 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
             // 视口与画布完全不重叠（用户一次跳过了整屏）：这是缺口，不是高度上限。
             // 以前这里会误报 "已达高度上限 <当前高度>"，用户只滚一屏就以为满了。
             rememberAltReference(bandsTop, bandsBottom);
+            if (m_preGapHeight < 0) {
+                m_preGapHeight = canvas.height();
+            }
             m_refTop = m_canvasTop + canvas.height();
             m_refTrusted = false;
             updateReference(frame, thumb);
@@ -312,6 +326,9 @@ ScrollMatch ScrollStitcher::addFrame(const CaptureFrame& frame, StitchCanvas& ca
         const int rows = static_cast<int>(newRefTop + movingHeight - canvasBottom);
         if (rows > movingHeight) {
             rememberAltReference(bandsTop, bandsBottom);
+            if (m_preGapHeight < 0) {
+                m_preGapHeight = canvas.height();
+            }
             m_refTop = m_canvasTop + canvas.height();
             m_refTrusted = false;
             updateReference(frame, thumb);

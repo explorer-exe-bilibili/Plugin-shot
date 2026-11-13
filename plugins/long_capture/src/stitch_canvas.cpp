@@ -80,6 +80,14 @@ bool StitchCanvas::trimTop(int rows) {
     return true;
 }
 
+bool StitchCanvas::truncate(int rows) {
+    if (rows <= 0 || rows >= m_height) {
+        return false;
+    }
+    m_height = rows;
+    return true;
+}
+
 bool StitchCanvas::trimBottom(int rows) {
     if (rows <= 0 || rows >= m_height) {
         return false;
