@@ -38,6 +38,9 @@ enum class StitchAlgorithm {
 };
 
 /** @brief 重叠不足移动区高度的 30% 就不参与搜索：重叠太小，任何判据都不可信。 */
+// 触控板惯性滚动靠"会话层 50ms 强制送帧"降低单次跨度，而不是放宽重叠下限：
+// 实测把下限从 30% 降到 20% 会让 correlate 在周期性内容上更容易选到周期别名
+// （离线用例 3 出现 1 次错位），所以保持 30%。
 inline constexpr int kMinOverlapPercent = 30;
 
 /**

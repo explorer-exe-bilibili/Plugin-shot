@@ -42,8 +42,10 @@ constexpr int kFrameIntervalMs = 60;
 /** @brief HUD 缩略图刷新间隔（毫秒）：需求是 5Hz。 */
 constexpr int kHudRefreshMs = 200;
 
-/** @brief 即使画面没静止，也至少按这个间隔送一次帧（毫秒）：避免快速滚动跨出重叠区。 */
-constexpr int kMaxFeedIntervalMs = 100;
+/** @brief 即使画面没静止，也至少按这个间隔送一次帧（毫秒）：避免快速滚动跨出重叠区。
+ *  50ms 是对触控板惯性滚动的折中：100ms 时一次惯性滑动可能跳过 40% 视口，
+ *  与上一帧重叠不足 30% 就判缺口；抓帧+匹配在 5~20ms 量级，50ms 还有余量。 */
+constexpr int kMaxFeedIntervalMs = 50;
 
 /** @brief 帧签名尺寸：48×48 灰度足够判断"这一帧变没变"，成本可以忽略。 */
 constexpr int kSignatureWidth = 48;
