@@ -16,10 +16,31 @@ FILESUBTYPE     VFT2_UNKNOWN
 BEGIN
     BLOCK "StringFileInfo"
     BEGIN
+        // 英文（Windows 通知头部的"应用名"取自 FileDescription；这里必须是短名字，
+        // 不能放 PROJECT_DESCRIPTION 那句完整介绍，否则通知里会被截成半句话）
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName",        "@PROJECT_COMPANY@"
-            VALUE "FileDescription",    "@PROJECT_DESCRIPTION@"
+            VALUE "FileDescription",    "Plugin-shot"
+            VALUE "FileVersion",        "@PROJECT_VERSION_STRING@.@PROJECT_VERSION_BUILD@"
+            VALUE "InternalName",       "@PROJECT_NAME@"
+            VALUE "LegalCopyright",     "@PROJECT_COPYRIGHT@"
+            VALUE "OriginalFilename",   "@PROJECT_NAME@.exe"
+            VALUE "ProductName",        "@PROJECT_NAME@"
+            VALUE "ProductVersion",     "@PROJECT_VERSION_STRING@.@PROJECT_VERSION_BUILD@"
+            VALUE "Homepage",           "@PROJECT_HOMEPAGE_URL@"
+            VALUE "BuildDate",          "@BUILD_DATE@"
+            VALUE "BuildTime",          "@BUILD_TIME@"
+            VALUE "GitCommit",          "@GIT_COMMIT_HASH@"
+            VALUE "GitBranch",          "@GIT_BRANCH@"
+            VALUE "Compiler",           "@COMPILER_NAME@ @COMPILER_VERSION@"
+            VALUE "Architecture",       "@ARCHITECTURE@"
+        END
+        // 简体中文：Windows 按系统 UI 语言挑这个块，通知头部显示中文应用名
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName",        "@PROJECT_COMPANY@"
+            VALUE "FileDescription",    "Plugin-shot 截图工具"
             VALUE "FileVersion",        "@PROJECT_VERSION_STRING@.@PROJECT_VERSION_BUILD@"
             VALUE "InternalName",       "@PROJECT_NAME@"
             VALUE "LegalCopyright",     "@PROJECT_COPYRIGHT@"
@@ -37,6 +58,6 @@ BEGIN
     END
     BLOCK "VarFileInfo"
     BEGIN
-        VALUE "Translation", 0x409, 1200
+        VALUE "Translation", 0x409, 1200, 0x804, 1200
     END
 END
