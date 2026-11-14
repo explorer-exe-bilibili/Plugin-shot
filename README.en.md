@@ -30,8 +30,9 @@ plugins, runtime hot-plug, an append-only ABI, and UI data that never enters the
 [**Plugin-shot 0.1.0 · Windows x64 portable**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
 [Changelog](CHANGELOG.md)
 
-Unzip and run `Plugin-shot.exe`. 0.1.0 ships a Windows build only; the Linux / macOS code
-paths have not been verified on real hardware yet — see [Platforms](#platforms).
+Unzip and run `Plugin-shot.exe`. 0.1.0 ships a Windows build only; the Linux core path has been
+verified on real hardware under Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland), while macOS has not —
+see [Platforms](#platforms).
 
 ### UI
 
@@ -77,11 +78,11 @@ current main line.
 | Single entry point `shot_module_entry` + self-describing module table | ✅ working |
 | Multiple plugins per DLL (`plugin_count` + `create(index)` + `get_info`) | ✅ working |
 | Capability query `query_interface("shot.image_processor", 1)` | ✅ working |
-| Screen capture `shot.screen_capture` (`plugins/screen_capture`, GDI over the virtual desktop in **physical pixels**; optional mouse-cursor compositing via the `include_cursor` config item, on by default; mixed-DPI dual-screen 3584x1600 verified; Wayland uses portal ScreenCast + PipeWire; Linux X11 uses `XShmGetImage` first with `XGetImage` fallback plus XFixes cursor compositing; both Linux paths compile, neither is verified on real hardware) | ✅ working (Windows; `document/CAPTURE.md`) |
+| Screen capture `shot.screen_capture` (`plugins/screen_capture`, GDI over the virtual desktop in **physical pixels**; optional mouse-cursor compositing via the `include_cursor` config item, on by default; mixed-DPI dual-screen 3584x1600 verified; Wayland uses portal ScreenCast + PipeWire; Linux X11 uses `XShmGetImage` first with `XGetImage` fallback plus XFixes cursor compositing; both Linux paths are now verified on real hardware: portal ScreenCast full screen on Ubuntu 26 Wayland and single-monitor capture on Ubuntu 24.04 X11) | ✅ working (Windows / Linux single-monitor; `document/CAPTURE.md`) |
 | Image saving `shot.image_saver` (`plugins/image_saver`, PNG/JPEG plus four config items) | ✅ working (`document/CAPTURE.md`) |
 | Capture → process → save pipeline (**worker thread + bounded queue of 4 + lifecycle lock for the whole run**; `capture.request` / `capture.done` / `capture.failed`) | ✅ working (`document/CAPTURE.md`) |
 | Host main loop (event-driven **blocking wait**, no 16 ms polling; `publish` / `post_to_host` / plugin enable-disable requests wake it) | ✅ working (`document/EVENT_BUS.md` §3) |
-| Region capture (`capture.request` with a valid `region`: the host grabs the full screen and crops it in physical virtual-desktop pixels, clamped; `plugins/region_selector` selection overlay with hover-to-pick-window + click-to-capture-the-window + smooth hover animation; the no-region selection-trigger request is ignored by the pipeline and never captured; full overlay on Windows and Linux X11, portal-snapshot + drag plan B on Wayland (after hiding it polls `glfwPollEvents` before encoding, and cropping/PNG encoding/disk writes run on a worker thread; the portal wait is 30 s with a progress line every 5 s; the X11 path also polls after hiding); Linux paths compile, not verified on real hardware) | ✅ working (Windows; `document/CAPTURE.md` §3.1) |
+| Region capture (`capture.request` with a valid `region`: the host grabs the full screen and crops it in physical virtual-desktop pixels, clamped; `plugins/region_selector` selection overlay with hover-to-pick-window + click-to-capture-the-window + smooth hover animation; the no-region selection-trigger request is ignored by the pipeline and never captured; full overlay on Windows and Linux X11, portal-snapshot + drag plan B on Wayland (after hiding it polls `glfwPollEvents` before encoding, and cropping/PNG encoding/disk writes run on a worker thread; the portal wait is 30 s with a progress line every 5 s; the X11 path also polls after hiding); verified on real hardware on Windows / Linux (X11 and Wayland), single-monitor) | ✅ working (Windows / Linux single-monitor; `document/CAPTURE.md` §3.1) |
 | Generic plugin type `PluginType::Generic` (only `shot.configurable` + subscriptions in `create`; loaded only when metadata declares it) | ✅ working (`document/SETTINGS.md` §3.3) |
 | Host event bus `shot.host.event_bus` (topic publish / subscribe) | ✅ working (`document/EVENT_BUS.md`) |
 | Generic list service `shot.host.plugin_lists` (JSON snapshot per list id: `config_list` / `tray_command_list` / `hotkey_list` / `i18n_source_list` / `i18n_list`) | ✅ working (`document/LISTS.md`) |
@@ -90,13 +91,13 @@ current main line.
 | Runtime provider `shot.lib_provider` (`PluginType::Lib`) | ✅ working (`plugins/opencv_provider` brings OpenCV into the process) |
 | UI provider `shot.ui_provider` (windows/tray/hotkeys/overlay owned by the plugin itself) | ✅ working (`plugins/settings_ui`, `plugins/tray`, `plugins/hotkey`, `plugins/region_selector`) |
 | Plugin configuration `shot.configurable` (plugin declares; the host aggregates into `config_list`, event-driven writes / persistence / feed-back) | ✅ working (`document/SETTINGS.md`) |
-| Settings window plugin `plugins/settings_ui` (reads `config_list`; ImGui + GLFW + OpenGL3, descriptor-driven; dual-screen 150%+100% DPI verified) | ✅ working (cross-platform; verified on Windows) |
-| Tray entry `plugins/tray` (menu driven by `tray_command_list`: four core items + plugin contributions; Windows uses the Win32 tray, icon defaults to the host's named resource `IDI_ICON1` and `icon` accepts a `.ico`; Linux uses StatusNotifierItem + `com.canonical.dbusmenu` over GDBus / system `gio-2.0`, icon comes from the desktop theme, compiled but not verified on real hardware) | ✅ working (Windows) |
-| Notification plugin `plugins/notify` (success/failure balloons via a hidden placeholder icon; config items `enabled` / `show_on_success` / `show_on_error` / `sound`; Linux uses libnotify, compiled but not verified on real hardware) | ✅ working (Windows) |
-| Clipboard plugin `plugins/clipboard` (subscribes to `capture.done` → CF_DIB / optional CF_HDROP; config items `enabled` / `also_file_drop`; Linux uses an X11 selection, compiled but not verified on real hardware) | ✅ working (Windows) |
-| Global hotkey plugin `plugins/hotkey` (**list-driven**: feature plugins add entries to the contributory `hotkey_list`, and `hotkey.main` only reads the snapshot and registers them; built-in `capture` / `region` / `settings` → `capture.request` / `settings.open`, defaults Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O; the settings window records a combo with the `options="hotkey"` control and stores it as `hotkey.main/<id>`; conflicts are first-wins in list order and later ones WARN; Windows uses `RegisterHotKey`; Linux uses X11 `XGrabKey` (lock-modifier variants, `BadAccess` conflict WARN, self-pipe event loop, suspend/resume), compiled but not verified on real hardware; pure Wayland (no X11 display) degrades at run time to exposing the list and config items without registering, pointing at `session_control` with a WARN) | ✅ working (Windows) |
-| Linux session-control plugin `plugins/session_control` (exposes `org.pluginshot.Control` on the session bus; `Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` map to existing events; Wayland has no global-hotkey API, so the desktop's custom shortcut runs `gdbus call`; config item `enabled`; Linux only) | Implemented; compiles on Linux, on-device interaction pending verification: the Linux build emits the `.so` and the host `--help` passes; the D-Bus name and methods are implemented, but the end-to-end path with a GNOME custom shortcut has not been run; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
-| Long screenshot plugin `plugins/long_capture` (manual-scroll long capture: asks `region_selector` to pick a target window, then its own GDI capture layer grabs continuous frames and stitches them online, Enter to save; config item `max_height`; Windows P1) | Shipped in 0.1.0 as an **experimental** plugin, **disabled by default in the plugin list** (`plugins.disabled`); tick it in the settings window and restart to enable the tray item and hotkey; compiles on Windows, on-device interaction pending verification: it publishes a single `capture.done` only on save; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
+| Settings window plugin `plugins/settings_ui` (reads `config_list`; ImGui + GLFW + OpenGL3, descriptor-driven; dual-screen 150%+100% DPI verified) | ✅ working (cross-platform; verified on Windows / Linux) |
+| Tray entry `plugins/tray` (menu driven by `tray_command_list`: four core items + plugin contributions; Windows uses the Win32 tray, icon defaults to the host's named resource `IDI_ICON1` and `icon` accepts a `.ico`; Linux uses StatusNotifierItem + `com.canonical.dbusmenu` over GDBus / system `gio-2.0`, icon comes from the desktop theme, verified on real hardware in the Ubuntu top bar (icon/menu work)) | ✅ working (Windows / Linux) |
+| Notification plugin `plugins/notify` (success/failure balloons via a hidden placeholder icon; config items `enabled` / `show_on_success` / `show_on_error` / `sound`; Linux uses libnotify, verified on real hardware on Ubuntu 24/26) | ✅ working (Windows / Linux) |
+| Clipboard plugin `plugins/clipboard` (subscribes to `capture.done` → CF_DIB / optional CF_HDROP; config items `enabled` / `also_file_drop`; Linux uses an X11 selection (direct on X11 / through XWayland on Wayland), verified on real hardware on Ubuntu 24/26) | ✅ working (Windows / Linux) |
+| Global hotkey plugin `plugins/hotkey` (**list-driven**: feature plugins add entries to the contributory `hotkey_list`, and `hotkey.main` only reads the snapshot and registers them; built-in `capture` / `region` / `settings` → `capture.request` / `settings.open`, defaults Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O; the settings window records a combo with the `options="hotkey"` control and stores it as `hotkey.main/<id>`; conflicts are first-wins in list order and later ones WARN; Windows uses `RegisterHotKey`; Linux uses X11 `XGrabKey` (lock-modifier variants, `BadAccess` conflict WARN, self-pipe event loop, suspend/resume), verified on real hardware on Ubuntu 24.04 (Ctrl+Alt+A / Ctrl+Alt+S / Ctrl+Alt+O all trigger); pure Wayland (no X11 display) degrades at run time to exposing the list and config items without registering, pointing at `session_control` with a WARN) | ✅ working (Windows; Linux X11) |
+| Linux session-control plugin `plugins/session_control` (exposes `org.pluginshot.Control` on the session bus; `Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` map to existing events; Wayland has no global-hotkey API, so the desktop's custom shortcut runs `gdbus call`; config item `enabled`; Linux only) | ✅ working (Linux): D-Bus triggering verified on real hardware under Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland); see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
+| Long screenshot plugin `plugins/long_capture` (manual-scroll long capture: asks `region_selector` to pick a target window, then its own GDI capture layer grabs continuous frames and stitches them online, Enter to save; config item `max_height`; Windows P1) | ✅ working (Windows): shipped in 0.1.0 as an **experimental** plugin, **disabled by default in the plugin list** (`plugins.disabled`); tick it in the settings window and restart to enable the tray item and hotkey; the full interaction is verified on real hardware (pick window → scroll → HUD → save) and it publishes a single `capture.done` only on save; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | Mixed-DPI multi-monitor capture (physical virtual desktop 3584x1600; per-call thread DPI context fallback; negative origin not verified on real hardware) | ✅ working (`document/CAPTURE.md` §2.1) |
 | Settings-window DPI (dual-screen 150%+100%: live rescale while dragging across monitors, geometry clamped to the target screen's DPI, non-accumulating; other DPI mixes / 3+ screens unverified) | ✅ working (`document/SETTINGS.md` §6.1) |
 | Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--help` | ✅ working |
@@ -107,7 +108,7 @@ current main line.
 | Plugin-level dependencies (`requires` / `provides` with version ranges, `core` = the host) | ✅ working (`document/METADATA.md`) |
 | Dependency-driven load order (topological sort; an unsatisfied plugin is skipped on its own) | ✅ working |
 | Shared plugin build rules (`shot_add_plugin()`) | ✅ working (host and offline SDK share one module) |
-| i18n / multilingual UI (`core/language` = `auto` or a language-catalog tag; plugins contribute `i18n_source_list`, the host merges it into the read-only `i18n_list`; external packs in `files/lang/` and `%LOCALAPPDATA%\plugin-shot\langs\`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; 27 built-in tags, only zh-CN / en-US ship translations; external-pack protocol ready, translator plugin `plugins/translator` included (off by default); dynamic font atlas plus Segoe UI/Arial merge, RTL and Korean/Thai/Arabic glyphs not done) |
+| i18n / multilingual UI (`core/language` = `auto` or a language-catalog tag; plugins contribute `i18n_source_list`, the host merges it into the read-only `i18n_list`; external packs in `files/lang/` and `%LOCALAPPDATA%\plugin-shot\langs\`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; 27 built-in tags, only zh-CN / en-US ship translations; external-pack protocol ready, translator plugin `plugins/translator` included (off by default); verified on real hardware on Windows / Linux: the official zh-TW pack loads and the UI/tray follow; dynamic font atlas plus Segoe UI/Arial merge, RTL and Korean/Thai/Arabic glyphs not done) |
 | Offline plugin SDK export (`export_sdk` target) | ✅ working |
 
 > The binary name comes from `PROJECT_NAME` in `CMakeLists.txt` (currently `Plugin-shot`):
@@ -146,17 +147,17 @@ current main line.
 ├── plugins/                  # every subdirectory is a standalone plugin project
 │   ├── example_processor/    # complete example: one DLL, two plugins, both configurable (needs OpenCV)
 │   ├── opencv_provider/      # a valid package with zero capabilities (brings OpenCV into the process)
-│   ├── screen_capture/       # screen capture: Windows GDI physical pixels; Linux Wayland portal + PipeWire / X11 XShmGetImage (both compiled, not verified on real hardware)
+│   ├── screen_capture/       # screen capture: Windows GDI physical pixels; Linux Wayland portal + PipeWire / X11 XShmGetImage (both verified on real hardware; Linux single-monitor)
 │   ├── image_saver/          # image saving: PNG/JPEG with directory/format/quality/filename config
-│   ├── clipboard/            # clipboard: capture.done → CF_DIB / CF_HDROP (Windows); Linux uses an X11 selection (compiled, not verified on real hardware)
-│   ├── notify/               # capture result notifications: Windows Shell balloons; Linux uses libnotify (compiled, not verified on real hardware)
-│   ├── hotkey/               # list-driven global hotkey provider (RegisterHotKey on Windows; X11 XGrabKey on Linux, run-time downgrade on pure Wayland)
-│   ├── session_control/      # Linux D-Bus control entry: stands in for global hotkeys on Wayland (Linux only; passes the Linux build)
-│   ├── region_selector/      # selection overlay: hover-to-pick-window, click captures that window, theme-colored corner brackets (Windows; Wayland portal snapshot + drag selection; X11 GLFW overlay)
-│   ├── long_capture/         # long screenshot: pick a window, then continuous frames + row-fingerprint stitching (Windows P1; compiled, interaction pending on-device verification)
-│   ├── settings_ui/          # settings window: ImGui + GLFW + OpenGL3 (cross-platform, Windows verified)
-│   ├── translator/           # external language packs: scans official/user dirs, contributes i18n_source_list (cross-platform code, Windows verified)
-│   └── tray/                 # tray entry: data-driven menu + icon (Win32 tray + Linux SNI; Linux compiled, not verified on real hardware)
+│   ├── clipboard/            # clipboard: capture.done → CF_DIB / CF_HDROP (Windows); Linux uses an X11 selection (direct on X11 / via XWayland on Wayland, verified)
+│   ├── notify/               # capture result notifications: Windows Shell balloons; Linux uses libnotify (Linux verified)
+│   ├── hotkey/               # list-driven global hotkey provider (RegisterHotKey on Windows; X11 XGrabKey on Linux, verified; run-time downgrade on pure Wayland)
+│   ├── session_control/      # Linux D-Bus control entry: stands in for global hotkeys on Wayland (Linux only; D-Bus triggering verified)
+│   ├── region_selector/      # selection overlay: hover-to-pick-window, click captures that window, theme-colored corner brackets (Windows; Wayland portal snapshot + drag selection; X11 GLFW overlay; all verified on real hardware, Linux single-monitor)
+│   ├── long_capture/         # long screenshot: pick a window, then continuous frames + row-fingerprint stitching (Windows P1; full interaction verified on real hardware)
+│   ├── settings_ui/          # settings window: ImGui + GLFW + OpenGL3 (cross-platform, verified on Windows / Linux)
+│   ├── translator/           # external language packs: scans official/user dirs, contributes i18n_source_list (cross-platform code, verified on Windows / Linux)
+│   └── tray/                 # tray entry: data-driven menu + icon (Win32 tray + Linux SNI; Linux verified)
 ├── document/
 │   ├── README_SDK.md         # SDK layout and every build constraint (written in Chinese)
 │   ├── PLATFORMS.md          # cross-platform capability matrix: per-plugin status, limits, gaps and CI state
@@ -230,13 +231,15 @@ GCC 13.3.0 / x86_64 / vcpkg `x64-linux` / CMake 3.28.3 / Ninja 1.11.1 / Release)
 build passed (**0 warnings**), producing `build/Linux/bin/Plugin-shot` and 12 `.so` files
 (13 plugin projects minus the Windows-only `long_capture`; including the Linux
 implementations of `screen_capture` / `region_selector` / `session_control` /
-`clipboard` / `notify` / `tray`, plus `hotkey` with its X11 branch); `--help` exits 0. **Neither the
-Wayland nor the X11 path is verified on real hardware yet**: ScreenCast + PipeWire capture, the
-portal-snapshot + drag-selection plan B, and X11 capture/hotkeys/selection only count once they
-have run in a real desktop session; the X11 selection overlay and the X11 `screen_capture` branch
-have not been integrated together yet. `SHOT_ENABLE_OPENCV=OFF` was verified too. macOS is **not
-verified on real hardware** (code audit only). Windows remains the primary development and
-verification platform: the full build exits 0 and all 8 e2e/smoke scripts are green (see Platforms).
+`clipboard` / `notify` / `tray`, plus `hotkey` with its X11 branch); `--help` exits 0.
+**On-device verification**: the core chain now runs on real hardware under Ubuntu 24.04 (X11)
+and Ubuntu 26 (Wayland) — full-screen capture, region selection (Wayland portal snapshot /
+X11 overlay), hotkeys (X11 `XGrabKey`), D-Bus triggering (Wayland), clipboard, notifications,
+settings window, language packs and tray; all single-monitor, so X11 multi-monitor /
+multi X screen / negative origin remain unverified. `SHOT_ENABLE_OPENCV=OFF` was verified too.
+macOS is **not verified on real hardware** (code audit only). Windows remains the primary
+development and verification platform: the full build exits 0 and all 8 e2e/smoke scripts are
+green (see Platforms).
 
 **Linux artifacts must be built for the target distribution (glibc constraint)**: a `.so` links
 against the build machine's glibc and system libraries, so it is not portable across
@@ -275,10 +278,11 @@ same capture / region capture / open-settings actions with `Ctrl+Alt+S` / `Ctrl+
 `Ctrl+Alt+O`, and plugins (including itself) declare "combo → event" through the contributory
 `hotkey_list` — adding a hotkey means contributing one entry instead of registering it yourself.
 All hotkeys are editable in the settings window (the hotkey item is recorded by pressing a combo,
-no manual typing). On X11, `hotkey` registers with `XGrabKey`; pure Wayland has no global-hotkey
-API, so `hotkey` keeps exposing the list and config items but registers nothing (run-time
-downgrade) and users should use the `plugins/session_control` D-Bus entry / desktop custom
-shortcuts instead.
+no manual typing). On X11, `hotkey` registers with `XGrabKey` (verified on real hardware on
+Ubuntu 24.04); pure Wayland has no global-hotkey API, so `hotkey` keeps exposing the list and
+config items but registers nothing (run-time downgrade) and users should use the
+`plugins/session_control` D-Bus entry / desktop custom shortcuts instead (D-Bus triggering
+verified on real hardware on Ubuntu 26).
 
 `--capture` logs `Capture saved: <path>` and exits 0 on success; it exits 1 on failure
 (capture/save failure, missing plugin, full request queue) and 2 on unknown arguments. The
@@ -592,25 +596,34 @@ the root `CMakeLists.txt` and drifted away from the docs.
 > are not shipped in this release.
 
 Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`). On Linux
-the **default target is Wayland** (the maintainer's environment: Ubuntu 24.04 / GNOME 46 / Wayland
-session), with X11 kept as the **second priority**; macOS has never built successfully. Each
-plugin's `CMakeLists.txt` selects its platform implementation: `screen_capture` (Windows GDI /
-Linux Wayland portal + PipeWire / Linux X11 `XShmGetImage` first with `XGetImage` fallback and
-XFixes cursor compositing), `region_selector` (Windows overlay / Wayland portal snapshot + drag
-selection / X11 GLFW borderless overlay + `XGetImage` snapshot), `clipboard` (Windows CF_DIB /
-Linux X11 selection), `notify` (Windows Shell balloons / Linux libnotify) and `tray` (Windows
-Win32 tray / Linux StatusNotifierItem + `com.canonical.dbusmenu`) all have real platform
-implementations, but **the Linux side only reaches "compiles"; nothing has been verified on real
-hardware**, and the X11 branch passes the WSL full build (exit 0) while the X11 selection overlay
-and the X11 `screen_capture` branch have not been integrated together yet. `long_capture` (Win32
-foreground window + HUD; compiled, on-device interaction pending) builds on Windows only;
-`session_control` is Linux-only. **`hotkey` is the exception**: Windows compiles the
-`RegisterHotKey` implementation and Linux compiles the X11 `XGrabKey` implementation; with no
-`Display` (pure Wayland) it downgrades at run time to still
-contributing/reading `hotkey_list` and exposing the dynamic config items but registering no global
-hotkeys, warning users to use `session_control`; macOS and other platforms compile
-`hotkey_window_stub.cpp`. Also cross-platform buildable: `settings_ui` (GLFW), `image_saver`,
+the **default target is Wayland** (this round's environment: Ubuntu 26 / Wayland session), with X11
+kept as the **second priority** and verified on Ubuntu 24.04 / X11. **The Linux core chain (single
+monitor) now runs on real hardware**: Ubuntu 24.04 (X11) full-screen capture (Ctrl+Alt+S / D-Bus),
+`XGrabKey` hotkeys, XComposite background-snapshot region selection (hover-to-pick-window,
+top bar/dock and screen-corner snapping, click-to-capture-window, drag selection, Esc to cancel,
+save + clipboard), libnotify notifications, clipboard, settings window, language packs, D-Bus
+triggering and the tray; Ubuntu 26 (Wayland) portal ScreenCast full-screen capture, portal-snapshot
+drag selection (the overlay disappears immediately after confirming, no "application not
+responding", save + clipboard), notifications, clipboard, D-Bus triggering, settings window,
+language packs and the tray. Each plugin's `CMakeLists.txt` selects its platform implementation:
+`screen_capture` (Windows GDI / Linux Wayland portal + PipeWire / Linux X11 `XShmGetImage` first
+with `XGetImage` fallback and XFixes cursor compositing), `region_selector` (Windows overlay /
+Wayland portal snapshot + drag selection / X11 GLFW borderless overlay + XComposite background
+snapshot), `clipboard` (Windows CF_DIB / Linux X11 selection), `notify` (Windows Shell balloons /
+Linux libnotify) and `tray` (Windows Win32 tray / Linux StatusNotifierItem + `com.canonical.dbusmenu`).
+`long_capture` (Win32 foreground window + HUD; full interaction verified on real hardware: pick
+window → scroll → HUD → save) builds on Windows only; `session_control` is Linux-only, with D-Bus
+triggering verified on real hardware on Ubuntu 24 / 26. **`hotkey` is the exception**: Windows
+compiles the `RegisterHotKey` implementation and Linux compiles the X11 `XGrabKey` implementation
+(verified on real hardware on Ubuntu 24.04); with no `Display` (pure Wayland) it downgrades at run
+time to still contributing/reading `hotkey_list` and exposing the dynamic config items but
+registering no global hotkeys, warning users to use `session_control`; macOS and other platforms
+compile `hotkey_window_stub.cpp`. Also cross-platform buildable: `settings_ui` (GLFW), `image_saver`,
 `example_processor`, `opencv_provider`, `translator`.
+
+**Still unverified**: X11 multi-monitor / multi X screen / negative origin; Wayland hover-to-pick
+window (not allowed by the protocol, a platform limitation); macOS entirely; the CI Linux / macOS
+jobs (awaiting the next round).
 
 **The complete capability matrix (Windows / Wayland / X11 / macOS, one status per cell, with
 reasons and porting gaps) is [`document/PLATFORMS.md`](document/PLATFORMS.md); this section keeps
@@ -618,15 +631,15 @@ only build/verification conclusions — do not read it as "supported everywhere"
 
 | Platform | Status |
 | --- | --- |
-| Windows (MSVC x64) | ✅ primary development and verification platform (incl. mixed-DPI dual screen, plugin enable/disable, capture/save/notify/clipboard/hotkey/region selection); all 8 e2e/smoke scripts green this round; long capture ships but is disabled by default in the plugin list (experimental, on-device interaction pending verification) |
-| Linux (WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`) | 🟡 compiles, functionality unverified: configure + build pass (0 warnings), producing `Plugin-shot` and 12 `.so` files (`screen_capture` / `region_selector` / `session_control` / `clipboard` / `notify` / `tray` (SNI) / `hotkey` (with its X11 branch) / `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` / `translator`); `--help` exits 0; no real X11 / Wayland desktop run. `SHOT_ENABLE_OPENCV=OFF` also passes; see the glibc ceiling above |
-| Linux (Wayland, default target) | 🟡 implemented and compiles, not verified on real hardware: ScreenCast + PipeWire capture (incl. the system permission dialog), the portal-snapshot + drag-selection plan B (polls `glfwPollEvents` after hiding, encodes on a worker thread; portal wait 30 s with a progress line every 5 s), the `session_control` D-Bus entry, the X11-selection clipboard (through XWayland), libnotify notifications and the tray (SNI + dbusmenu) all build into `.so` files; on pure Wayland `hotkey` degrades at run time (exposes the list and config items, registers nothing). No path has run in a real GNOME Wayland session yet; the tray depends on `org.kde.StatusNotifierWatcher` (the Ubuntu AppIndicators extension, shipped by default on Ubuntu GNOME; plain GNOME needs a manual install); when it is missing the plugin logs one WARN, does not crash and does not retry. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
-| Linux (X11, second priority) | 🟡 implemented and compiles, not verified on real hardware: `screen_capture` grabs the whole X screen with `XShmGetImage` first and `XGetImage` fallback plus XFixes cursor compositing; `region_selector` uses a GLFW borderless overlay + `XGetImage` background snapshot + `XQueryTree`/`_NET_WM_WINDOW_TYPE` window hit-testing (polls after hiding); `hotkey` uses `XGrabKey` (lock-modifier variants, `BadAccess` conflict WARN, self-pipe event loop, suspend/resume); the Linux clipboard/notify implementations compile too; the SNI tray backend is a session-bus protocol and applies to X11 as well (compiled, not verified on real hardware). All three exit the WSL full build with exit 0 but have not run on real hardware; the X11 selection overlay and the X11 `screen_capture` branch have not been integrated together yet. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
+| Windows (MSVC x64) | ✅ primary development and verification platform (incl. mixed-DPI dual screen, plugin enable/disable, capture/save/notify/clipboard/hotkey/region selection); all 8 e2e/smoke scripts green this round; this round additionally confirmed region-selection snapping to windows / taskbar / screen corners with correct captured-window size, the full long-capture interaction (pick window → scroll → HUD → save), notification click behaviour and the short app name, and loading of the official zh-TW language pack; long capture ships but is disabled by default in the plugin list (experimental) |
+| Linux (WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`) | ✅ compiles (build environment): configure + build pass (0 warnings), producing `Plugin-shot` and 12 `.so` files (`screen_capture` / `region_selector` / `session_control` / `clipboard` / `notify` / `tray` (SNI) / `hotkey` (with its X11 branch) / `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` / `translator`); `--help` exits 0; real-hardware verification is covered by the next two rows. `SHOT_ENABLE_OPENCV=OFF` also passes; see the glibc ceiling above |
+| Linux (Wayland, default target) | ✅ verified (Ubuntu 26 real hardware, single monitor): portal ScreenCast full-screen capture (incl. the system permission dialog); the portal-snapshot + drag-selection plan B (the overlay disappears immediately after confirming, no "application not responding", save + clipboard; polls `glfwPollEvents` after hiding, encodes on a worker thread); the `session_control` D-Bus trigger; the X11-selection clipboard (through XWayland); libnotify notifications; the settings window (tabs / plugin page / enum i18n); language-pack switching; the tray (SNI + dbusmenu, top-bar icon/menu work). Remaining: hover-to-pick-window is a protocol limitation (not provided), multi-monitor / HiDPI stitching is not implemented. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
+| Linux (X11, second priority) | ✅ verified (Ubuntu 24.04 real hardware, single monitor / single X screen): full-screen capture (Ctrl+Alt+S / D-Bus); `XGrabKey` hotkeys (Ctrl+Alt+A / Ctrl+Alt+S / Ctrl+Alt+O); the selection overlay (XComposite background snapshot, no more grey mask, overlay above the top bar/dock, hover-to-pick-window, top bar/dock and screen-corner snapping = full screen, click-to-capture-window, drag selection, Esc to cancel, save + clipboard after confirming); libnotify notifications (title/body, correct app name, click to open); clipboard; settings window; language packs; D-Bus triggering; the tray (top-bar icon/menu). Remaining: multi-monitor / multi X screen / negative origin unverified. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
 | macOS | **not built and not verified on real hardware**: the CI macOS job fails at configure (vcpkg/toolchain); code audit only (`base.cpp`'s `_NSGetExecutablePath` / empty-string UB / HOME fallback); no real build or run result |
 | GitHub Actions | workflow ready; the Windows job passes while Linux/macOS have configure-stage failure records (see [`document/PLATFORMS.md`](document/PLATFORMS.md) §4); a green CI run does not mean the platform is usable |
 
-The Linux build platform uses one binary for both sessions; X11 and Wayland differ greatly at
-runtime (Wayland disallows global screen capture, global hotkeys and global overlays) — see the two
+The Linux results above come from one binary; X11 and Wayland differ greatly at runtime
+(Wayland disallows global screen capture, global hotkeys and global overlays) — see the two
 columns in the matrix.
 
 Linux host-side system dependencies (verified on Ubuntu 24.04): `build-essential ninja-build

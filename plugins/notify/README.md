@@ -316,7 +316,7 @@ Linux 线程边界：libnotify 的 `notify_notification_show` 是一次短 D-Bus
 | 平台 | 状态 |
 | --- | --- |
 | Windows（MSVC x64） | ✅ 已验证：构建通过（/W4 无警告）；隐藏占位图标 + `NIF_INFO` 气泡在 Windows 11 26H2 真机显示成功（探针 + 假宿主 harness 截图证据在本地 `build/verify/notify_*`） |
-| Linux（Wayland / X11 会话） | 🟡 代码已接入 CMake（`pkg_check_modules(LIBNOTIFY REQUIRED libnotify)`），使用 libnotify / `org.freedesktop.Notifications`；**未在本机 Ubuntu 24.04 桌面真机验证**，需要安装 `libnotify-dev` 并跑一次通知 e2e。用户回传的 Ubuntu 24 GNOME 截图确认通知能显示，头部应用名乱码已修（§4.3）；点击动作（`xdg-open`）**未真机点过** |
+| Linux（Wayland / X11 会话） | ✅ 已验证：CMake 接入 libnotify（`pkg_check_modules(LIBNOTIFY REQUIRED libnotify)`），使用 libnotify / `org.freedesktop.Notifications`；在 Ubuntu 24.04（X11）与 Ubuntu 26（Wayland）真机验证了通知标题 / 正文 / 应用名（短名与乱码问题已修，§4.3）与点击动作（`xdg-open`）。构建需要安装 `libnotify-dev`；多显示器未验证 |
 | macOS | **未实现**：CMake 在 APPLE 上跳过整个插件；候选方案记在 `CMakeLists.txt` 的 `# TODO:`（`UNUserNotificationCenter`），当前本插件没有 macOS 实现 |
 
 ## 8. 刻意不做的事

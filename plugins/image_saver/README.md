@@ -176,9 +176,10 @@ display(owner, key) = i18n_list[(owner, key)] ?? key
   `shell32` / `ole32`），默认配置下的落盘路径已在真机验证；用户把「图片」库
   重定位到别的盘后会自动跟随（KnownFolder API 的语义），但**本机没有改过图片库
   位置，未实测重定位场景**。
-- POSIX：XDG 解析（`$XDG_PICTURES_DIR` / `user-dirs.dirs` / `$HOME/Pictures` 回退）
-  在 WSL 里用独立探针验证（见 `build/verify/`），未在真实桌面会话里跑过插件；
-  `localtime_r` 分支按标准库/CRT 语义编写，本机未实际运行验证。
+- POSIX：XDG 解析（`$XDG_PICTURES_DIR` / `user-dirs.dirs` / `$HOME/Pictures` 回退）与
+  `localtime_r` 分支已在 Ubuntu 24.04（X11）/ Ubuntu 26（Wayland）真机的截图保存链路上
+  跑过；WSL 探针（见 `build/verify/`）保留作离线验证，自定义 `XDG_PICTURES_DIR` 的组合
+  未逐项验证。
 - 非 BGRA8 的像素格式（例如纯 RGB）不属于 v1 契约，`save` 返回 `1`。
 
 ## 刻意不做的事

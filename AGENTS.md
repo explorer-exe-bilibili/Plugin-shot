@@ -50,17 +50,17 @@ src/                宿主实现 + main.cpp
 plugins/            13 个插件工程，各自独立 CMakeLists + metadata.json
   example_processor  一 DLL 两插件（image_processor）+ 贡献一条托盘命令
   opencv_provider    lib_provider（把 OpenCV 带进进程）
-  screen_capture     shot.screen_capture（Windows GDI 多屏；Linux Wayland portal + PipeWire / X11 XShmGetImage + XFixes，均已编译、真机未验证）
+  screen_capture     shot.screen_capture（Windows GDI 多屏；Linux Wayland portal + PipeWire / X11 XShmGetImage + XFixes，均已真机验证，Linux 单显示器）
   image_saver        shot.image_saver（PNG/JPEG，stb）
-  settings_ui        设置页（ImGui + GLFW + OpenGL3，跨平台）
-  translator         外部语言包（Generic；扫描官方/用户目录，跨平台代码，Windows 已验证）
-  tray               托盘（图标 + 数据驱动菜单；Windows Win32 托盘 + Linux StatusNotifierItem，Linux 已编译、真机未验证）
-  region_selector    区域框选覆盖层（Windows 完整交互；Wayland 门户定格图 + 拖选；X11 GLFW 覆盖层 + XGetImage 快照，均已编译、真机未验证）
-  hotkey             全局热键（Windows 用 RegisterHotKey；Linux 用 X11 XGrabKey，纯 Wayland 运行期降级为不注册）
-  session_control    Linux Wayland 的 D-Bus 触发入口（Generic；代替全局热键；已随 Linux 构建通过）
-  long_capture       手动滚动长截图（Windows P1；已编译通过，真机交互待验证）
-  clipboard          截图 → 剪贴板（Windows CF_DIB；Linux 走 X11 selection，已编译、真机未验证）
-  notify             截图结果气泡（Windows Shell 通知；Linux 用 libnotify，已编译、真机未验证）
+  settings_ui        设置页（ImGui + GLFW + OpenGL3，跨平台；Windows / Linux 已验证）
+  translator         外部语言包（Generic；扫描官方/用户目录，跨平台代码，Windows / Linux 已验证）
+  tray               托盘（图标 + 数据驱动菜单；Windows Win32 托盘 + Linux StatusNotifierItem，Linux 顶栏已验证）
+  region_selector    区域框选覆盖层（Windows 完整交互；Wayland 门户定格图 + 拖选；X11 GLFW 覆盖层 + XComposite 背景快照，均已真机验证，Linux 单显示器）
+  hotkey             全局热键（Windows 用 RegisterHotKey；Linux 用 X11 XGrabKey 已验证，纯 Wayland 运行期降级为不注册）
+  session_control    Linux Wayland 的 D-Bus 触发入口（Generic；代替全局热键；D-Bus 触发已在 Ubuntu 24/26 真机验证）
+  long_capture       手动滚动长截图（Windows P1；真机完整交互已验证：选窗口 → 滚动 → HUD → 保存）
+  clipboard          截图 → 剪贴板（Windows CF_DIB；Linux 走 X11 selection，已验证，Wayland 经 XWayland）
+  notify             截图结果气泡（Windows Shell 通知；Linux 用 libnotify，已验证）
 document/           设计文档（改代码必须同步，见 §4）
 cmake/              构建规则（ShotPlugin.cmake / ValidatePluginMeta.cmake / export_sdk.cmake …）
 tools/verify/       真机验证脚本（带构建锁的 build 包装 + e2e 冒烟，见 tools/verify/README.md）
@@ -73,16 +73,19 @@ STYLE.md            ★ 代码风格与工程约定（硬约定）
 
 **万物皆插件**：宿主只负责「扫描 → 校验 → 加载 → 调度」，一切能力都在 DLL 里。
 
-> 平台状态见 [`document/PLATFORMS.md`](document/PLATFORMS.md)：Windows 是唯一真机验证过的完整链路；
-> Linux 默认目标是 Wayland（Ubuntu 24.04 GNOME），X11 列为第二优先。Wayland 链路（ScreenCast +
-> PipeWire 抓屏、门户定格图 + B 方案框选、`session_control` 的 D-Bus 触发入口）与 **X11 分支**
-> （`screen_capture` 的 XShm/XGetImage + XFixes、`region_selector` 的 GLFW 覆盖层、`hotkey` 的
-> `XGrabKey`）都已实现并随 Linux 全量构建通过（WSL configure/build exit 0），**都没有在真机验证**；
-> 托盘（StatusNotifierItem + dbusmenu，会话总线协议，Wayland/X11 都适用）同样已实现并编译通过，
-> 依赖 GNOME 的 Ubuntu AppIndicators 扩展（Ubuntu 默认自带，纯净 GNOME 需手动装）；
-> `hotkey` 在 Linux 用 X11 `XGrabKey`，纯 Wayland（取不到 X11 Display）运行期降级为只提供列表与
-> 配置项、不注册并 WARN 指向 `session_control`；`long_capture` 已随 Windows 构建通过，**交互待
-> 真机验证**；macOS 尚未成功构建。改平台相关代码、CMake 跳过条件或根 README 平台段前先看矩阵。
+> 平台状态见 [`document/PLATFORMS.md`](document/PLATFORMS.md)：**Windows 与 Linux（Ubuntu 24.04 X11 /
+> Ubuntu 26 Wayland，单显示器）的核心链路都已真机验证**——采集/框选/保存/剪贴板/通知/热键（X11）/
+> D-Bus 触发（Wayland）/设置页/语言包/托盘；Windows 本轮另确认区域截图悬停吸附、长截图完整交互、
+> 通知点击与应用名、官方 zh-TW 语言包。Linux 默认目标是 Wayland，X11 为第二优先；两套分支
+> （`screen_capture` 的 portal/ScreenCast 与 XShm/XGetImage、`region_selector` 的门户定格图与 GLFW
+> 覆盖层、`hotkey` 的 `XGrabKey`、`session_control` 的 D-Bus 入口）都已实现并在真机跑过，
+> `region_selector` 与 `screen_capture` 的 X11 分支也已联调。托盘（StatusNotifierItem + dbusmenu，
+> 会话总线协议，Wayland/X11 都适用）已在 Ubuntu 顶栏验证，依赖 GNOME 的 Ubuntu AppIndicators 扩展
+> （Ubuntu 默认自带，纯净 GNOME 需手动装）；`hotkey` 在纯 Wayland（取不到 X11 Display）运行期
+> 降级为只提供列表与配置项、不注册并 WARN 指向 `session_control`；`long_capture` 仍只在 Windows
+> 构建（真机完整交互已验证）。**仍未验证**：X11 多显示器 / 多 X screen / 负坐标；Wayland 窗口悬停
+> （协议限制）；macOS 全部；CI 的 Linux / macOS job。改平台相关代码、CMake 跳过条件或根 README
+> 平台段前先看矩阵。
 
 ```text
 插件 DLL ──(唯一导出符号 shot_module_entry)──► ShotModule{get_info, create, destroy, query_interface}

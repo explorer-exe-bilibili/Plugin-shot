@@ -79,17 +79,20 @@ cmake --build build
 | 平台 | 状态 |
 | --- | --- |
 | Windows（MSVC x64） | ✅ 已验证（构建 + 端到端冒烟；**双屏 150% + 100%**：运行中跨屏拖动按新 DPI 重缩放、几何恢复按目标显示器 DPI clamp） |
-| Linux / macOS | **未验证**：代码走同一套 GLFW + OpenGL3 + NFD 分支、CMake 也有 `OpenGL::GL` 分支，但当前开发机只有 Windows，没有真机验证 |
+| Linux | ✅ 已验证：Ubuntu 24.04（X11）与 Ubuntu 26（Wayland）真机打开设置页、渲染正常，中文显示正常；与 Windows 共用同一套 GLFW + OpenGL3 + NFD 分支，CMake 走 `OpenGL::GL` 分支 |
+| macOS | **未验证**：代码走同一套 GLFW + OpenGL3 + NFD 分支，但当前没有 macOS 真机 |
 
-POSIX 未验证的具体点（都留了代码里的 `// TODO:`）：
+POSIX 上仍需确认的点（都留了代码里的 `// TODO:`）：
 
 - macOS 上 GLFW（Cocoa）要求窗口与事件循环在进程主线程，而本插件的 UI 线程是自建线程；
 - macOS 上 NFD（NSOpenPanel）可能同样要求主线程，且主线程调用才最稳；
-- Linux 的中文字体路径（Noto CJK / 文泉驿）只是常见发行版的候选；
+- Linux 的中文字体路径（Noto CJK / 文泉驿）已在 Ubuntu 24.04（X11）/ Ubuntu 26（Wayland）
+  真机验证中文显示正常；其它发行版的字体候选路径仍是常见发行版候选，未逐一验证；
 - `glfwGetMonitorWorkarea` 在没有窗口管理器的环境下可能拿不到，代码会退回视频模式分辨率；
-- 其它 DPI 组合（125% / 200% / 三屏以上）、多屏负 origin 的摆放、以及 POSIX 多屏**未实测**：
-  DPI 逻辑按 GLFW content scale / 显示器矩形通用处理（不是硬编码 1.5/1.0），但真机只验证了
-  Windows 双屏（主屏 150% @0,0 + 副屏 100% @2560,0）下的跨屏拖动与副屏越界恢复。
+- Linux 只验证了单显示器默认缩放；其它 DPI 组合（125% / 200% / 三屏以上）、多屏负 origin 的
+  摆放、以及 POSIX 多屏**未实测**：DPI 逻辑按 GLFW content scale / 显示器矩形通用处理
+  （不是硬编码 1.5/1.0），Windows 双屏（主屏 150% @0,0 + 副屏 100% @2560,0）下的跨屏拖动与
+  副屏越界恢复已验证。
 
 ## 3. 生命周期与事件
 

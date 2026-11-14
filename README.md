@@ -28,8 +28,8 @@
 [**Plugin-shot 0.1.0 · Windows x64 便携版**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
 [更新日志](CHANGELOG.md)
 
-解压后双击 `Plugin-shot.exe` 即可。0.1.0 只提供 Windows 构建；Linux / macOS 的代码路径尚未真机验证，
-详见 [平台](#平台)。
+解压后双击 `Plugin-shot.exe` 即可。0.1.0 只提供 Windows 构建；Linux 的核心链路已在 Ubuntu 24.04
+（X11）/ Ubuntu 26（Wayland）真机验证，macOS 尚未验证，详见 [平台](#平台)。
 
 ### 界面
 
@@ -69,11 +69,11 @@
 | 单入口 `shot_module_entry` + 自描述模块表（`struct_size` 约定） | ✅ 可用 |
 | 一 DLL 多插件（`plugin_count` + `create(index)` + `get_info`） | ✅ 可用 |
 | 能力查询 `query_interface("shot.image_processor", 1)` | ✅ 可用 |
-| 屏幕采集 `shot.screen_capture`（`plugins/screen_capture`，GDI 抓虚拟桌面**物理像素**；可选把鼠标光标合成进截图（`include_cursor` 配置，默认开）；混合 DPI 双屏实测 3584x1600；Wayland 走 portal ScreenCast + PipeWire；Linux X11 用 `XShmGetImage` 优先 / `XGetImage` 回退 + XFixes 光标合成；两条 Linux 分支均已编译、真机未验证） | ✅ 可用（Windows；`document/CAPTURE.md`） |
+| 屏幕采集 `shot.screen_capture`（`plugins/screen_capture`，GDI 抓虚拟桌面**物理像素**；可选把鼠标光标合成进截图（`include_cursor` 配置，默认开）；混合 DPI 双屏实测 3584x1600；Wayland 走 portal ScreenCast + PipeWire；Linux X11 用 `XShmGetImage` 优先 / `XGetImage` 回退 + XFixes 光标合成；两条 Linux 分支均已真机验证：Ubuntu 26 Wayland 的 portal ScreenCast 全屏与 Ubuntu 24.04 X11 单显示器采集） | ✅ 可用（Windows / Linux 单显示器；`document/CAPTURE.md`） |
 | 图像保存 `shot.image_saver`（`plugins/image_saver`，PNG / JPEG + 四个配置项） | ✅ 可用（`document/CAPTURE.md`） |
 | 采集 → 处理 → 保存流水线（**工作线程 + 有界队列 4 + 整段持生命周期锁**；`capture.request` / `capture.done` / `capture.failed`） | ✅ 可用（`document/CAPTURE.md`） |
 | 宿主主循环（事件驱动**阻塞等待**，无 16ms 轮询；`publish` / `post_to_host` / 插件启停都会唤醒） | ✅ 可用（`document/EVENT_BUS.md` §3） |
-| 区域截图（`capture.request` 带合法 `region`，宿主抓整屏后按物理虚拟桌面像素裁剪、越界夹取；`plugins/region_selector` 框选覆盖层；无 region 的框选触发请求由流水线忽略、不采集；Windows / X11 走宿主流水线裁剪，Wayland 由 `region_selector` 自行裁剪并发布 `capture.done`（已编译、真机未验证）） | ✅ 可用（Windows；`document/CAPTURE.md` §3.1） |
+| 区域截图（`capture.request` 带合法 `region`，宿主抓整屏后按物理虚拟桌面像素裁剪、越界夹取；`plugins/region_selector` 框选覆盖层；无 region 的框选触发请求由流水线忽略、不采集；Windows / X11 走宿主流水线裁剪，Wayland 由 `region_selector` 自行裁剪并发布 `capture.done`；Windows / Linux（X11、Wayland）均已真机验证） | ✅ 可用（Windows / Linux 单显示器；`document/CAPTURE.md` §3.1） |
 | 通用插件类型 `PluginType::Generic`（只声明 `shot.configurable` + `create` 里订阅事件；有 metadata 才兜底加载） | ✅ 可用（`document/SETTINGS.md` §3.3） |
 | 宿主事件总线 `shot.host.event_bus`（主题发布 / 订阅） | ✅ 可用（`document/EVENT_BUS.md`） |
 | 通用列表服务 `shot.host.plugin_lists`（按 list id 返回 JSON 快照：`config_list` / `tray_command_list` / `i18n_source_list` / `i18n_list`） | ✅ 可用（`document/LISTS.md`） |
@@ -82,14 +82,14 @@
 | 运行库提供者 `shot.lib_provider`（`PluginType::Lib`） | ✅ 可用（`plugins/opencv_provider` 把 OpenCV 带进进程） |
 | UI 提供者 `shot.ui_provider`（窗口/托盘/热键/覆盖层由插件自己创建） | ✅ 可用（`plugins/settings_ui`、`plugins/tray`、`plugins/hotkey`、`plugins/region_selector`） |
 | 插件配置 `shot.configurable`（插件声明，宿主聚成 `config_list`、事件驱动写值 / 存盘 / 回灌） | ✅ 可用（`document/SETTINGS.md`） |
-| 设置页插件 `plugins/settings_ui`（读 `config_list`，ImGui + GLFW + OpenGL3，描述符驱动表单；双屏 150%+100% DPI 已验证） | ✅ 可用（跨平台；Windows 已验证） |
-| 托盘入口 `plugins/tray`（`tray_command_list` 数据驱动菜单：core 四项 + 插件贡献；Windows 用 Win32 托盘，图标默认宿主命名资源 `IDI_ICON1`、可用 `icon` 换 `.ico`；Linux 用 StatusNotifierItem + `com.canonical.dbusmenu`（GDBus / 系统 `gio-2.0`），图标取自桌面主题，已编译、真机未验证） | ✅ 可用（Windows） |
-| 通知插件 `plugins/notify`（截屏成功/失败气泡，隐藏占位图标；配置 enabled / show_on_success / show_on_error / sound；Linux 用 libnotify，已编译、真机未验证） | ✅ 可用（Windows） |
-| 剪贴板插件 `plugins/clipboard`（订阅 `capture.done` → CF_DIB / 可选 CF_HDROP；配置 enabled / also_file_drop；Linux 走 X11 selection，已编译、真机未验证） | ✅ 可用（Windows） |
-| 全局热键插件 `plugins/hotkey`（**列表驱动**：功能插件向贡献型列表 `hotkey_list` 添加条目，`hotkey.main` 只读快照并注册；内置 `capture` / `region` / `settings` → `capture.request` / `settings.open`，默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O；设置页用 `options="hotkey"` 录入，值存 `hotkey.main/<id>`；冲突按列表顺序先到者生效、后者 WARN；Windows 用 `RegisterHotKey`；Linux 用 X11 `XGrabKey`（锁修饰符变体、`BadAccess` 冲突 WARN、self-pipe 事件循环、suspend/resume），已编译、真机未验证；纯 Wayland（取不到 X11 Display）运行期降级为只提供列表与配置项、不注册，WARN 指向 `session_control`） | ✅ 可用（Windows） |
-| Linux 会话控制插件 `plugins/session_control`（会话总线暴露 `org.pluginshot.Control`；`Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` → 既有事件；Wayland 没有全局热键 API，用桌面「自定义快捷键」执行 `gdbus call` 触发；配置 `enabled`；仅 Linux） | 已实现，Linux 编译通过，真机交互待验证：随 Linux 构建产出 `.so`，宿主 `--help` 通过；D-Bus 名称与方法已实现，但还没在 GNOME 自定义快捷键上做端到端；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
-| 区域框选覆盖层 `plugins/region_selector`（悬停窗口吸附 + 单击截窗口 + 拖动选区；四角主题色折角与约 100ms 平滑动画；Esc / 右键取消；Wayland 为门户定格图 + 拖选（确认后先 `glfwPollEvents` 再编码，裁剪/PNG 编码/写盘移入工作线程；portal 等待 30s、每 5s 一条进度日志）；Linux X11 为 GLFW 无边框覆盖层 + `XGetImage` 背景快照 + `XQueryTree`/`_NET_WM_WINDOW_TYPE` 窗口命中（隐藏后同样补 `glfwPollEvents`），与 `screen_capture` 的 X11 分支**尚未联调**；两条 Linux 分支均已编译、真机未验证） | ✅ 可用（Windows；`document/CAPTURE.md` §3.1） |
-| 长截图插件 `plugins/long_capture`（手动滚动长截图：先经 `region_selector` 选目标窗口，自带 GDI 采集层连续抓帧 + 行指纹在线拼接 + Enter 保存；配置 `max_height`；Windows P1） | 0.1.0 作为**实验特性**随包分发、默认在插件列表里禁用（`plugins.disabled`），在设置页勾选启用后重启生效；Windows 编译通过，真机交互待验证：只在保存时发一条 `capture.done`；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
+| 设置页插件 `plugins/settings_ui`（读 `config_list`，ImGui + GLFW + OpenGL3，描述符驱动表单；双屏 150%+100% DPI 已验证） | ✅ 可用（跨平台；Windows / Linux 已验证） |
+| 托盘入口 `plugins/tray`（`tray_command_list` 数据驱动菜单：core 四项 + 插件贡献；Windows 用 Win32 托盘，图标默认宿主命名资源 `IDI_ICON1`、可用 `icon` 换 `.ico`；Linux 用 StatusNotifierItem + `com.canonical.dbusmenu`（GDBus / 系统 `gio-2.0`），图标取自桌面主题，已在 Ubuntu 顶栏真机验证（图标/菜单正常）） | ✅ 可用（Windows / Linux） |
+| 通知插件 `plugins/notify`（截屏成功/失败气泡，隐藏占位图标；配置 enabled / show_on_success / show_on_error / sound；Linux 用 libnotify，已在 Ubuntu 24/26 真机验证） | ✅ 可用（Windows / Linux） |
+| 剪贴板插件 `plugins/clipboard`（订阅 `capture.done` → CF_DIB / 可选 CF_HDROP；配置 enabled / also_file_drop；Linux 走 X11 selection（X11 直连 / Wayland 经 XWayland 桥接），已在 Ubuntu 24/26 真机验证） | ✅ 可用（Windows / Linux） |
+| 全局热键插件 `plugins/hotkey`（**列表驱动**：功能插件向贡献型列表 `hotkey_list` 添加条目，`hotkey.main` 只读快照并注册；内置 `capture` / `region` / `settings` → `capture.request` / `settings.open`，默认 Ctrl+Alt+S / Ctrl+Alt+A / Ctrl+Alt+O；设置页用 `options="hotkey"` 录入，值存 `hotkey.main/<id>`；冲突按列表顺序先到者生效、后者 WARN；Windows 用 `RegisterHotKey`；Linux 用 X11 `XGrabKey`（锁修饰符变体、`BadAccess` 冲突 WARN、self-pipe 事件循环、suspend/resume），已在 Ubuntu 24.04 真机验证（Ctrl+Alt+A / Ctrl+Alt+S / Ctrl+Alt+O 均可触发）；纯 Wayland（取不到 X11 Display）运行期降级为只提供列表与配置项、不注册，WARN 指向 `session_control`） | ✅ 可用（Windows；Linux X11） |
+| Linux 会话控制插件 `plugins/session_control`（会话总线暴露 `org.pluginshot.Control`；`Capture` / `CaptureRegion` / `OpenSettings` / `CaptureLong` → 既有事件；Wayland 没有全局热键 API，用桌面「自定义快捷键」执行 `gdbus call` 触发；配置 `enabled`；仅 Linux） | ✅ 可用（Linux）：D-Bus 触发已在 Ubuntu 24.04（X11）/ Ubuntu 26（Wayland）真机验证；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
+| 区域框选覆盖层 `plugins/region_selector`（悬停窗口吸附 + 单击截窗口 + 拖动选区；四角主题色折角与约 100ms 平滑动画；Esc / 右键取消；Wayland 为门户定格图 + 拖选（确认后先 `glfwPollEvents` 再编码，裁剪/PNG 编码/写盘移入工作线程；portal 等待 30s、每 5s 一条进度日志）；Linux X11 为 GLFW 无边框覆盖层 + 背景快照（合成器下自动回退 XComposite，不再灰遮罩）+ `XQueryTree`/`_NET_WM_WINDOW_TYPE` 窗口命中（隐藏后同样补 `glfwPollEvents`），与 `screen_capture` 的 X11 分支已联调；两条 Linux 分支均已真机验证：Wayland 门户定格图拖选（确认后覆盖层立即消失、无“应用无响应”、保存+剪贴板）与 X11 单显示器完整交互（悬停吸附、截窗、拖框、Esc、保存+剪贴板）） | ✅ 可用（Windows / Linux 单显示器；`document/CAPTURE.md` §3.1） |
+| 长截图插件 `plugins/long_capture`（手动滚动长截图：先经 `region_selector` 选目标窗口，自带 GDI 采集层连续抓帧 + 行指纹在线拼接 + Enter 保存；配置 `max_height`；Windows P1） | ✅ 可用（Windows）：0.1.0 作为**实验特性**随包分发、默认在插件列表里禁用（`plugins.disabled`），在设置页勾选启用后重启生效；真机已验证完整交互（选窗口 → 滚动 → HUD → 保存），只在保存时发一条 `capture.done`；见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | 主题色（`core/theme_color`，6 个预设 + 任意取色；区域框选边框/折角读它） | ✅ 可用（`document/SETTINGS.md` §5/§6） |
 | 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
@@ -101,7 +101,7 @@
 | 插件级依赖声明（`requires` / `provides`，带版本区间，`core` 为宿主） | ✅ 可用（`document/METADATA.md`） |
 | 依赖驱动加载顺序（拓扑排序，不满足只跳过该插件） | ✅ 可用 |
 | 插件工程公共构建规则（`shot_add_plugin()`） | ✅ 可用（宿主与离线 SDK 共用） |
-| 多语言 i18n（`core/language` = `auto` 或语言目录 tag；`i18n_source_list` 插件贡献 + 宿主合并生成只读 `i18n_list`；外部语言包 `files/lang/` 与 `%LOCALAPPDATA%\plugin-shot\langs\`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；内置 27 个标签，仓库内置译文仅 zh-CN / en-US；外部语言包协议已就绪、翻译插件 `plugins/translator` 已加入（默认关）；字体动态图集 + Segoe UI/Arial 补字，RTL 与韩/泰/阿拉伯字形未做） |
+| 多语言 i18n（`core/language` = `auto` 或语言目录 tag；`i18n_source_list` 插件贡献 + 宿主合并生成只读 `i18n_list`；外部语言包 `files/lang/` 与 `%LOCALAPPDATA%\plugin-shot\langs\`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；内置 27 个标签，仓库内置译文仅 zh-CN / en-US；外部语言包协议已就绪、翻译插件 `plugins/translator` 已加入（默认关）；Windows / Linux 真机已验证语言包加载与切换，官方 zh-TW 包界面/托盘跟随；字体动态图集 + Segoe UI/Arial 补字，RTL 与韩/泰/阿拉伯字形未做） |
 | 离线插件 SDK 导出（`export_sdk` 目标） | ✅ 可用 |
 
 > 产物名取自 `CMakeLists.txt` 的 `PROJECT_NAME`（当前 `Plugin-shot`）：宿主叫 `Plugin-shot.exe`，
@@ -139,17 +139,17 @@
 ├── plugins/                  # 每个子目录都是一个独立插件工程
 │   ├── example_processor/    # 完整示例：一个 DLL 两个插件，都带配置项（依赖 OpenCV）
 │   ├── opencv_provider/      # 合法但零能力的插件包（把 OpenCV 带进进程）
-│   ├── screen_capture/       # 屏幕采集：Windows GDI 物理像素；Linux Wayland portal + PipeWire / X11 XShmGetImage（均已编译、真机未验证）
+│   ├── screen_capture/       # 屏幕采集：Windows GDI 物理像素；Linux Wayland portal + PipeWire / X11 XShmGetImage（均已真机验证，Linux 单显示器）
 │   ├── image_saver/          # 图像保存：PNG/JPEG，目录/格式/质量/文件名可配置
-│   ├── clipboard/            # 剪贴板：capture.done → CF_DIB / CF_HDROP（Windows）；Linux 走 X11 selection（已编译、真机未验证）
-│   ├── notify/               # 截屏结果通知：Windows Shell 气泡；Linux 用 libnotify（已编译、真机未验证）
-│   ├── hotkey/               # 列表驱动全局热键 provider（Windows RegisterHotKey；Linux X11 XGrabKey，纯 Wayland 降级不注册）
-│   ├── session_control/      # Linux D-Bus 控制入口：Wayland 下代替全局热键（仅 Linux，已随 Linux 构建通过）
-│   ├── region_selector/      # 区域框选覆盖层：悬停窗口吸附、单击截窗、四角主题色折角（Windows；Wayland 门户定格图 + 拖选；X11 GLFW 覆盖层）
-│   ├── long_capture/         # 长截图：选窗口后连续抓帧 + 行指纹拼接（Windows P1，已编译，交互待真机验证）
-│   ├── settings_ui/          # 设置页：ImGui + GLFW + OpenGL3（跨平台，Windows 已验证）
-│   ├── translator/           # 外部语言包：扫描官方/用户目录，贡献 i18n_source_list（跨平台代码，Windows 已验证）
-│   └── tray/                 # 托盘入口：数据驱动菜单 + 图标（Windows 托盘 + Linux SNI；Linux 已编译、真机未验证）
+│   ├── clipboard/            # 剪贴板：capture.done → CF_DIB / CF_HDROP（Windows）；Linux 走 X11 selection（X11 直连 / Wayland 经 XWayland，已验证）
+│   ├── notify/               # 截屏结果通知：Windows Shell 气泡；Linux 用 libnotify（Linux 已验证）
+│   ├── hotkey/               # 列表驱动全局热键 provider（Windows RegisterHotKey；Linux X11 XGrabKey 已验证，纯 Wayland 降级不注册）
+│   ├── session_control/      # Linux D-Bus 控制入口：Wayland 下代替全局热键（仅 Linux，D-Bus 触发已验证）
+│   ├── region_selector/      # 区域框选覆盖层：悬停窗口吸附、单击截窗、四角主题色折角（Windows；Wayland 门户定格图 + 拖选；X11 GLFW 覆盖层，均已验证，Linux 单显示器）
+│   ├── long_capture/         # 长截图：选窗口后连续抓帧 + 行指纹拼接（Windows P1，真机完整交互已验证）
+│   ├── settings_ui/          # 设置页：ImGui + GLFW + OpenGL3（跨平台，Windows / Linux 已验证）
+│   ├── translator/           # 外部语言包：扫描官方/用户目录，贡献 i18n_source_list（跨平台代码，Windows / Linux 已验证）
+│   └── tray/                 # 托盘入口：数据驱动菜单 + 图标（Windows 托盘 + Linux SNI；Linux 已验证）
 ├── document/
 │   ├── README_SDK.md         # SDK 使用与完整编译约束
 │   ├── PLATFORMS.md          # 跨平台能力矩阵：每插件状态、平台限制、缺口与 CI 现状
@@ -219,11 +219,12 @@ vcpkg `x64-linux` / CMake 3.28.3 / Ninja 1.11.1 / Release）：configure + build
 （**0 warning**），产出 `build/Linux/bin/Plugin-shot` 与 12 个 `.so`（13 个插件工程除去仅 Windows
 的 `long_capture`；含 Linux 实现的
 `screen_capture` / `region_selector` / `session_control` / `clipboard` / `notify` / `tray`，
-以及带 X11 分支的 `hotkey`）；`--help` 退出码 0。**Wayland 与 X11 真机链路都尚未验证**：ScreenCast +
-PipeWire 抓屏、门户定格图 + B 方案框选、X11 采集/热键/框选都要在真实桌面会话里跑过才算数；
-X11 框选与 `screen_capture` 的 X11 分支尚未联调。`SHOT_ENABLE_OPENCV=OFF`
-也实测通过。macOS **未在真机验证**（只做过代码审计）。Windows 是主要开发与验证平台，
-全量构建 exit 0，8 个 e2e/冒烟脚本全绿（见「平台」）。
+以及带 X11 分支的 `hotkey`）；`--help` 退出码 0。**真机验证**：Ubuntu 24.04（X11）与
+Ubuntu 26（Wayland）上都已跑通核心链路——整屏截图、区域框选（Wayland 门户定格图 / X11 覆盖层）、
+热键（X11 `XGrabKey`）、D-Bus 触发（Wayland）、剪贴板、通知、设置页、语言包与托盘；均为单显示器
+环境，X11 多显示器 / 多 X screen / 负坐标尚未验证。`SHOT_ENABLE_OPENCV=OFF` 也实测通过。
+macOS **未在真机验证**（只做过代码审计）。Windows 是主要开发与验证平台，全量构建 exit 0，
+8 个 e2e/冒烟脚本全绿（见「平台」）。
 
 **Linux 产物需按目标发行版构建（glibc 版本约束）**：`.so` 链接的是构建机上的 glibc 与系统库，
 不能跨发行版共用。本仓库 `build/Linux` 当前由 WSL Ubuntu 24.04（glibc 2.39）构建，产物最高只
@@ -257,8 +258,9 @@ cd build/Windows/bin && ./Plugin-shot.exe --help     # 打印用法
 `Ctrl+Alt+O` 触发同样的截屏 / 区域截屏 / 打开设置，插件（包括它自己）通过贡献型列表
 `hotkey_list` 声明"组合键 → 事件"，加一个热键只需贡献一条条目、不用自己注册；全部热键可在
 设置页改（热键项用「录入…」按一次组合键录入，不用手输字符串）。X11 会话下 `hotkey` 用 `XGrabKey`
-注册；纯 Wayland 没有全局热键 API，`hotkey` 保留列表与配置项但不注册（运行期降级），改用
-`plugins/session_control` 的 D-Bus 入口 / 桌面自定义快捷键。
+注册（Ubuntu 24.04 真机已验证）；纯 Wayland 没有全局热键 API，`hotkey` 保留列表与配置项但不注册
+（运行期降级），改用 `plugins/session_control` 的 D-Bus 入口 / 桌面自定义快捷键（D-Bus 触发已在
+Ubuntu 26 真机验证）。
 
 `--capture` 成功时日志打印 `Capture saved: <path>`、退出码 `0`；失败（采集/保存/插件缺失/
 请求队列满）退出码 `1`，未知参数 `2`。一次性模式在退出前会**派发一轮事件**，所以剪贴板/
@@ -547,21 +549,28 @@ shot_add_plugin(acme_tools
 > 不是 0.1.0 的发布承诺；未真机验证的能力不随本版本分发。
 
 Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。Linux 的**默认目标是 Wayland**
-（维护者实测环境：Ubuntu 24.04 / GNOME 46 / Wayland 会话），X11 保留为**第二优先**；macOS 从未
-成功构建。平台实现按目标平台在各自 `CMakeLists.txt` 里选择：`screen_capture`
-（Windows GDI / Linux Wayland portal + PipeWire / Linux X11 `XShmGetImage` 优先 + `XGetImage`
-回退，XFixes 光标合成）、`region_selector`（Windows 覆盖层 / Wayland 门户定格图 + 拖选 /
-X11 GLFW 无边框覆盖层 + `XGetImage` 快照）、`clipboard`（Windows CF_DIB / Linux X11 selection）、
+（本轮实测环境：Ubuntu 26 / Wayland 会话），X11 保留为**第二优先**并已在 Ubuntu 24.04 / X11
+会话验证。**Linux（单显示器）的核心链路已真机跑通**：Ubuntu 24.04（X11）的整屏采集
+（Ctrl+Alt+S / D-Bus）、`XGrabKey` 热键、XComposite 背景快照框选（悬停窗口吸附、顶栏/dock 与
+四角吸附、单击截窗、拖框、Esc 取消、保存+剪贴板）、libnotify 通知、剪贴板、设置页、语言包、
+D-Bus 触发与托盘；Ubuntu 26（Wayland）的 portal ScreenCast 整屏采集、门户定格图拖选（确认后
+覆盖层立即消失、无“应用无响应”、保存+剪贴板）、通知、剪贴板、D-Bus 触发、设置页、语言包与
+托盘。平台实现按目标平台在各自 `CMakeLists.txt` 里选择：`screen_capture`（Windows GDI /
+Linux Wayland portal + PipeWire / Linux X11 `XShmGetImage` 优先 + `XGetImage` 回退，XFixes
+光标合成）、`region_selector`（Windows 覆盖层 / Wayland 门户定格图 + 拖选 / X11 GLFW 无边框
+覆盖层 + XComposite 背景快照）、`clipboard`（Windows CF_DIB / Linux X11 selection）、
 `notify`（Windows Shell 通知 / Linux libnotify）、`tray`（Windows Win32 托盘 / Linux
-StatusNotifierItem + `com.canonical.dbusmenu`）都有对应平台实现，但 **Linux 侧只到编译通过，
-真机未验证**：X11 分支随 WSL 全量构建 exit 0，`region_selector` 的 X11 框选与 `screen_capture`
-的 X11 分支尚未联调。`long_capture`（Win32 前台窗口 + HUD，已编译、真机交互待验证）只在
-Windows 构建；`session_control` 反过来只在 Linux 构建。
-**`hotkey` 是例外**：Windows 编译 `RegisterHotKey` 实现，Linux 编译 X11 `XGrabKey` 实现；
-纯 Wayland（取不到 `Display`）时运行期降级为仍贡献/读取 `hotkey_list`、暴露动态配置项但不
-注册全局热键，启动 WARN 指向 `session_control`；macOS 等其它平台编 `hotkey_window_stub.cpp`。
-跨平台可编译的还有 `settings_ui`（GLFW）、`image_saver`、`example_processor`、
-`opencv_provider`、`translator`。
+StatusNotifierItem + `com.canonical.dbusmenu`）。
+`long_capture`（Win32 前台窗口 + HUD，真机完整交互已验证：选窗口 → 滚动 → HUD → 保存）只在
+Windows 构建；`session_control` 反过来只在 Linux 构建，D-Bus 触发已在 Ubuntu 24 / 26 真机验证。
+**`hotkey` 是例外**：Windows 编译 `RegisterHotKey` 实现，Linux 编译 X11 `XGrabKey` 实现
+（已在 Ubuntu 24.04 真机验证）；纯 Wayland（取不到 `Display`）时运行期降级为仍贡献/读取
+`hotkey_list`、暴露动态配置项但不注册全局热键，启动 WARN 指向 `session_control`；macOS 等其它
+平台编 `hotkey_window_stub.cpp`。跨平台可编译的还有 `settings_ui`（GLFW）、`image_saver`、
+`example_processor`、`opencv_provider`、`translator`。
+
+**仍未验证**：X11 多显示器 / 多 X screen / 负坐标；Wayland 窗口悬停（协议不允许，属平台限制）；
+macOS 全部；CI 的 Linux / macOS job（等下一轮结果）。
 
 **完整的跨平台能力矩阵（Windows / Wayland / X11 / macOS 每格状态、原因与补齐路径）见
 [`document/PLATFORMS.md`](document/PLATFORMS.md)；本节只保留构建与验证结论，不要读成
@@ -569,14 +578,14 @@ Windows 构建；`session_control` 反过来只在 Linux 构建。
 
 | 平台 | 状态 |
 | --- | --- |
-| Windows（MSVC x64） | ✅ 主要开发与验证平台（含双屏混合 DPI、插件启停、采集/保存/通知/剪贴板/热键/区域框选；本轮 8 个 e2e/冒烟脚本全绿）；长截图随包分发但默认在插件列表里禁用（实验特性，真机交互待验证） |
-| Linux（WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`） | 🟡 编译通过、功能未验证：configure + build 通过（0 warning），产出 `Plugin-shot` 与 12 个 `.so`（`screen_capture` / `region_selector` / `session_control` / `clipboard` / `notify` / `tray`（SNI）/ `hotkey`（含 X11 分支）/ `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` / `translator`）；`--help` 退出 0；真实 X11 / Wayland 桌面未跑。`SHOT_ENABLE_OPENCV=OFF` 也通过；产物 glibc 上限见上文 |
-| Linux（Wayland，默认目标） | 🟡 已实现、编译通过，真机未验证：ScreenCast + PipeWire 抓屏（含系统授权弹窗）、门户定格图 + 自有窗口拖选的 B 方案框选（隐藏后先 `glfwPollEvents`、编码在工作线程）、`session_control` 的 D-Bus 触发入口、X11 selection 剪贴板（经 XWayland 桥接）、libnotify 通知与托盘（SNI + dbusmenu）都已编译进 `.so`；`hotkey` 在纯 Wayland 运行期降级（提供列表与配置项，不注册）。尚无一条链路在真实 GNOME Wayland 会话跑过；托盘依赖 `org.kde.StatusNotifierWatcher`（Ubuntu GNOME 的 Ubuntu AppIndicators 扩展，Ubuntu 默认自带；纯净 GNOME 需手动安装），找不到时只 WARN 一次、不崩不重试。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
-| Linux（X11，第二优先） | 🟡 已实现、编译通过，真机未验证：`screen_capture` 用 `XShmGetImage` 优先 / `XGetImage` 回退抓整个 X screen + XFixes 光标合成；`region_selector` 用 GLFW 无边框覆盖层 + `XGetImage` 背景快照 + `XQueryTree`/`_NET_WM_WINDOW_TYPE` 窗口命中（隐藏后补 `glfwPollEvents`）；`hotkey` 用 `XGrabKey`（锁修饰符变体、`BadAccess` 冲突 WARN、self-pipe 事件循环、suspend/resume）；剪贴板/通知的 Linux 实现同样已编译；`tray` 的 SNI 后端是会话总线协议，X11 同样适用（已编译、真机未验证）。三者随 WSL 全量构建 exit 0，但没有真机跑过；`region_selector` 与 `screen_capture` 的 X11 分支尚未联调。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
+| Windows（MSVC x64） | ✅ 主要开发与验证平台（含双屏混合 DPI、插件启停、采集/保存/通知/剪贴板/热键/区域框选；本轮 8 个 e2e/冒烟脚本全绿）；本轮新增确认区域截图悬停窗口/任务栏/屏幕四角吸附与截窗口尺寸、长截图完整交互（选窗口 → 滚动 → HUD → 保存）、通知点击行为与应用名短名、官方 zh-TW 语言包加载；长截图随包分发但默认在插件列表里禁用（实验特性） |
+| Linux（WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`） | ✅ 编译通过（构建环境）：configure + build 通过（0 warning），产出 `Plugin-shot` 与 12 个 `.so`（`screen_capture` / `region_selector` / `session_control` / `clipboard` / `notify` / `tray`（SNI）/ `hotkey`（含 X11 分支）/ `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` / `translator`）；`--help` 退出 0；真机功能验证见下面两行。`SHOT_ENABLE_OPENCV=OFF` 也通过；产物 glibc 上限见上文 |
+| Linux（Wayland，默认目标） | ✅ 已验证（Ubuntu 26 真机，单显示器）：portal ScreenCast 整屏截图（含系统授权弹窗）；门户定格图 + 自有窗口拖选的 B 方案框选（确认后覆盖层立即消失、无“应用无响应”、保存+剪贴板；隐藏后先 `glfwPollEvents`、编码在工作线程）；`session_control` 的 D-Bus 触发；剪贴板（经 XWayland 桥接）；libnotify 通知；设置页（页签/插件页/枚举多语言）；语言包切换；托盘（SNI + dbusmenu，顶栏图标/菜单正常）。剩余：窗口悬停吸附属协议限制（不提供）、多屏 / HiDPI 拼接未实现。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
+| Linux（X11，第二优先） | ✅ 已验证（Ubuntu 24.04 真机，单显示器/单 X screen）：整屏采集（Ctrl+Alt+S / D-Bus）；`XGrabKey` 热键（Ctrl+Alt+A / Ctrl+Alt+S / Ctrl+Alt+O）；框选覆盖层（XComposite 背景快照，不再灰遮罩、覆盖层高于顶栏/dock、悬停窗口吸附、顶栏/dock 与四角吸附=全屏、单击截窗、拖框、Esc 取消、确认后保存+剪贴板）；libnotify 通知（标题/正文、应用名正确、点击打开）；剪贴板；设置页；语言包；D-Bus 触发；托盘（顶栏图标/菜单）。剩余：多显示器 / 多 X screen / 负坐标未验证。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
 | macOS | **未构建、未在真机验证**：CI 的 macOS job 在 configure 阶段失败（vcpkg/工具链），只有代码审计（`base.cpp` 的 `_NSGetExecutablePath` / 空串 UB / HOME 兜底）；没有真实构建/运行结论 |
 | GitHub Actions | workflow 已就绪；Windows job 已通过，Linux/macOS 有 configure 阶段失败记录（见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §4）；CI 通过也不代表平台可用 |
 
-表中的 Linux 构建平台用的是同一份二进制；X11 与 Wayland 的运行能力差别很大（Wayland 不允许全局
+表里的 Linux 结论都来自同一份二进制；X11 与 Wayland 的运行能力差别很大（Wayland 不允许全局
 抓屏、全局热键、全局覆盖层），见矩阵的两列。
 
 Linux 构建的宿主侧系统依赖（Ubuntu 24.04 实测）：`build-essential ninja-build pkg-config`、

@@ -6,8 +6,9 @@ Wayland 下第三方应用**没有可移植的全局热键 API**（GNOME 46 还�
 「自定义快捷键」里绑定一条 `gdbus call ...` 命令，桌面负责按键、本插件负责把 D-Bus 方法
 翻译成既有的事件总线主题。
 
-**这是 `plugins/hotkey` 在 Wayland 下的替代方案**：hotkey 插件用 `RegisterHotKey`，只能在
-Windows 工作；本插件不注册任何热键，只提供“桌面能调用的命令入口”，因此 X11 会话也能用。
+**这是 `plugins/hotkey` 在 Wayland 下的替代方案**：hotkey 插件在 Windows 用
+`RegisterHotKey`、在 Linux X11 用 `XGrabKey`，纯 Wayland 下没有可用的全局热键 API；
+本插件不注册任何热键，只提供“桌面能调用的命令入口”，因此 X11 会话也能用。
 
 ## 1. 它做什么、不做什么
 
@@ -18,10 +19,10 @@ Windows 工作；本插件不注册任何热键，只提供“桌面能调用的
 | 名称被占用时 WARN 并让插件继续加载 | 不弹 UI、不开窗口、不写配置文件 |
 | `enabled` 关掉时注销 D-Bus 名称 | 不在 Wayland 上尝试任何全局热键变通（如 libinput 抓键） |
 
-**当前链路限制**：本插件只管“触发”。Linux 侧真正落盘还需要 Linux 实现的
-`shot.screen_capture` / `shot.image_saver`（目前 `screen_capture`、`region_selector` 仍是
-Windows-only）。在那之前，`Capture()` 能成功发布事件并回复 `(true, ...)`，但没有采集者，
-不会产生文件；`CaptureRegion()` 发出的“请开始框选”也没有 Linux 覆盖层消费。
+**当前链路状态**：本插件只管“触发”。Linux 侧的采集 / 保存 / 区域选择已由
+`screen_capture` / `image_saver` / `region_selector` 插件实现，并在 Ubuntu 24.04（X11）与
+Ubuntu 26（Wayland）真机跑通：`Capture()` 发布事件后能落盘，`CaptureRegion()` 会弹出 Linux
+覆盖层并由流水线完成“选区 → 抓屏 → 保存”。
 
 ## 2. D-Bus 接口
 
@@ -37,7 +38,7 @@ Windows-only）。在那之前，`Capture()` 能成功发布事件并回复 `(tr
 | 方法 | 发布的事件 | 负载 | 说明 |
 | --- | --- | --- | --- |
 | `Capture()` | `capture.request` | 空 | 整屏截图请求（与托盘「截屏」、hotkey 的截屏项完全相同） |
-| `CaptureRegion()` | `capture.request` | `{"mode":"region"}` | “请开始框选”：流水线忽略、不采集；由区域选择插件消费（Windows / Wayland / X11 均已实现，Linux 真机未验证） |
+| `CaptureRegion()` | `capture.request` | `{"mode":"region"}` | “请开始框选”：流水线忽略、不采集；由区域选择插件消费（Windows / Wayland / X11 均已实现；Linux 已在 Ubuntu 24.04 X11 / Ubuntu 26 Wayland 真机验证） |
 | `OpenSettings()` | `settings.open` | 空 | 打开设置页（`plugins/settings_ui` 消费） |
 | `CaptureLong()` | `long_capture.start` | 空 | 滚动长图能力的预留入口；当前没有订阅者，成功发布但无效果 |
 
@@ -195,7 +196,7 @@ plugins/session_control/
   `capture.done` / `capture.failed` 事件（由其它插件消费）。
 - 会话总线断开（dbus 重启、注销）后：本插件只打 WARN 并停止提供入口，不会结束宿主进程
   （连接上的 `exit-on-close` 已显式关掉）；进程缓存的会话连接可能已经失效，恢复办法是重启宿主。
-- Wayland 下 `CaptureRegion` 需要 Linux 区域选择覆盖层；在它落地之前，该调用只会发布
-  “请开始框选”并立即返回成功。
+- Wayland / X11 下 `CaptureRegion` 依赖 Linux 区域选择覆盖层（已在 Ubuntu 24.04 X11 /
+  Ubuntu 26 Wayland 真机验证）；覆盖层不可用时该调用仍只会发布“请开始框选”并立即返回成功。
 - 本插件不解决“应用没有权限读屏幕”的问题：Wayland 下截图仍受合成器协议/portal 约束，
   取决于 Linux 采集插件的实现。

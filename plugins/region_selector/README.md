@@ -446,16 +446,16 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | X11 只支持单 X screen | 覆盖层只铺鼠标所在显示器；XQueryTree 枚举的是默认 X screen 的 root 子窗口，多 X screen（`:0.1` 等）不枚举、也不能跨 screen 覆盖。多显示器在同一 X screen 内是支持的，但一次仍只选一块屏 |
 | X11 WM 没接受 `_NET_WM_STATE_FULLSCREEN` | 只 WARN，不崩：退回 `XMoveResizeWindow` 把窗口铺满显示器。此时顶栏/dock 不一定自动隐藏，面板可能再次盖住覆盖层，但框选、悬停、Esc 仍可用（§9.3 第 8 条） |
 | X11 覆盖层是 EWMH 全屏窗口 | 每次显示前写 `_NET_WM_WINDOW_TYPE=NORMAL` + `_NET_WM_STATE=[FULLSCREEN,ABOVE]`；mutter 识别全屏后会自动隐藏顶栏/dock。显示后 `XRaiseWindow` + `XSetInputFocus`，焦点不在覆盖层时才 `XGrabKeyboard` 兜底 Esc；**不再抓指针**。真机行为见 §9.5 |
-| X11 下的采集依赖宿主流水线 | 本插件只发布带 `region` 的 `capture.request`（与 Windows 一致），实际抓屏由 `screen_capture` 完成。`screen_capture` 现在也有 X11 分支（XShm/XGetImage），但两边**尚未联调**；X11 会话下普通框选的端到端链路要真机确认（见 §9.4/§9.5） |
+| X11 下的采集依赖宿主流水线 | 本插件只发布带 `region` 的 `capture.request`（与 Windows 一致），实际抓屏由 `screen_capture` 完成。两边已在 Ubuntu 24.04（X11）真机联调：选区 → `screen_capture` 抓屏 → 落盘 → 剪贴板整条链路跑通（见 §9.4/§9.5） |
 | X11 + XWayland 的边界 | Wayland 会话里 XWayland 应用是 X11 窗口，但本插件走 Wayland 分支（门户截图 + 自己的窗口），拿不到、也不枚举这些窗口；不要指望在 Wayland 会话里用 X11 路径去吸 XWayland 窗口 |
 | X11 窗口枚举不做子控件命中 | 与 Windows 一样只认顶层窗口；`_NET_WM_WINDOW_TYPE_*` 过滤 DOCK/TOOLTIP/MENU 等，完全透明的点击穿透窗口没有额外过滤 |
 | Wayland 无法悬停吸附 / 单击截窗 | 协议不允许枚举全局窗口、也拿不到别的窗口矩形，所以只有"拖框"一种选择方式；单击不拖 = 取消（见 §8） |
 | Wayland 多屏是一张缩放图 | portal 的 Screenshot 门户一次返回**整个桌面合成图**，覆盖层把它等比缩放显示，不能按输出分开选；坐标换算基于图像像素，因此选中的内容仍然准确 |
-| Wayland 覆盖层位置/全屏由合成器决定 | 客户端不能定位窗口；代码请求全屏并记录实际尺寸，带标题栏/未全屏时框选仍可用（坐标按实际窗口尺寸算），观感需要真机确认 |
+| Wayland 覆盖层位置/全屏由合成器决定 | 客户端不能定位窗口；代码请求全屏并记录实际尺寸，带标题栏/未全屏时框选仍可用（坐标按实际窗口尺寸算）。GNOME Wayland（Ubuntu 26，单显示器）真机确认覆盖层可用；多屏 / 分数缩放未验证 |
 
 ## 8. Linux / Wayland
 
-Linux 默认目标是 Wayland（Ubuntu 24.04 GNOME）。Wayland 下应用**不能**读屏幕、不能覆盖
+Linux 默认目标是 Wayland（Ubuntu GNOME，24.04 / 26 均已真机验证）。Wayland 下应用**不能**读屏幕、不能覆盖
 所有输出、不能枚举窗口，所以采用"**门户截一次图 + 自己的窗口在上面框选**"的方案：
 
 1. 收到 `capture.request`（`{"mode":"region"}`）后，调 `xdg-desktop-portal` 的
@@ -567,31 +567,27 @@ Linux 的入口来自：托盘菜单（`tray` 的 SNI/dbusmenu）、短按 `hotk
 | 多显示器 | 只覆盖一块屏；悬停窗口可跨屏 | 一张缩放图，整张桌面都能选 |
 | 主题色 / 语言 / 选择框样式 | 相同 | 相同 |
 
-### 8.5 需要真机验证（本机没有 Linux 桌面）
+### 8.5 真机验证状态（Ubuntu 26 Wayland）
 
-- 覆盖层是否真的全屏、是否被合成器加上标题栏（GNOME 不支持 `xdg-decoration` 时无边框请求
-  会被忽略）；以及带标题栏时坐标是否仍然正确（按实际窗口尺寸算，理论上不受影响）。
-- 多屏 + 分数缩放（125% / 150% / 200%）下的窗口尺寸、`content_scale` 与坐标换算：映射用的是
-  窗口内容坐标与图像像素，理论上与缩放无关，但没有实机结论。
-- 首次授权框的观感与超时（当前等待 **30s**，等待期间每 5s 一条「仍在等待 portal 授权…」）；
-  授权框出现时是否抢焦点/是否遮住覆盖层
-  （覆盖层是在拿到截图**之后**才显示的，设计上不会挡授权框）。
-- portal 后端差异（GNOME / KDE / wlroots）：`CaptureRegion` 的触发入口、授权拒绝时门户
-  返回的错误文本（取消/拒绝靠错误码 + 文本识别，不同版本可能不同）。
-- **确认后的隐藏是否真的生效**（本轮重点，**待真机验证**）：事件泵等待（每轮
-  `glfwPollEvents` + 5ms 超时等待，上限 500ms）能否让 Ubuntu 26 / GNOME Wayland 上的
-  覆盖层在确认后立刻消失；以及 500ms 超时那条 WARN 是否会出现。按 §8.6 的分步日志回传
-  即可定位到底卡在哪一行。
+已在 Ubuntu 26（Wayland，单显示器）真机确认：门户截图拖选、确认后覆盖层立即消失、保存 +
+剪贴板；截图区域与选择一致（坐标换算正确）。
+
+- **确认后的隐藏**：真机确认覆盖层在确认后立即消失，未出现 500ms 超时 WARN，事件循环回到
+  等待（分步日志见 §8.6）。
+- 首次授权与超时：等待最多 **30s**，等待期间每 5s 一条「仍在等待 portal 授权…」；覆盖层在
+  拿到截图之后才显示，设计上不会挡授权框。
 - 图像编码：超大整屏图（8K+）时 GL 纹理上传可能超过 GPU 上限（有 WARN，裁剪与落盘不受影响）。
-- X11 会话：见 §9（同一份 `.so` 里另一套实现，与 Wayland 路径互不影响）。
+- **仍未验证**：多屏 + 分数缩放（125% / 150% / 200%）下的窗口尺寸、`content_scale` 与坐标
+  换算；portal 后端差异（KDE / wlroots）的授权拒绝文案与观感；X11 会话见 §9（同一份 `.so`
+  里另一套实现，与 Wayland 路径互不影响）。
 
 ### 8.6 真机诊断日志（按这个顺序看，一眼定位卡在哪一步）
 
 > 本轮针对"确认后覆盖层卡在屏幕上、应用像卡死"补了一整套**分步日志**（hide 前状态 →
 > `glfwHideWindow` → 每轮 poll 后的 `GLFW_VISIBLE` → `waitEventsTimeout` 返回 →
 > 编码线程启动/结束 → `releaseBackgroundTexture` 前后 → 事件循环回到等待），并把隐藏
-> 改成**事件泵等待**、把回收编码线程改成**带超时**。这些改动只在 WSL 里编译通过，
-> **没有 Wayland 真机验证**——下一份真机日志就是结论。
+> 改成**事件泵等待**、把回收编码线程改成**带超时**。这套改动已在 Ubuntu 26（Wayland）
+> 真机验证：确认后覆盖层立即消失，未再出现卡屏；下面这份日志仍按顺序对照使用。
 
 一次正常的 Wayland 框选，`host.log`（Linux 是 `~/.plugin-shot/logs/host.log`，Windows 是
 `%LOCALAPPDATA%\plugin-shot\logs\host.log`）里 region_selector 的行应该依次出现：
@@ -807,7 +803,8 @@ dash-to-dock 是 **shell 自己画的**，不是 `_NET_WM_WINDOW_TYPE_DOCK` 客�
 workarea.bottom)`。读不到或数值异常（负数、零宽高、超出 X screen、与显示器不相交、
 inset ≥ 屏宽/屏高）时四条全按 0 处理并记 debug 日志，绝不拿可疑值做命中。命中优先级
 变为**屏幕四角 → 任务栏/面板窗口（DOCK）→ 面板占位带 → 普通窗口**，面板带命中同样
-返回"当前显示器全屏"伪矩形，绘制/单击/拖动确认复用同一套路径。**真机未验证**。
+返回"当前显示器全屏"伪矩形，绘制/单击/拖动确认复用同一套路径。**已在 Ubuntu 24.04（X11）
+真机验证**（单显示器；见 §9.5）。
 
 ### 9.4 产出事件
 
@@ -821,17 +818,17 @@ inset ≥ 屏宽/屏高）时四条全按 0 处理并记 debug 日志，绝不�
 - 取消（Esc / 右键 / 拖动选区任一边 < 8px / 无窗口时单击）不发布普通框选事件；
   purpose 选择回 `cancelled:true`。
 - **注意**：普通框选发布的是 `capture.request`，真正的抓屏由宿主的 `screen_capture`
-  完成。`screen_capture` 的 X11 分支已经实现（XShm 优先、XGetImage 回退，同一轮随
-  Linux 全量构建通过），但两者**尚未真机联调**；X11 会话下选区 → 抓屏 → 落盘这条
-  链路需要真机确认。本插件的区域选择、坐标与事件发布按 Windows 同款实现（purpose
-  选择由消费者自己采集，不受此限制）。
+  完成。两端已在 Ubuntu 24.04（X11）真机联调：选区 → `screen_capture`（XShm 优先、
+  `XGetImage` 回退）→ `image_saver` 落盘 → `clipboard` 整条链路跑通（见 §9.5）。
+  本插件的区域选择、坐标与事件发布与 Windows 同款（purpose 选择由消费者自己采集）。
 - 本插件不自己写 PNG（不像 Wayland 的 B 方案）：X11 有真正的屏幕访问能力，交给宿主
   流水线才能统一经过 `image_processor` 链。
 
-### 9.5 需要真机验证（本机没有 X11 桌面）
+### 9.5 真机验证状态（Ubuntu 24.04 X11，单显示器）
 
-> 下面的条目**都还没有在真实 X11 会话跑过**。代码按 X11 协议与 EWMH 写，失败路径只记
-> WARN、不影响框选；真机结果出来后再更新本节（不要在注释/文档里写"已验证"）。
+> 以下条目已在 Ubuntu 24.04（X11，单显示器）真机验证：XComposite 背景、覆盖层高于顶栏 /
+> dock、悬停窗口 / 面板 / 四角、单击 / 拖框 / Esc、保存 + 剪贴板。多显示器、多 X screen、
+> 负坐标与分数缩放仍未验证。
 
 **先 grep 这几行日志**（正常一轮的关键行，字段顺序固定）：
 
@@ -846,46 +843,27 @@ region_selector：X11 覆盖层窗口 pos=(...) size=... 目标显示器=(...) .
 region_selector：X11 覆盖层隐藏 fullscreen_accepted=1 grab_keyboard=0（全屏属性留在窗口上，下次显示前重新提交；已解除键盘 grab）
 ```
 
-- **全屏状态是否被 WM 接受（本轮重点，待真机验证）**：日志出现
-  `fullscreen_accepted=1` / `覆盖显示器=1` 表示 mutter 接受了 `_NET_WM_STATE_FULLSCREEN`
-  且窗口实际几何等于显示器矩形；此时顶栏和 dash-to-dock 应自动隐藏。若出现
-  `fullscreen_accepted=0` + `未接受` WARN，请把其中的 `EWMH WM=…` / `窗口已被 WM 管理=…`
-  与紧跟的 `XMoveResizeWindow 铺满显示器` 或 `全屏降级也失败` 一起回传——说明这台机器/
-  这个 WM 没按 EWMH 处理全屏；
-- **鼠标能到最后一像素**：覆盖层显示后把鼠标移到屏幕上边缘/左边缘（原顶栏/dock 位置），
-  面板不应浮出、覆盖层仍应收到 Motion（悬停框跟着变），最后 1px 也能落点；
-- **焦点与 Esc**：日志 `focus=1`；若焦点没拿到会自动 `grab_keyboard=1`（WARN 只在
-  grab 也失败时出现）。Esc / 右键取消、单击、拖框都应正常工作；隐藏日志里
-  `已解除键盘 grab` 之后，键盘/面板点击必须恢复正常（无 grab 泄漏）；
-- **多显示器**：覆盖层只铺鼠标所在显示器；`PPosition` 已改成目标显示器坐标，全屏
-  不应落到主屏。另一块屏的面板不受影响；跨屏拖选仍受 §7 单显示器限制；
-- 覆盖层在 GNOME/KDE/Xfwm 等 WM 下是否真的无边框、铺满；GNOME 顶栏/dock 的隐藏与
-  恢复时机（隐藏覆盖层后应立即回来）；
-- 第二次显示：全屏属性不清、窗口复用，下次显示前会重新写一遍；观察是否仍能
-  `fullscreen_accepted=1`（这是"隐藏后恢复普通状态不影响下次"的验收点）；
-- `XGetImage` 在不同 depth/visual（24/30bpp、compositing 开关、Xvfb）下的像素解包；
-- reparenting frame 的 Z 序与 `_NET_WM_WINDOW_TYPE` 过滤在 GNOME/KDE 下的实际效果
-  （桌面窗口、面板、通知、工具提示是否都正确跳过；覆盖层自身被排除）；
-- **悬停面板 / 屏幕四角**：面板是否真的带 `_NET_WM_WINDOW_TYPE_DOCK`（GNOME 顶栏、
-  dash-to-dock、xfce4-panel 各自如何声明）、命中后是否稳定发布"当前显示器全屏"、
-  面板位于屏幕中间/侧边时的表现；四角方块与面板重叠时按四角优先（结果相同）。
-  这一条**没有真机结论**；
-- **面板占位（`_NET_WORKAREA`，待真机验证）**：日志出现
-  `X11 _NET_WORKAREA=(...) → 显示器 (...) 面板 inset top=… left=… right=… bottom=…`
-  表示读到并算出了四条厚度（全 0 也说明读到了、只是没有可识别的面板占位）；鼠标移到
-  GNOME 顶栏 / dock 占的那条边时应出现 `悬停面板区域（X11 _NET_WORKAREA 占位）→
-  当前显示器全屏`，单击即整屏。若这条悬停日志始终不出现，先看有没有「读不到 /
-  数值异常…按 0 处理」的 debug 行，再确认 mutter 是否在覆盖层显示后把
-  `_NET_WORKAREA` 改回整屏（现实现是**显示前**读，真机需确认这个时机是否足够）；
-- 多显示器在同一 X screen 内时，只覆盖鼠标所在显示器；跨屏拖选仍受 §7 的"单显示器"
-  限制。**多 X screen 不支持**；
-- 分数缩放 / 大字体：`content scale` 只影响字号，X 像素即物理像素；150%/200% 下的
-  观感与 `glfwGetMonitorContentScale` 的返回值需实测；
-- 与 `screen_capture` 的 X11 分支联调（见 §9.4）；
-- **合成器下的背景是不是桌面内容**（而不是纯色）：日志出现
-  `XGetImage 得到疑似空白画面（纯色）` 表示命中了合成器路径，紧跟
-  `已改从 XComposite 覆盖窗口截取覆盖层背景` 表示回退成功；若再出现
-  `X11 快照仍疑似纯色（<宽>x<高>，首像素 #RRGGBB）`，请把这几行一起回传；
+- **全屏状态被 WM 接受（已验证）**：真机日志出现 `fullscreen_accepted=1` / `覆盖显示器=1`，
+  mutter 接受 `_NET_WM_STATE_FULLSCREEN` 并自动隐藏顶栏和 dash-to-dock，覆盖层真正盖住整屏；
+- **鼠标能到最后一像素（已验证）**：鼠标移到屏幕上边缘 / 左边缘（原顶栏 / dock 位置）时
+  面板不浮出，覆盖层仍收到 Motion（悬停框跟着变），最后 1px 也能落点；
+- **焦点与 Esc（已验证）**：Esc / 右键取消、单击、拖框均正常；隐藏日志 `已解除键盘 grab`
+  之后键盘 / 面板点击恢复正常（无 grab 泄漏）；
+- **悬停面板 / 屏幕四角（已验证）**：GNOME 顶栏 / dash-to-dock 占位边与四角均能吸附到
+  “当前显示器全屏”，单击即整屏；四角与面板重叠时按四角优先；
+- **面板占位（`_NET_WORKAREA`，已验证）**：真机日志出现
+  `X11 _NET_WORKAREA=(...) → 显示器 (...) 面板 inset top=… left=… right=… bottom=…`，
+  鼠标移到顶栏 / dock 占位边时出现 `悬停面板区域（X11 _NET_WORKAREA 占位）→ 当前显示器全屏`；
+  “显示前读取”这个时机在 mutter 上够用；
+- **与 `screen_capture` 的 X11 分支联调（已验证）**：选区 → 抓屏 → 落盘 → 剪贴板整条链路
+  已在 Ubuntu 24.04（X11）真机跑通（见 §9.4）；
+- **合成器下的背景是桌面内容（已验证）**：`XGetImage` 抓到疑似纯色时会回退 XComposite 覆盖
+  窗口，真机确认覆盖层看到的是桌面内容而不是纯色（日志路径见 §9.3）；
+- **仍未验证**：多显示器（`PPosition` 已改成目标显示器坐标、全屏不应落到主屏，但验证机是
+  单显示器）；多 X screen（`:0.1` 不支持）；负坐标；分数缩放 / 大字体（`content scale` 只
+  影响字号，X 像素即物理像素，150% / 200% 的观感与 `glfwGetMonitorContentScale` 返回值
+  未实测）；KDE / Xfwm 等其它 WM 下的全屏接受度、无边框观感与 reparenting frame 的 Z 序
+  过滤；`XGetImage` 在其它 depth/visual（24/30bpp、compositing 开关、Xvfb）下的像素解包。
 - XWayland 应用在**X11 会话**里是普通 X11 窗口，可正常命中；在 **Wayland 会话**里
   XWayland 窗口不会被枚举（走 Wayland 分支），这是平台边界，不是 bug。
 

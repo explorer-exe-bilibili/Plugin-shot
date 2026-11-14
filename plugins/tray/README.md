@@ -325,24 +325,20 @@ Linux 的线程也只有两个来源：宿主线程与插件服务线程。事�
 
 - **Windows**：Win32 托盘，宿主仓库的主验证平台，已有真机运行验证。
 - **Linux**：StatusNotifierItem + dbusmenu 后端已随 Linux 全量构建通过（WSL Ubuntu 24.04，
-  gio 2.80）。协议层用一次性假宿主探针在 `dbus-run-session` 里冒烟过（SNI 属性、
-  dbusmenu `GetLayout` / `Event` / `LayoutUpdated`、无 watcher 与无会话总线降级、注销后
-  服务名消失），但**没有在真实 GNOME Wayland/X11 桌面上做交互验证**：图标是否出现依赖
-  `org.kde.StatusNotifierWatcher`（Ubuntu 默认的 Ubuntu AppIndicators 扩展）、菜单弹出与
-  点击路径依赖真实 SNI 宿主；这些都需要真机人工确认（清单见下方）。
+  gio 2.80），并已在 **Ubuntu 24.04（X11）与 Ubuntu 26（Wayland）真机验证**：顶栏出现
+  `camera-photo-symbolic` 图标（或在扩展面板里看到 `plugin-shot` / `Plugin-shot 托盘`），
+  点图标弹出菜单，四项 core 命令（截屏 / 区域截屏 / 打开设置 / 退出）顺序正确、可点击。
+  图标依赖 `org.kde.StatusNotifierWatcher`（Ubuntu 默认的 Ubuntu AppIndicators 扩展；
+  纯净 GNOME 需手动安装）；找不到 watcher / 没有会话总线时只 WARN、不崩不卡（§11）。
 - **macOS**：没有 `NSStatusBar` 实现，CMake 跳过整个工程。
 - 托盘不弹任何通知，也不受系统"通知"设置影响（气泡在 `plugins/notify`）。
 
-### 真机验证清单（Linux）
+### 真机验证记录（Linux）
 
-- [ ] Ubuntu 24.04 GNOME（Wayland）顶栏出现 `camera-photo-symbolic` 图标（或在扩展面板里
-      看到 `plugin-shot` / `Plugin-shot 托盘`）。
-- [ ] 点图标弹出菜单，四项 core 命令（截屏 / 区域截屏 / 打开设置 / 退出）顺序正确、可点击。
-- [ ] 点「打开设置」/「退出」分别发布 `settings.open` / `app.quit`（宿主日志有 `[tray] 发布 ...`）。
-- [ ] 插件启停或 `lists.add` 后菜单增删在下一轮 `lists.changed` 后生效。
-- [ ] 禁用 Ubuntu AppIndicators 扩展时：日志只有一条 WARN，宿主不崩、不卡。
-- [ ] 禁用→启用托盘插件（热卸载）后图标能重新出现，无残留、无崩溃。
-- [ ] X11 会话同样可用（SNI 与显示服务器无关）。
+- **已验证（单显示器）**：Ubuntu 24.04（X11）与 Ubuntu 26（Wayland）顶栏出现
+  `camera-photo-symbolic` 图标，菜单可弹出、条目顺序正确且点击路径正常。
+- **仍未验证**：多显示器（扩展在多屏下的图标/菜单行为）；禁用 Ubuntu AppIndicators 扩展 /
+  无 watcher 时的真实桌面降级表现（§11 的 WARN 路径按代码逻辑保证）。
 
 ## 10. 为什么这么设计
 

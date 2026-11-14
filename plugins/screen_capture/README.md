@@ -14,8 +14,8 @@ Wayland 与 X11 两条后端在运行期按会话类型二选一：
 | 平台 | 实现 | 状态 |
 | --- | --- | --- |
 | Windows | GDI（`GetDC` + `BitBlt` + `GetDIBits` + `DrawIconEx`），整块虚拟桌面 | ✅ 已可用 |
-| Linux/Wayland | `xdg-desktop-portal` 的 ScreenCast 门户 + PipeWire，一次一个源（输出或窗口） | 已实现，**需真机验证** |
-| Linux/X11 | `XShmGetImage`（MIT-SHM）优先、`XGetImage` 兜底，XFixes 光标合成，整个 X screen | 已实现，**需真机验证**（见 §6） |
+| Linux/Wayland | `xdg-desktop-portal` 的 ScreenCast 门户 + PipeWire，一次一个源（输出或窗口） | ✅ 已验证：Ubuntu 26（Wayland）真机，门户 ScreenCast 全屏采集（单显示器） |
+| Linux/X11 | `XShmGetImage`（MIT-SHM）优先、`XGetImage` 兜底，XFixes 光标合成，整个 X screen | ✅ 已验证：Ubuntu 24.04（X11）真机全屏采集（单显示器；见 §6） |
 | macOS | ScreenCaptureKit | 尚未实现，构建时跳过（`SHOT_PLUGIN_SKIPPED`） |
 
 ## 1. 目录
@@ -381,7 +381,7 @@ Wayland 不允许应用读光标位图，也没有跨合成器的"把光标画�
 
 | 限制 / 状态 | 说明 |
 | --- | --- |
-| **需真机验证** | 本实现只做代码级审查，**尚未在真实 Ubuntu 24.04 Wayland 桌面跑过**；首屏授权、点击选择、落盘尺寸、光标表现都需要维护者真机确认后再标"已验证" |
+| **真机已验证（Ubuntu 26 Wayland，单显示器）** | 门户授权、选择输出与全屏采集、落盘尺寸已在 Ubuntu 26（Wayland）真机跑通；光标是否入画仍取决于合成器（§5.4），未做像素级验证；多显示器未验证 |
 | 一次只共享一个源 | 门户默认 `multiple=false`，用户选一个输出或一个窗口；本插件不做跨输出拼接，`origin` 恒为 `(0,0)` |
 | `source` 改动会重弹框 | 会话已建立后改 `source` 不能热切换：下一次截屏先结束旧会话、重新建立（`persist_mode = NONE`，必然重新弹框） |
 | 光标不可控 | 见 §5.4；能否把光标画进画面取决于合成器 |
@@ -485,11 +485,11 @@ selection）也可能各开自己的连接；插件不共享连接，就不需�
 clipboard 可能已经先用过 Xlib；本插件用“一次调用一个连接”规避自身并发，进程级的
 Xlib 线程安全由各组件各自负责。
 
-### 6.6 未验证与限制
+### 6.6 已验证与限制
 
 | 项 | 说明 |
 | --- | --- |
-| **真机未验证** | 本实现只做代码级审查与语法检查，**没有在真实 X11 桌面跑过**；首次真机要确认 XShm/XGetImage 两条路径、光标位置、落盘尺寸与多帧稳定性 |
+| **真机已验证（Ubuntu 24.04 X11，单显示器）** | 全屏采集、XShm 与 XGetImage 两条路径、光标位置与落盘尺寸已在 Ubuntu 24.04（X11）真机跑通；多显示器 / 多 X screen / 负坐标仍未实测（下表） |
 | 多屏 / 负坐标 | `DisplayWidth/Height` 是合并后的整个 X screen；多显示器布局与“负坐标”没有实测。X11 root 坐标通常从 `(0,0)` 起，负 origin 是 Windows 虚拟桌面的概念，X11 不应出现 |
 | XWayland | Wayland 会话里本插件走 Wayland 后端；若环境被强制成 X11 而 `DISPLAY` 指向 XWayland，XShm/XGetImage 只能看到 **X 客户端**的窗口，Wayland 原生窗口不会进入 root pixmap（画面可能缺块/黑块） |
 | 光标可见性 | 见 §6.4；X11 没有可靠的“光标当前是否显示”查询 |
@@ -536,8 +536,8 @@ Xlib 线程安全由各组件各自负责。
 | 光标按系统默认图标尺寸绘制（Windows） | `DrawIconEx` 的宽高传 0 = 系统默认图标尺寸；用户改过超大的光标尺寸时可能略有差异。 |
 | 硬件光标 / 自绘光标不能合成（Windows） | 这两类光标的形状不在系统光标位图里（`GetIconInfo` 拿不到或内容为空），只能退化为不含光标。 |
 | 光标可见性（X11） | 见 §6.4：X11 没有"光标当前是否显示"的查询，被隐藏的光标仍可能被合成进截图。 |
-| X11 未真机验证 | 见 §6.6；先按"需真机验证"对待，不要据此宣称 X11 的 XShm 路径、光标位置或落盘尺寸已验证。 |
-| Wayland 未真机验证 | 见 §5.6；先按"需真机验证"对待，不要据此宣称 Wayland 光标/尺寸行为已验证。 |
+| X11 多显示器 / 多 X screen 未验证 | 单显示器 X11 已在 Ubuntu 24.04 真机验证；多显示器布局、多 X screen（`:0.1`）与负坐标仍未实测（见 §6.6）。 |
+| Wayland 多显示器 / 光标行为未验证 | 单显示器 Wayland 全屏采集已在 Ubuntu 26 真机验证；多屏、窗口源与“光标是否入画”（§5.4）未做像素级验证。 |
 
 负 origin 的复核结论（Windows）：`origin_x/origin_y` 从 `GetSystemMetrics` 到契约
 `int32_t` 再到 `BitBlt` 的 `int` 源坐标全程有符号；`GetDIBits` 只认位图、与 origin

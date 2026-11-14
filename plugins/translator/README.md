@@ -179,8 +179,8 @@ tools\verify\run.bat smoke_i18n_translator.ps1
 ## 平台说明
 
 - Windows 已随构建与冒烟验证；
-- Linux / macOS 只用到 `std::filesystem` + 各自的"取 exe 路径"API，代码可编译，
-  但**未实机运行验证**（与其它插件的平台现状一致）；
+- Linux 已在 Ubuntu 24.04（X11）与 Ubuntu 26（Wayland）真机验证（语言包扫描 / 加载与切换）；
+- macOS 只用到 `std::filesystem` + 各自的"取 exe 路径"API，代码可编译，但**未实机运行验证**；
 - 配置目录分隔符固定用分号（Windows 习惯）；POSIX 上目录名本身可以含冒号，
   所以不改成冒号。
 
