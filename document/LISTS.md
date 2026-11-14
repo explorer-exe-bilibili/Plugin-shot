@@ -360,6 +360,10 @@ core 四项的 `label` 是**文本 key**（恰好等于命令 id）：托盘按
   `fallback` 可选；显示名/fallback 的取值规则见 `document/I18N.md` §2.1、§3.3。
 - 写：插件 `lists.add` / `lists.remove`；owner 必须是已加载插件 id；宿主按
   `(list, owner, id)` upsert；插件卸载时宿主 `removeOwner` 清掉贡献。
+  i18n 条目的存储键例外：**带 `target` 时按 `(owner, target, id)` 去重**（同一个
+  贡献者替多个 target 发布的同名 id 不能互相覆盖，否则 `i18n_list` 会丢条目、设置页
+  插件页文案不随语言变化）；`lists.remove` 的 `ids` 仍按文本 key 匹配，撤掉该 key 在
+  这个贡献者下所有 target 的版本。协议细节见 `document/I18N.md` §2.1。
 - 读：宿主只读，用来生成 `i18n_list`；插件**不要**直接读本列表做解析。
 - 刷新：`lists.add`/`lists.remove` 真的改动内容、`@language/` 目录变化、插件启停/卸载后，
   宿主在下一次 `tick` 重建 `i18n_list` 并 `lists.changed`。

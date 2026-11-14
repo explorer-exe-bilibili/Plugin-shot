@@ -183,6 +183,55 @@ constexpr std::int32_t kCorePriority = 100;
 // 语言声明条目的 id 前缀：`@language/<tag>` 只扩展语言目录，不作文本条目。
 constexpr std::string_view kLanguageDeclarationPrefix = "@language/";
 
+// i18n_source_list 的内部存储键分隔符：条目协议的身份是 (target, id)，但通用列表
+// 条目的存储身份是 (owner, id)，其中 owner 是**贡献者插件 id**。同一个贡献者
+// （典型是翻译插件）会替多个 target 发布同名 id（每个插件都有 plugin.name /
+// plugin.description / config.enabled.label…），如果直接按 (owner, id) 存，这些
+// 条目会互相覆盖，最后一条胜出、其余 target 的译文连同贡献者自己的内置表条目一起
+// 从 i18n_list 消失（表现为插件页某些插件的名字/描述永远停在 metadata 原文，切
+// 语言也不跟着变）。所以带 target 的条目存储时把 target 并进 id，投影时再按条目
+// JSON 里的 target 还原成 (target, id)。
+// 分隔符用 0x1F（ASCII Unit Separator）：不会出现在语言标签、插件 id 或文本 key 里。
+constexpr char kI18nStorageKeySeparator = '\x1f';
+
+/**
+ * @brief 生成 i18n_source_list 条目的内部存储 id（其它列表原样返回）。
+ *
+ * 没有 target 的旧式条目（贡献者自己的内置表）保持裸 id：它们与带 target 的条目
+ * 不会再撞键，合并投影时仍按 (contributor, id) 落到贡献者自己身上。
+ *
+ * @param[in] id     条目 JSON 里声明的文本 key。
+ * @param[in] target 条目 JSON 里的 target；空串 = 贡献者自己。
+ * @return 用于 upsertEntry 的存储 id。
+ */
+std::string i18nStorageId(const std::string& id, const std::string& target) {
+    if (target.empty()) {
+        return id;
+    }
+    std::string key = target;
+    key.push_back(kI18nStorageKeySeparator);
+    key += id;
+    return key;
+}
+
+/**
+ * @brief lists.remove 的 id 匹配：去掉 i18n_source_list 存储 id 的 target 前缀再比。
+ *
+ * 贡献者撤回时只知道自己的文本 key（"plugin.name"），不知道宿主内部怎么存；
+ * 同一个 key 可能对多个 target 各存了一份，撤回就是"我贡献的这些 key 全撤"。
+ *
+ * @param[in] storedId 条目内部的存储 id。
+ * @param[in] ids      撤回负载里的 id 集合。
+ * @return true = 该条目应被删除。
+ */
+bool i18nStoredIdMatches(const std::string& storedId, const std::set<std::string>& ids) {
+    if (ids.count(storedId) != 0) {
+        return true;
+    }
+    const std::size_t separator = storedId.find(kI18nStorageKeySeparator);
+    return separator != std::string::npos && ids.count(storedId.substr(separator + 1)) != 0;
+}
+
 // config_list 的 owner_name_key：插件显示名固定用这个 key，core 沿用 core.owner_name
 // （core 的 owner_name 本身就是 key，消费方按 display(owner,name) 解析）。
 const char kPluginNameKey[] = "plugin.name";
@@ -672,6 +721,9 @@ void HostListCatalog::handleAdd(const std::string& payload) {
             spdlog::warn("lists.add 的条目缺少 id，跳过（list={}, owner={}）", list, owner);
             continue;
         }
+        // 列表内部的去重键：i18n_source_list 带 target 的条目要把 target 并进去，
+        // 否则同一贡献者为不同 target 发布的同名 id 会互相覆盖（见 i18nStorageId）。
+        std::string storageId = id;
         // i18n_source_list 的额外校验（协议见 document/I18N.md §2.1）：@meta 是
         // i18n_list 的保留 id；target 只能是 core 或当前已加载的插件 id，否则这段
         // 文本永远没人查得到，不如在入口拒掉并留 WARN。
@@ -698,13 +750,14 @@ void HostListCatalog::handleAdd(const std::string& payload) {
                 spdlog::warn("lists.add: i18n_source_list 条目 {} 的 priority 不是整数，"
                              "按缺省 100 处理（owner={}）", id, owner);
             }
+            storageId = i18nStorageId(id, target);
         }
         // 宿主为每条注入贡献者 id：tray_command_list 这类消费方要按
         // display(owner,label) 用 i18n_list 解析文本 key。条目自带 owner 时以列表级
         // owner 为准（插件不能借别人的 owner 解析文案）。
         nlohmann::json stored = item;
         stored["owner"] = owner;
-        upsertEntry(list, owner, id, jsonOrder(item), dumpJson(stored));
+        upsertEntry(list, owner, storageId, jsonOrder(item), dumpJson(stored));
         ++accepted;
     }
     if (accepted > 0) {
@@ -785,7 +838,17 @@ void HostListCatalog::handleRemove(const std::string& payload) {
         }
         const std::size_t before = state.entries.size();
         std::erase_if(state.entries, [&](const Entry& entry) {
-            return entry.owner == owner && (removeAll || ids.count(entry.id) != 0);
+            if (entry.owner != owner) {
+                return false;
+            }
+            if (removeAll) {
+                return true;  // ids 省略 = 撤回该 owner 在这个列表里的全部条目
+            }
+            if (ids.count(entry.id) != 0) {
+                return true;
+            }
+            // i18n_source_list 带 target 的条目存储 id 里含 target 前缀：按文本 key 撤回。
+            return list == kI18nSourceListId && i18nStoredIdMatches(entry.id, ids);
         });
         removed = before - state.entries.size();
         if (removed > 0) {
