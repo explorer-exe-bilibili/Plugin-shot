@@ -33,7 +33,8 @@ plugins, runtime hot-plug, an append-only ABI, and UI data that never enters the
 
 Unzip and run `Plugin-shot.exe`. 0.1.0 ships a **prebuilt Windows package only**; the **Linux core
 path is verified on real hardware** under Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland, single monitor),
-and is built from source via [Build](#build). macOS is not verified yet — see [Platforms](#platforms).
+and is built from source via [Build](#build) (step-by-step: [Linux build manual](document/BUILD_LINUX.md)).
+macOS is not verified yet — see [Platforms](#platforms).
 
 ### UI
 

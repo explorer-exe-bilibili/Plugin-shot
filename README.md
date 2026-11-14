@@ -30,8 +30,8 @@
 [更新日志](CHANGELOG.md)
 
 解压后双击 `Plugin-shot.exe` 即可。0.1.0 的**预编译包只提供 Windows**；**Linux 已在 Ubuntu 24.04
-（X11）与 Ubuntu 26（Wayland，单显示器）真机验证**，按 [构建](#构建) 从源码编译；macOS 尚未验证。
-详见 [平台](#平台)。
+（X11）与 Ubuntu 26（Wayland，单显示器）真机验证**，按 [构建](#构建) 从源码编译
+（分步见 [Linux 编译手册](document/BUILD_LINUX.md)）；macOS 尚未验证。详见 [平台](#平台)。
 
 ### 界面
 
@@ -233,6 +233,9 @@ macOS **未在真机验证**（只做过代码审计）。Windows 是主要开�
 要求 `GLIBC_2.38`，可在 Ubuntu 24 / 26 上运行；在 Ubuntu 26 构建的产物会要求 `GLIBC_2.43`，
 拷回 Ubuntu 24 会在 `dlopen` 阶段失败。不要跨发行版共用同一个 `build/Linux` 目录，也不要把新
 发行版构建的 `.so` 拷回旧发行版。
+
+Linux 的分步编译手册（依赖包、vcpkg、Wayland/X11 差异、运行、安装与排错）见
+[`document/BUILD_LINUX.md`](document/BUILD_LINUX.md)。
 
 ### 运行
 
