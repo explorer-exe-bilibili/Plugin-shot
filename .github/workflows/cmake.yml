@@ -78,7 +78,7 @@ jobs:
       matrix:
         include:
           - name: Linux / gcc / x64-linux
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             platform: Linux
             triplet: x64-linux
           - name: macOS / clang / arm64-osx
