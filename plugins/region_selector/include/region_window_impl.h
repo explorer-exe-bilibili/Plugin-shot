@@ -32,8 +32,8 @@
 //    region_geometry_x11.cpp   —— X screen 几何 / 光标 / 显示器矩形 + 实测日志
 //    region_background_x11.cpp —— XGetImage 整屏快照 → GL 纹理
 //    window_target_x11.cpp     —— XQueryTree 顶层窗口枚举 / EWMH 类型过滤 / 命中测试
-//    region_overlay_x11.cpp    —— override-redirect / 输入 grab（盖住面板）/ 覆盖层定位 /
-//                                 实际几何日志 / 确认后的发布（与 Windows 同一时序）
+//    region_overlay_x11.cpp    —— EWMH 全屏（让 mutter 隐藏顶栏/dock）/ 状态校验与降级 /
+//                                 焦点与键盘 grab / 实际几何日志 / 确认后的发布（Windows 同一时序）
 // ============================================================================
 
 #include <chrono>
@@ -321,6 +321,17 @@ struct RegionWindow::Impl {
     bool createWindow();
     bool ensureGraphics();
     void waitForEvent();
+
+    /**
+     * @brief 带超时的隐藏态等待：返回 true = 等到事件/退出，false = 超时。
+     *
+     * Wayland 下不能无限期阻塞：合成器会给窗口发 ping，需要定期返回事件循环做
+     * glfwPollEvents，否则桌面会判定"应用没有响应"。Windows/X11 仍用无超时的 waitForEvent()。
+     *
+     * @param[in] timeoutMs 超时毫秒数。
+     * @return 是否被事件/退出唤醒。
+     */
+    bool waitForEventFor(int timeoutMs);
     void shutdownWindow();
     bool startSelection(const std::string& purpose);
     void cancelSelection();
@@ -463,16 +474,25 @@ struct RegionWindow::Impl {
 
     // ---- Linux / X11 分支（只由 *_x11.cpp 实现；与上面的 Wayland 成员函数不同名） ----
     /**
-     * @brief 覆盖层是否成功切成 override-redirect（false = WM 管理的普通窗口 / 降级）。
+     * @brief 是否已经向 WM 写过 `_NET_WM_STATE_FULLSCREEN`（= 请求过全屏）。
      *
-     * X11 里 EWMH 的 DOCK 面板在 ABOVE 层，普通窗口（即使 `_NET_WM_STATE_ABOVE`）仍可能
-     * 在面板之下，面板还会抢焦点和输入——真机现象就是"鼠标移到任务栏，覆盖层收不到
-     * 事件、悬停全屏失效"。所以窗口在第一次 map 之前就切成 override-redirect，
-     * 不受 WM 管理；grab 或属性设置失败时自动降级回 false（旧行为）。
+     * GNOME（mutter）的 shell 顶栏/dock 画在所有客户端窗口之上，普通窗口甚至
+     * override-redirect 窗口都会被压住；但 **WM 管理的全屏窗口会让 mutter 自动隐藏
+     * 顶栏和 dock**。所以覆盖层不再用 override-redirect，而是每次显示前把
+     * `_NET_WM_STATE` 写成 FULLSCREEN + ABOVE，让 WM 按全屏窗口管理。这个标志只表示
+     * 属性写成功（用于日志），WM 是否接受由 x11FullscreenAccepted 记录。
      */
-    bool x11OverrideRedirect = false;
-    bool x11KeyboardGrabbed = false; /**< 当前是否持有 XGrabKeyboard。 */
-    bool x11PointerGrabbed = false;  /**< 当前是否持有 XGrabPointer。 */
+    bool x11FullscreenRequested = false;
+    /**
+     * @brief 显示后从 `_NET_WM_STATE` 读回 FULLSCREEN：WM 是否真的接受了全屏请求。
+     *
+     * GNOME 正常会接受；没接受（非 EWMH WM、被别的规则拒绝）时窗口只是一个普通窗口，
+     * 会被顶栏/面板盖住——所以 x11ActivateOverlay 会 WARN，并退回
+     * `XMoveResizeWindow` 铺满显示器（降级观感，交互仍可用）。
+     */
+    bool x11FullscreenAccepted = false;
+    /** @brief 当前是否持有 XGrabKeyboard（焦点没拿到时的兜底，保证 Esc 可靠）。 */
+    bool x11KeyboardGrabbed = false;
     /** @brief 光标所在显示器：XQueryPointer 取 root 坐标 + GLFW 显示器矩形。 */
     bool x11MonitorUnderCursor(ScreenRect& out, float& contentScale) const;
     /** @brief 左键当前是否按着（XQueryPointer 的 Button1Mask）：覆盖层显示前判 waitRelease。 */
@@ -485,42 +505,46 @@ struct RegionWindow::Impl {
     void x11LogMonitorMetrics() const;
     /** @brief XGetImage 抓整块 X screen 并上传成 GL 纹理；失败时只 WARN、覆盖层退化为纯色底。 */
     bool x11CaptureBackground();
-    /** @brief 把隐藏的覆盖层窗口搬到目标显示器并铺满（X11 客户端可以自己定位）。 */
+    /** @brief 把隐藏的覆盖层窗口搬到目标显示器、写 EWMH 全屏属性（X11 客户端可以自己定位）。 */
     void x11PlaceOverlay(const ScreenRect& monitor);
-    /** @brief 显示后记录实际窗口几何：WM 可能不按请求摆放，坐标一律按实际位置换算。 */
+    /** @brief 显示后记录实际窗口几何与 fullscreen 状态：坐标一律按实际位置换算。 */
     void x11LogOverlayGeometry() const;
     /** @brief X11 确认框选：内容坐标 → X screen 坐标，然后按 Windows 同一时序发布。 */
     void x11CommitSelection(int localX, int localY, int localWidth, int localHeight);
     /**
-     * @brief 把窗口切成 override-redirect（必须在它第一次 map 之前调用）。
+     * @brief 显示前把窗口声明成 EWMH 全屏窗口（必须在 map 之前写好属性）。
      *
-     * 顺序：`XUnmapWindow` → `XChangeWindowAttributes(CWOverrideRedirect)` → `XSync`，
-     * 这样 WM 永远看不到一个需要管理的 map 请求。成功时 `x11OverrideRedirect = true`，
-     * 覆盖层显示后由 `x11ShowOverlayInput` 接管输入；失败只 WARN 并保持普通窗口。
+     * 用 XInternAtom + XChangeProperty 直接写 32 位 atom 数组（format=32、XA_ATOM）：
+     *   · `_NET_WM_WINDOW_TYPE = _NET_WM_WINDOW_TYPE_NORMAL`；
+     *   · `_NET_WM_STATE = [_NET_WM_STATE_FULLSCREEN, _NET_WM_STATE_ABOVE]`。
+     * 全屏是让 mutter 自动隐藏顶栏/dock 的关键（override-redirect 做不到这一点）。
+     * WM 只在窗口 map 时读取初始状态；窗口若已经在显示，先 `XUnmapWindow`、写完再
+     * `XMapRaised`，保证 WM 看到的是一次新的 map 请求而不是被忽略的属性变更。
      *
-     * @return true = 属性已生效；false = Display/窗口不可用或 X 请求报错（已记日志）。
+     * @return true = 属性写入成功（**不保证 WM 接受**，接受与否由 x11ActivateOverlay 校验）。
      */
-    bool x11PrepareOverrideRedirect();
+    bool x11PrepareFullscreen();
     /**
-     * @brief 显示后接管输入：XRaiseWindow + XSetInputFocus + 键盘/指针 grab。
+     * @brief 显示后接管输入并校验全屏状态。
      *
-     * 键盘/指针 grab 都用 owner_events=True、grab_window=覆盖层：GLFW 的事件处理走同一个
-     * X 连接和窗口，grab 下照常收到 KeyPress / ButtonPress / MotionNotify，所以
-     * `glfwGetKey` / `glfwGetMouseButton` 轮询（Esc、拖框、悬停）不需要改。窗口已经可见
-     * 才做焦点与 grab；grab 被别的客户端占着（托盘菜单还没收起）时短重试几次。
-     *
-     * @return true = 键盘与指针 grab 都成功；false = 已 WARN 并降级为普通窗口。
+     * 顺序：泵若干轮 GLFW 事件等 WM 处理 MapRequest → 读 `_NET_WM_STATE` 确认
+     * FULLSCREEN（**同时要求有 EWMH WM 且窗口已被 WM 管理**——client 上有 `WM_STATE`
+     * 或已被 reparent，否则我们自己写的属性会被误判成"WM 已接受"）；没接受就 WARN +
+     * `XMoveResizeWindow` 铺满显示器 →
+     * `XRaiseWindow` + `XSetInputFocus` → 焦点确实不在覆盖层时才 `XGrabKeyboard`
+     * （owner_events=True，兜底 Esc）；grab 失败只 WARN，全屏窗口本身仍是焦点窗口。
+     * 不再抓指针：全屏窗口覆盖整块屏，指针本来就在窗口内。
      */
-    bool x11ShowOverlayInput();
+    void x11ActivateOverlay();
     /**
-     * @brief 隐藏前先 unmap 并释放 grab（必须在公共的 glfwHideWindow 之前调用）。
+     * @brief 隐藏前释放键盘 grab（必须在公共的 glfwHideWindow 之前调用）。
      *
-     * 先 unmap 让覆盖层立刻从画面上消失（窗口不可见时 X 也会自动释放 grab），再显式
-     * ungrab，保证下一次显示不会带着上一次的 grab/焦点。从未显示过时直接返回，不刷日志。
+     * 全屏状态**不清**：窗口复用，下次显示前 `x11PrepareFullscreen` 会重新写一遍属性。
+     * 从未显示过 / 已经释放时直接返回，不刷日志。
      */
-    void x11HideOverlayInput();
-    /** @brief grab/属性失败时退回 WM 管理的普通窗口（旧行为）；只 WARN，不抛不崩。 */
-    void x11FallbackToManagedWindow();
+    void x11DeactivateOverlay();
+    /** @brief WM 没接受全屏时的降级：`XMoveResizeWindow` 直接铺满目标显示器（只 WARN）。 */
+    void x11FillMonitorFallback();
 #endif
 };
 

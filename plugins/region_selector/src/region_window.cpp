@@ -45,9 +45,11 @@
 //     当背景，交互与 Windows 完全一致（悬停吸附、单击截窗、拖框、主题色折角、Esc/右键
 //     取消）；确认后按 Windows 同一时序发布带 region 的 capture.request（普通框选）或
 //     region.selected（purpose 选择）。窗口命中用 XQueryTree + EWMH 类型过滤。
-//     覆盖层是 override-redirect + 键盘/指针 grab（见 region_overlay_x11.cpp）：WM 不管理
-//     它，所以永远在 DOCK 面板之上、面板抢不到焦点，悬停面板=全屏才成立；grab/属性失败
-//     自动降级回 WM 管理的普通窗口。选择逻辑本身（region_overlay.cpp / _draw.cpp /
+//     覆盖层是 **WM 管理的 EWMH 全屏窗口**（见 region_overlay_x11.cpp）：显示前写
+//     `_NET_WM_STATE=[FULLSCREEN,ABOVE]`，mutter 会因此自动隐藏顶栏和 dock，覆盖层
+//     真正盖住整屏；显示后校验 WM 是否接受，没接受就 WARN 并退回 XMoveResizeWindow
+//     铺满（面板可能盖住，但交互仍可用）。焦点由 XSetInputFocus 设置，焦点不在覆盖层
+//     时才 XGrabKeyboard 兜底 Esc。选择逻辑本身（region_overlay.cpp / _draw.cpp /
 //     region_graphics.cpp）与平台无关，两个分支共用，本文件只做"平台层调用点"的运行期分派。
 //   X11 的坐标原点 = root 窗口 (0,0)，X 像素即物理像素；content scale 只放大字号。
 //
@@ -248,13 +250,10 @@ bool RegionWindow::Impl::createWindow() {
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);  // 有垂直同步就开；覆盖层每帧都是一次整屏混合，没必要超频绘制
 #if defined(__linux__)
-    // X11：EWMH 的 DOCK 面板在 ABOVE 层，WM 管理的普通窗口即使带 _NET_WM_STATE_ABOVE
-    // 也可能被面板压住、被面板抢输入。必须在窗口第一次 map 之前切成 override-redirect
-    // （实现与失败降级都在 region_overlay_x11.cpp）。失败已在那边 WARN，这里继续按
-    // 旧的 WM 管理窗口跑，框选功能不受影响。
-    if (linuxBackend == LinuxSessionBackend::X11) {
-        x11PrepareOverrideRedirect();
-    }
+    // X11：覆盖层的 EWMH 全屏属性在显示前由 x11PlaceOverlay（startSelection 里）写入，
+    // 这里只负责建窗口。不要在这里切 override-redirect：GNOME 的 shell 顶栏/dock 在
+    // 所有客户端窗口之上，override-redirect 也压不住；WM 管理的全屏窗口才会让 mutter
+    // 自动隐藏顶栏和 dock（实现与校验/降级都在 region_overlay_x11.cpp）。
 #endif
     return true;
 }
@@ -299,6 +298,12 @@ void RegionWindow::Impl::waitForEvent() {
     // glfwPostEmptyEvent 唤醒的是 helper window 所属线程，可能不是我们。
     std::unique_lock<std::mutex> lock(mutex);
     eventCv.wait(lock, [this] { return quitRequested || !queue.empty(); });
+}
+
+bool RegionWindow::Impl::waitForEventFor(int timeoutMs) {
+    std::unique_lock<std::mutex> lock(mutex);
+    return eventCv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                            [this] { return quitRequested || !queue.empty(); });
 }
 
 void RegionWindow::Impl::shutdownWindow() {
@@ -349,7 +354,19 @@ void RegionWindow::Impl::messageLoop() {
                     "region_selector：事件循环已回到隐藏态等待（条件变量）；若此时屏幕上仍有覆盖层，"
                     "说明 unmap 请求没有送达合成器");
             }
+#if defined(__linux__)
+            if (linuxBackend == LinuxSessionBackend::Wayland) {
+                // Wayland：合成器需要窗口/连接定期 dispatch（ping 要人应答）。
+                // 这里 250ms 醒来一次并 glfwPollEvents；没有待处理事件时开销可忽略。
+                if (!waitForEventFor(250) && window != nullptr) {
+                    glfwPollEvents();
+                }
+            } else {
+                waitForEvent();
+            }
+#else
             waitForEvent();
+#endif
             drainEvents();
         }
     }
@@ -516,7 +533,8 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     glfwSetWindowPos(window, monitor.x, monitor.y);
 #elif defined(__linux__)
     if (linuxBackend == LinuxSessionBackend::X11) {
-        // X11 客户端可以自己定位：root 坐标即像素，直接铺满目标显示器（含任务栏）。
+        // X11 客户端可以自己定位：root 坐标即像素，隐藏状态下把窗口搬到目标显示器，
+        // 写 EWMH 全屏属性，然后显示时由 WM 全屏（mutter 会隐藏顶栏/dock）。
         // 不需要 +1px（那是 Windows 的 DWM 全屏判定专有坑）。
         x11PlaceOverlay(monitor);
     } else {
@@ -683,12 +701,10 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     }
     glfwPollEvents();  // 让新尺寸/焦点配置事件进来，第一帧就按实际尺寸绘制
     if (linuxBackend == LinuxSessionBackend::X11) {
-        // X11：显示后立刻接管输入（XRaiseWindow + XSetInputFocus + 键盘/指针 grab）。
-        // 这样覆盖层在 override-redirect 下盖住 DOCK 面板并独占输入；grab 被别的客户端
-        // 占着或属性设置失败时函数内部会 WARN 并降级为普通窗口，不影响后续框选。
-        x11ShowOverlayInput();
-        // WM 可能在 map 之后才真正摆放窗口（降级时尤其如此），poll 完再记录实际几何；
-        // 坐标一律按实际窗口位置换算（见 x11CommitSelection）。
+        // X11：显示后校验 EWMH 全屏是否被 WM 接受（没接受则降级铺满），
+        // XRaiseWindow + XSetInputFocus 拿焦点，焦点不在覆盖层时 XGrabKeyboard 兜底 Esc。
+        x11ActivateOverlay();
+        // WM 可能在全屏后重新摆放窗口，记录实际几何；坐标一律按实际窗口位置换算。
         x11LogOverlayGeometry();
     } else {
         // Wayland：map 是异步的（合成器 configure 之后 GLFW 才认为可见）。
@@ -782,14 +798,29 @@ void RegionWindow::Impl::hideOverlay() {
     }
 #endif
 #if defined(__linux__)
-    // X11：先 XUnmapWindow 并释放键盘/指针 grab，再走下面的 glfwHideWindow + poll。
-    // 顺序反过来会让"解除 grab 到窗口真正消失"之间的点击落到下面的面板上；函数内部
-    // 对"从未显示过"直接返回，不会重复 unmap 或刷日志（见 region_overlay_x11.cpp）。
+    // X11：先解除键盘 grab（若有），再走下面的 glfwHideWindow（它负责 unmap，mutter
+    // 收到 unmap 后会自动重新显示顶栏/dock）。全屏属性留在窗口上，下次显示前重设。
     if (window != nullptr && linuxBackend == LinuxSessionBackend::X11) {
-        x11HideOverlayInput();
+        x11DeactivateOverlay();
     }
 #endif
     if (window != nullptr) {
+#if defined(__linux__)
+        if (waylandBackend) {
+            // GLFW 3.4 Wayland 后端的 hide 只在它内部 visible 为真时才销毁 xdg_toplevel
+            // 并 attach(NULL)；如果这个标志已经是 0，glfwHideWindow 就是空操作，合成器
+            // 会一直显示最后一帧（真机：覆盖层卡住 + ping 无人应答 → "应用没有响应"）。
+            // 先 show 把内部标志置真，再 hide，保证这次真的走 unmap 路径。
+            const bool overlayStillShown = overlayVisible;
+            const int visibleFlag = glfwGetWindowAttrib(window, GLFW_VISIBLE);
+            if (overlayStillShown && visibleFlag == 0) {
+                log.info(
+                    "region_selector：GLFW 可见标志为 0 但覆盖层仍在显示，"
+                    "先 glfwShowWindow 再 hide 以触发真正的 unmap");
+                glfwShowWindow(window);
+            }
+        }
+#endif
         glfwHideWindow(window);
     }
     overlayVisible = false;
@@ -1266,10 +1297,10 @@ void RegionWindow::stop() {
     m_impl->windowScanValid = false;
     m_impl->overlayHwnd = 0;
 #if defined(__linux__)
-    // X11 的 override-redirect / grab 状态只属于已销毁的那个窗口；下次框选会重新建窗。
-    m_impl->x11OverrideRedirect = false;
+    // X11 的全屏/grab 状态只属于已销毁的那个窗口；下次框选会重新建窗并重新请求全屏。
+    m_impl->x11FullscreenRequested = false;
+    m_impl->x11FullscreenAccepted = false;
     m_impl->x11KeyboardGrabbed = false;
-    m_impl->x11PointerGrabbed = false;
 #endif
     m_impl->uiScale = 1.0f;
     // 线程已 join：不再有渲染帧读文案，放开对插件状态里语言表的借用关系。

@@ -16,8 +16,9 @@ Linux/Wayland 是同一套窗口与交互，但背景来自 xdg-desktop-portal �
 - **Wayland 会话**（`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland`）：走 xdg-desktop-portal
   的 Screenshot 门户 + 自己的覆盖层窗口（定格图 + 拖选，见 §8）；
 - **X11 会话**：真正的全屏覆盖层——`XGetImage` 抓整块 X screen 当背景，交互与 Windows
-  一致，窗口命中用 `XQueryTree` + EWMH 类型过滤。覆盖层是 **override-redirect 窗口 +
-  键盘/指针 grab**，不受 WM 管理、盖住 DOCK 面板并独占输入（见 §9）；
+  一致，窗口命中用 `XQueryTree` + EWMH 类型过滤。覆盖层是 **EWMH 全屏窗口**
+  （`_NET_WM_STATE=[FULLSCREEN,ABOVE]`），mutter 会因此自动隐藏顶栏和 dock、让覆盖层
+  真正盖住整屏（见 §9）；
 - macOS 等其它平台由 CMake 直接跳过（`SHOT_PLUGIN_SKIPPED`）。
 
 覆盖层是**不透明窗口 + 触发瞬间的桌面快照**（Windows 是 `region_background.cpp`，X11 是
@@ -81,7 +82,7 @@ plugins/region_selector/
     ├── window_target_wayland.cpp   # Linux/Wayland：空实现（协议不允许全局窗口枚举，吸附关闭）
     ├── region_geometry_x11.cpp     # Linux/X11：X screen 几何 / XQueryPointer 光标 / 显示器矩形 + 日志
     ├── region_background_x11.cpp   # Linux/X11：XGetImage 整屏快照 → 像素解包 → GL 纹理
-    ├── region_overlay_x11.cpp      # Linux/X11：override-redirect + 输入 grab / 覆盖层定位 / 几何日志 / 确认后发布（Windows 同时序）
+    ├── region_overlay_x11.cpp      # Linux/X11：EWMH 全屏 + 状态校验/降级 + 焦点/键盘 grab / 定位 / 几何日志 / 确认后发布（Windows 同时序）
     └── window_target_x11.cpp       # Linux/X11：XQueryTree + EWMH 类型过滤（DOCK→面板）+ root 坐标
 ```
 
@@ -412,7 +413,7 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | X11 合成器把画面画在 offscreen（root 快照疑似纯色） | 自动改抓 XComposite 覆盖窗口；无该扩展 / 缺库时保持 root 图并 WARN，框选照常工作 |
 | X11 `XQueryTree` 失败或拿不到 GLFW 的 X11 Display | 候选窗口为空，悬停吸附关闭；拖动框选仍然可用 |
 | X11 窗口没有 `_NET_WM_WINDOW_TYPE`（非 EWMH 应用） | 照常作为候选（宁可多列，不漏真实窗口） |
-| X11 WM 对隐藏窗口的位置/全屏请求不生效 | override-redirect 下不经过 WM（位置/尺寸就是显示器矩形）；只有降级成普通窗口时才可能被 WM 延迟摆放，此时按**实际窗口位置/尺寸**换算与裁剪并打印日志（§9.5） |
+| X11 WM 对隐藏窗口的位置/全屏请求不生效 | 显示前写 EWMH 全屏属性并在显示后**读回校验**：接受则按实际窗口几何换算；没接受（非 EWMH WM / 被拒绝）时 WARN 并 `XMoveResizeWindow` 铺满显示器，坐标按**实际窗口位置/尺寸**换算与裁剪（§9.5） |
 | 框选过程中收到 `host.shutdown` / 宿主热卸载 | 事件循环退出，覆盖层按取消处理，不发布事件 |
 | 显示器几何在框选期间变化（拔屏/改分辨率） | 本次框选仍按开始时的窗口坐标结束；下次触发重新取显示器 |
 | 第一次框选时 GLFW/窗口/ImGui 初始化失败 | 放弃本次框选并记 ERROR，不发布事件；`init` 本身不会因此失败（它不碰图形栈） |
@@ -432,8 +433,8 @@ Linux/Wayland 下没有悬停吸附与"单击截窗口"（拿不到窗口列表�
 | 不提供 `shot.configurable` | 本插件没有自己的配置项：最小选区、遮罩透明度是内部常量；主题色来自**宿主**配置 `core/theme_color`（不是插件配置项）。要加插件自己的配置时再声明 `shot.configurable` |
 | Linux 支持 Wayland 与 X11 两种会话 | 同一份 `.so` 同时编进两套实现，启动时按 `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE` 运行期选择（Wayland 优先）。X11 见 §9，Wayland 见 §8 |
 | X11 只支持单 X screen | 覆盖层只铺鼠标所在显示器；XQueryTree 枚举的是默认 X screen 的 root 子窗口，多 X screen（`:0.1` 等）不枚举、也不能跨 screen 覆盖。多显示器在同一 X screen 内是支持的，但一次仍只选一块屏 |
-| X11 override-redirect / 输入 grab 失败 | 设置失败或被别的客户端抢先（`AlreadyGrabbed`/`GrabFrozen`）时只 WARN，清理 grab 并退回 WM 管理的普通窗口（旧行为）：面板可能再次盖住覆盖层，但框选、悬停、Esc 仍可用（§9.3 第 8 条） |
-| X11 覆盖层是 override-redirect + 输入 grab | 窗口不受 WM 管理（永远盖住 DOCK 面板、面板抢不到焦点与悬停/点击），显示时 `XGrabKeyboard` + `XGrabPointer` 独占输入。代价是无边框/置顶/位置全部自己维护；**X11 已不再是"WM 管理的普通窗口"**，真机行为见 §9.5 |
+| X11 WM 没接受 `_NET_WM_STATE_FULLSCREEN` | 只 WARN，不崩：退回 `XMoveResizeWindow` 把窗口铺满显示器。此时顶栏/dock 不一定自动隐藏，面板可能再次盖住覆盖层，但框选、悬停、Esc 仍可用（§9.3 第 8 条） |
+| X11 覆盖层是 EWMH 全屏窗口 | 每次显示前写 `_NET_WM_WINDOW_TYPE=NORMAL` + `_NET_WM_STATE=[FULLSCREEN,ABOVE]`；mutter 识别全屏后会自动隐藏顶栏/dock。显示后 `XRaiseWindow` + `XSetInputFocus`，焦点不在覆盖层时才 `XGrabKeyboard` 兜底 Esc；**不再抓指针**。真机行为见 §9.5 |
 | X11 下的采集依赖宿主流水线 | 本插件只发布带 `region` 的 `capture.request`（与 Windows 一致），实际抓屏由 `screen_capture` 完成。`screen_capture` 现在也有 X11 分支（XShm/XGetImage），但两边**尚未联调**；X11 会话下普通框选的端到端链路要真机确认（见 §9.4/§9.5） |
 | X11 + XWayland 的边界 | Wayland 会话里 XWayland 应用是 X11 窗口，但本插件走 Wayland 分支（门户截图 + 自己的窗口），拿不到、也不枚举这些窗口；不要指望在 Wayland 会话里用 X11 路径去吸 XWayland 窗口 |
 | X11 窗口枚举不做子控件命中 | 与 Windows 一样只认顶层窗口；`_NET_WM_WINDOW_TYPE_*` 过滤 DOCK/TOOLTIP/MENU 等，完全透明的点击穿透窗口没有额外过滤 |
@@ -635,13 +636,15 @@ X11 会话下本插件走**真正的全屏覆盖层**，交互与 Windows 一致
 （`region_overlay.cpp` / `region_overlay_draw.cpp` / `region_graphics.cpp`）只按平台
 调用不同的窗口扫描函数。
 
-**覆盖层是 override-redirect 窗口 + 键盘/指针输入 grab**（`region_overlay_x11.cpp`）：
-WM 管理的普通窗口即使带 `_NET_WM_STATE_ABOVE` 也可能被 EWMH 的 DOCK 面板压住，面板
-还会抢焦点和悬停/点击事件——真机现象就是"鼠标移到任务栏，覆盖层收不到事件，悬停面板
-= 全屏失效"。改成 override-redirect 后窗口不受 WM 管理、永远盖住面板；显示时再
-`XGrabKeyboard` + `XGrabPointer`（owner_events=True）独占输入，隐藏时先 unmap 再
-ungrab。grab 被拒（例如托盘菜单还没把 grab 放掉）或 X 请求报错时只 WARN 并降级回
-WM 管理的普通窗口，不会崩、框选仍可继续。
+**覆盖层是 WM 管理的 EWMH 全屏窗口**（`region_overlay_x11.cpp`）：GNOME（mutter）的
+shell 顶栏和 dock 画在**所有客户端窗口之上**，普通窗口、甚至上一版尝试的
+override-redirect 窗口都会被压住，面板还会抢焦点和悬停/点击事件——真机现象就是"鼠标
+移到任务栏，覆盖层收不到事件，悬停面板 = 全屏失效"。而 **mutter 对 EWMH 全屏窗口会
+自动隐藏顶栏和 dock**，所以覆盖层改成：显示前写 `_NET_WM_STATE=[FULLSCREEN,ABOVE]`，
+显示后读回 `_NET_WM_STATE` 校验；接受则整屏归覆盖层，没接受就 WARN 并退回
+`XMoveResizeWindow` 铺满显示器。焦点由 `XRaiseWindow` + `XSetInputFocus` 设置，焦点
+不在覆盖层时才 `XGrabKeyboard` 兜底（Esc），不再抓指针。这一版**去掉了
+override-redirect**：它压不住 shell 自己的面板，反而会和 WM 的全屏状态冲突。
 
 同一份 `.so` 同时编进 Wayland（门户定格图）与 X11（Xlib）两套实现，**运行期按会话类型
 二选一**——不是编译期开关，用户不需要为不同会话装两份插件。
@@ -657,8 +660,8 @@ cmake --build build/Linux --target region_selector
 - `pkg_check_modules(SHOT_X11 REQUIRED x11)`：缺 `libx11-dev` 时**配置阶段直接失败**，
   CMake 的 `FATAL_ERROR` 里写明 Ubuntu 包名。用到的是 `XGetImage` / `XQueryTree` /
   `XTranslateCoordinates` / `XQueryPointer` / `XGetWindowProperty` / `XInternAtom` /
-  `XChangeWindowAttributes` / `XMoveResizeWindow` / `XSetInputFocus` /
-  `XGrabKeyboard` / `XGrabPointer`。
+  `XChangeProperty`（EWMH 32 位 atom 数组）/ `XSetWMNormalHints` / `XMoveResizeWindow` /
+  `XSetInputFocus` / `XGrabKeyboard` / `XUngrabKeyboard`。
 - **不需要 `libxrandr-dev`**：显示器布局交给 GLFW（内部用 RandR），本插件只包含
   `<X11/Xlib.h>`；`glfw3native.h` 用 `GLFW_NATIVE_INCLUDE_NONE` 关掉了它默认带出的
   `<X11/extensions/Xrandr.h>`。运行期 GLFW / X 服务器仍然需要 RandR 扩展（正常桌面都有）。
@@ -697,29 +700,43 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 
 1. 与其它平台一样**延迟到第一次框选**才 `glfwInit` / 建窗口（原因见 §3.1）；
 2. 窗口 hint：无边框、`GLFW_FLOATING`（`_NET_WM_STATE_ABOVE`）、`GLFW_FOCUS_ON_SHOW`
-   （会向 WM 发 `_NET_ACTIVE_WINDOW`；override-redirect 下 WM 不处理，真正的键盘焦点由
-   第 6 步的 `XSetInputFocus` 负责）、`GLFW_RESIZABLE=FALSE`；**不透明**，不用
+   （会向 WM 发 `_NET_ACTIVE_WINDOW`）、`GLFW_RESIZABLE=FALSE`；**不透明**，不用
    `GLFW_TRANSPARENT_FRAMEBUFFER`（AGENTS §7 坑 #2）；
 3. 光标所在显示器：`XQueryPointer` 取 root 坐标（X 像素 = 物理像素），再在 GLFW 的
    显示器矩形里找包含它的那块（GLFW 在 X11 下用 RandR 拿输出布局）；
-4. 窗口在**第一次 map 之前**切成 override-redirect：`XUnmapWindow` →
-   `XChangeWindowAttributes(CWOverrideRedirect)` → `XSync`。WM 从此不管理这个窗口，
-   它永远在 DOCK 面板之上（这是盖住任务栏/面板的关键；属性必须在 map 之前生效）；
-5. 隐藏状态下定位到目标显示器并铺满整块屏（含任务栏）：`glfwSetWindowSize/Pos` +
-   直接 `XMoveResizeWindow`。**不做 Windows 的 +1px**：那是 Windows 全屏判定的专有坑；
-   也不用 `glfwSetWindowMonitor`（会走 WM 的全屏状态切换）；
+4. 隐藏状态下定位到目标显示器：`glfwSetWindowSize/Pos`，然后把 `WM_NORMAL_HINTS` 的
+   `PPosition` 改回显示器坐标（GLFW 对隐藏窗口会故意写成 `(0,0)`，reparenting WM 会
+   按它摆放，多显示器时全屏会落到主屏）。**不做 Windows 的 +1px**：那是 Windows 全屏
+   判定的专有坑；也不用 `glfwSetWindowMonitor`（那是切换窗口模式，不是 EWMH 全屏）；
+5. 显示前（仍在隐藏态）写 EWMH 属性：`XInternAtom` 取 atom，再用 `XChangeProperty`
+   直接写 32 位 atom 数组（format=32、`XA_ATOM`）：
+   `_NET_WM_WINDOW_TYPE = _NET_WM_WINDOW_TYPE_NORMAL`、
+   `_NET_WM_STATE = [_NET_WM_STATE_FULLSCREEN, _NET_WM_STATE_ABOVE]`，最后 `XSync`
+   保证属性先于 MapRequest 到达服务器。**窗口已经在显示时先 `XUnmapWindow`、写完再
+   `XMapRaised`**，让 WM 看到一次新的 map 请求（初始状态只在 map 时读取）；
 6. 隐藏状态下先渲染两帧再 `glfwShowWindow`（与 Windows 同一原因：避免第一帧未渲染内容
-   被合成上去），然后 `XRaiseWindow` + `XSetInputFocus` + `XGrabKeyboard` +
-   `XGrabPointer`（owner_events=True，grab_window=覆盖层）接管输入；GLFW 的事件处理
-   走同一个 X 连接和窗口，grab 下 `glfwGetKey/glfwGetMouseButton` 轮询照常工作（Esc、
-   拖框、悬停都不用改）。显示后把**实际**窗口几何写进日志；
-7. 隐藏时先 `XUnmapWindow`（覆盖层立刻从画面消失，窗口不可见时 X 也会自动释放 grab）
-   再显式 `XUngrabKeyboard/XUngrabPointer`，最后走公共的 `glfwHideWindow` + poll 时序。
-   顺序不能反：先 ungrab 会让"取消 grab 到窗口消失"之间的点击落到下面的面板上；
-8. 失败降级：override-redirect 设置失败 / grab 被别的客户端占着（托盘菜单收起前会持有
-   grab，短重试 5 次 × 20ms）时只 `WARN`，清理 grab、清掉 override-redirect 重新 map，
-   退回 WM 管理的普通窗口（旧行为）。Xlib 的默认错误处理器会 `exit(1)`，所以所有可能
-   异步报错的请求都包在临时 X 错误记录器里，失败不会把进程带走。
+   被合成上去）；显示后泵最多 8 轮（每轮 `glfwWaitEventsTimeout(20ms)`）等 WM 处理
+   MapRequest，再判定是否接受：**必须同时满足**"有 EWMH WM（root 的
+   `_NET_SUPPORTING_WM_CHECK`）"+"窗口已被 WM 管理（client 上有 `WM_STATE`，或已被
+   reparent 进 frame）"+"读回的 `_NET_WM_STATE` 含 `_NET_WM_STATE_FULLSCREEN`"。只看
+   最后一条不够：那是我们自己在 map 前写的，没有 WM 时会原样留着：
+   - 接受：记 INFO（mutter 会隐藏顶栏/dock）；
+   - 不接受：记 WARN（带读回的 atom 列表、EWMH WM / 已管理标志），调用
+     `XMoveResizeWindow` 铺满显示器兜底；
+7. 焦点与输入：`XRaiseWindow` + `XSetInputFocus(RevertToPointerRoot)`。之后用
+   `XGetInputFocus` 检查焦点（只认 client 窗口；焦点在 WM 的 frame / PointerRoot 上时
+   一律算没拿到——那时的键盘事件到不了 GLFW）：焦点确实不在覆盖层时才
+   `XGrabKeyboard`（owner_events=True，短重试 5 次 × 20ms，保证 Esc 可用），失败只
+   WARN。**不再 `XGrabPointer`**：全屏窗口覆盖整块屏，指针本来就在窗口内。GLFW 的事件
+   处理走同一个 X 连接和窗口，grab 下 `glfwGetKey/glfwGetMouseButton` 轮询照常工作
+   （Esc、拖框、悬停都不用改）。显示后把**实际**窗口几何、`fullscreen_accepted`、
+   覆盖显示器与否写进日志；
+8. 隐藏时先 `XUngrabKeyboard`（若有），再走公共的 `glfwHideWindow`（它负责 unmap，
+   mutter 收到 unmap 后会自动重新显示顶栏/dock）+ `glfwPollEvents`。全屏属性**不清**：
+   窗口复用，下次显示前第 5 步会重新写一遍；
+9. 失败降级：WM 没接受全屏 / `XMoveResizeWindow` 也失败 / 键盘 grab 失败时都只
+   `WARN`，不抛不崩。Xlib 的默认错误处理器会 `exit(1)`，所以所有可能异步报错的请求
+   （属性、焦点、降级移动）都包在临时 X 错误记录器里，失败不会把进程带走。
 
 **背景快照**（`region_background_x11.cpp`）：
 
@@ -783,31 +800,35 @@ WAYLAND_DISPLAY 非空  或  XDG_SESSION_TYPE == "wayland"（不区分大小写�
 > 下面的条目**都还没有在真实 X11 会话跑过**。代码按 X11 协议与 EWMH 写，失败路径只记
 > WARN、不影响框选；真机结果出来后再更新本节（不要在注释/文档里写"已验证"）。
 
-**先 grep 这几行日志**（显示/隐藏各一条，字段顺序固定）：
+**先 grep 这几行日志**（正常一轮的关键行，字段顺序固定）：
 
 ```text
-region_selector：X11 覆盖层已设为 override-redirect（不受 WM 管理，显示时置顶）
-region_selector：X11 覆盖层已显示并接管输入 override_redirect=1 grab_keyboard=1 grab_pointer=1 focus=1 显示器=(...)
-region_selector：X11 覆盖层隐藏 override_redirect=1 grab_keyboard=1 grab_pointer=1（已 unmap 并解除输入 grab）
-region_selector：X11 输入 grab 失败（keyboard=... pointer=...），降级为 WM 管理的普通窗口...
-region_selector：X11 已降级为 WM 管理的普通窗口（override-redirect=0）...
+region_selector：X11 已写入 EWMH 属性 _NET_WM_WINDOW_TYPE=NORMAL _NET_WM_STATE=[FULLSCREEN,ABOVE]（等待 WM 接受）
+region_selector：X11 WM 已接受全屏请求（_NET_WM_STATE 含 FULLSCREEN，EWMH WM=1 已管理=1，检查 N 轮 / N ms）
+region_selector：X11 WM 未接受 _NET_WM_STATE_FULLSCREEN（_NET_WM_STATE=[...]，EWMH WM=1，窗口已被 WM 管理=0，检查 N 轮 / N ms），退回 XMoveResizeWindow 铺满显示器：面板可能盖住覆盖层
+region_selector：X11 已用 XMoveResizeWindow 铺满显示器作为全屏降级（顶栏/面板可能仍在覆盖层之上）
+region_selector：X11 覆盖层已显示 viewable=1 fullscreen_requested=1 fullscreen_accepted=1 focus=1 grab_keyboard=0 显示器=(...)
+region_selector：X11 覆盖层窗口 pos=(...) size=... 目标显示器=(...) ... 覆盖显示器=1 fullscreen_requested=1 fullscreen_accepted=1 _NET_WM_STATE=[FULLSCREEN,ABOVE]（坐标一律按实际窗口位置换算）
+region_selector：X11 覆盖层隐藏 fullscreen_accepted=1 grab_keyboard=0（全屏属性留在窗口上，下次显示前重新提交；已解除键盘 grab）
 ```
 
-- **override-redirect 是否生效**：日志出现 `override_redirect=1`；覆盖层显示后能否盖住
-  GNOME 顶栏 / dash-to-dock / xfce4-panel（面板不再画在覆盖层之上）；
-- **输入是否真的被覆盖层独占**（`grab_keyboard=1 grab_pointer=1`）：鼠标移到面板区域时
-  面板不再获得焦点/悬停效果，覆盖层仍能收到 Motion 并触发"悬停面板 = 全屏"；单击、右键、
-  Esc 仍按 §5 的状态机工作；
-- **grab 是否泄漏**：Esc 取消 / 确认采集后再显示一轮，面板点击与键盘输入应完全正常
-  （隐藏日志里的 `已 unmap 并解除输入 grab` 是这一条的验收点）；
-- **grab 被抢**：从托盘/菜单触发时如果菜单还没收起，日志可能出现一次重试后的成功或
-  `输入 grab 失败` + 降级；两种情况都不应卡死或无响应；
-- **多显示器**：覆盖层只铺鼠标所在显示器（grab 不 confine，移出本屏后悬停框隐藏、拖框
-  贴边，与 §7 单屏限制一致）；另一块屏的面板不受影响；
-- 覆盖层在 GNOME/KDE/Xfwm 等 WM 下是否真的无边框、铺满、拿得到键盘焦点（焦点现在由
-  `XSetInputFocus` 自己设，不再依赖 `GLFW_FOCUS_ON_SHOW`）；
-- WM 对隐藏窗口 `setSize/setPos` 的处理：override-redirect 下不经过 WM，显示后的
-  pos/size 应等于显示器矩形；只有降级路径才需要按实际窗口位置换算；
+- **全屏状态是否被 WM 接受（本轮重点，待真机验证）**：日志出现
+  `fullscreen_accepted=1` / `覆盖显示器=1` 表示 mutter 接受了 `_NET_WM_STATE_FULLSCREEN`
+  且窗口实际几何等于显示器矩形；此时顶栏和 dash-to-dock 应自动隐藏。若出现
+  `fullscreen_accepted=0` + `未接受` WARN，请把其中的 `EWMH WM=…` / `窗口已被 WM 管理=…`
+  与紧跟的 `XMoveResizeWindow 铺满显示器` 或 `全屏降级也失败` 一起回传——说明这台机器/
+  这个 WM 没按 EWMH 处理全屏；
+- **鼠标能到最后一像素**：覆盖层显示后把鼠标移到屏幕上边缘/左边缘（原顶栏/dock 位置），
+  面板不应浮出、覆盖层仍应收到 Motion（悬停框跟着变），最后 1px 也能落点；
+- **焦点与 Esc**：日志 `focus=1`；若焦点没拿到会自动 `grab_keyboard=1`（WARN 只在
+  grab 也失败时出现）。Esc / 右键取消、单击、拖框都应正常工作；隐藏日志里
+  `已解除键盘 grab` 之后，键盘/面板点击必须恢复正常（无 grab 泄漏）；
+- **多显示器**：覆盖层只铺鼠标所在显示器；`PPosition` 已改成目标显示器坐标，全屏
+  不应落到主屏。另一块屏的面板不受影响；跨屏拖选仍受 §7 单显示器限制；
+- 覆盖层在 GNOME/KDE/Xfwm 等 WM 下是否真的无边框、铺满；GNOME 顶栏/dock 的隐藏与
+  恢复时机（隐藏覆盖层后应立即回来）；
+- 第二次显示：全屏属性不清、窗口复用，下次显示前会重新写一遍；观察是否仍能
+  `fullscreen_accepted=1`（这是"隐藏后恢复普通状态不影响下次"的验收点）；
 - `XGetImage` 在不同 depth/visual（24/30bpp、compositing 开关、Xvfb）下的像素解包；
 - reparenting frame 的 Z 序与 `_NET_WM_WINDOW_TYPE` 过滤在 GNOME/KDE 下的实际效果
   （桌面窗口、面板、通知、工具提示是否都正确跳过；覆盖层自身被排除）；
@@ -865,8 +886,9 @@ region_selector：X11 已降级为 WM 管理的普通窗口（override-redirect=
 - [ ] X11：`region` 是 root 坐标（原点 (0,0)），没有减任何"虚拟桌面原点"、没有乘 content scale？
 - [ ] X11：普通框选发 `capture.request`，purpose 选择发 `region.selected`（取消带 `cancelled:true`）？
 - [ ] X11：确认时序仍是"隐藏 → 等 100ms → 发布"，与 Windows 一致？
-- [ ] X11：覆盖层在第一次 map 之前切成 override-redirect（`XUnmapWindow` → `XChangeWindowAttributes(CWOverrideRedirect)` → `XSync`），失败只 WARN 并降级？
-- [ ] X11：显示后 `XRaiseWindow` + `XSetInputFocus(RevertToPointerRoot)` + `XGrabKeyboard`/`XGrabPointer`（owner_events=True，grab_window=覆盖层），隐藏时先 `XUnmapWindow` 再 ungrab？
-- [ ] X11：显示/隐藏日志都带 `override_redirect=… grab_keyboard=… grab_pointer=…`，grab 失败有 WARN + 降级（Xlib 默认错误处理器绝不会 exit 进程）？
+- [ ] X11：显示前（隐藏态）用 `XChangeProperty` 写 `_NET_WM_WINDOW_TYPE=NORMAL` + `_NET_WM_STATE=[FULLSCREEN,ABOVE]`（32 位 atom 数组，先 `XInternAtom`），并 `XSync` 保证先于 map？
+- [ ] X11：显示后读回 `_NET_WM_STATE` 校验 FULLSCREEN；没接受只 WARN 并 `XMoveResizeWindow` 铺满显示器，不崩？
+- [ ] X11：显示后 `XRaiseWindow` + `XSetInputFocus(RevertToPointerRoot)`，仅当焦点不在覆盖层时才 `XGrabKeyboard`（owner_events=True）；隐藏时先 `XUngrabKeyboard`（没有指针 grab）？
+- [ ] X11：显示/隐藏日志都带 `fullscreen_requested=… fullscreen_accepted=… focus=… grab_keyboard=…`，失败有 WARN + 降级（Xlib 默认错误处理器绝不会 exit 进程）？
 - [ ] X11：悬停面板/四角仍然吸附到"当前显示器全屏"（grab 不影响窗口枚举与命中测试）？
 - [ ] X11：Wayland 实现文件（`*_wayland.cpp` / `region_portal.cpp`）没有改动（两套平台函数用不同名字，避免重复符号）？
