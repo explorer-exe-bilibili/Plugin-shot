@@ -1,0 +1,8 @@
+# dsh-plugin-shot-dev bundle layer: one row, the bundled skill.
+#
+# 这个 bundle 只提供技能、不注册工具：agent 通过技能学到
+# "下载 Plugin-shot 离线 SDK → 写插件 → 编译 → 自检 → 安装" 的完整流程。
+# 技能行独立列出、有自己的开关；安装插件即安装技能，禁用/卸载即移除。
+- insert:
+    - id: dsh-plugin-shot-dev-skill
+      name: dsh-plugin-shot-dev/skill

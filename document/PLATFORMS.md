@@ -26,7 +26,12 @@ Ubuntu 24.04 / X11 会话验证。macOS 从未真机运行，也没有成功的�
 > **仍待验证（保持 🟡/🚫）**：X11 多显示器 / 多 X screen / 负坐标；Wayland 窗口悬停（协议
 > 不允许，属平台限制）；macOS 全部（含构建）；CI 的 Linux / macOS job（等下一轮结果）。
 > `long_capture` 仍为 Windows-only。
-> **0.1.0 只发布 Windows 构建，未验证能力不随包分发**；表格只按上述证据升级，未列出的细节
+> **0.2.0（2026-11-15）插件开发链路补充**：Windows 真机验证了"离线 SDK 核心包（无 vcpkg 解压即编译）
+> → `--test-plugin` 自检 PASS → DLL 装进宿主 `--capture` 生效"的完整闭环（含两个 demo：时间水印 /
+> 日期归档）；Ubuntu 24.04（WSL）编译并通过 `--test-plugin`（`.so` 插件；无交互桌面，屏幕采集类
+> 检查按设计 SKIP）。**离线 SDK 的导出/打包目前只在 Windows 的 CMake 分支定义**，Linux 只支持
+> 源码构建宿主，不发布 Linux SDK / 预编译包。
+> **0.1.0/0.2.0 只发布 Windows 构建，未验证能力不随包分发**；表格只按上述证据升级，未列出的细节
 > 不要读成已验证。
 
 **改平台相关代码、CMake 跳过条件、根 `README*.md` 的平台段、或插件清单前先读这里，
@@ -69,6 +74,7 @@ Linux X11（**第二优先**）、macOS。
 | 区域框选 `plugins/region_selector` | ✅ GLFW 覆盖层 + Win32 物理坐标；悬停窗口吸附、单击截窗、DWM 扩展边界、主题色折角已实测；本轮复测悬停窗口/任务栏/屏幕四角吸附与截窗口尺寸正确 | ✅ B 方案已实现并真机验证（Ubuntu 26 / Wayland）：门户抓一张定格图 → 自有窗口里拖选，确认后覆盖层立即消失、无“应用无响应”，保存+剪贴板正常；**没有窗口悬停吸附**（portal 不提供其它应用的窗口列表与几何，属平台限制，§3.1） | ✅ 已实现并真机验证（Ubuntu 24.04 / X11 / 单显示器 / 单 X screen）：GLFW 无边框覆盖层 + 背景快照（合成器下自动回退 XComposite 覆盖窗口，**不再灰遮罩**）+ `XQueryTree`/`_NET_WM_WINDOW_TYPE` 窗口命中；覆盖层高于顶栏/dock，悬停窗口吸附、悬停顶栏/dock（`_NET_WORKAREA` 占位）与屏幕四角=全屏、单击截窗口、拖框、Esc 取消、确认后保存+剪贴板全部跑通；与 `screen_capture` 的 X11 分支已联调。多显示器 / 多 X screen 仍未验证（§3.2） | ⛔ 没有 `NSScreen`/`CGWindowList` 覆盖层实现，CMake 跳过 |
 | 外部语言包 / 翻译 `plugins/translator` | ✅ 扫描官方/用户目录、用户包覆盖官方包、坏包只 WARN，`smoke_i18n_translator.ps1` 已跑；本轮确认官方 zh-TW 语言包可加载、界面/托盘跟随 | ✅ 已真机验证（Ubuntu 26 / Wayland）：语言包加载与切换正常 | ✅ 已真机验证（Ubuntu 24.04 / X11）：语言包加载与切换正常 | 🟡 `pack_dirs.cpp` 有 `_NSGetExecutablePath` + `$HOME` 分支，但 macOS 未构建 |
 | 长截图 `plugins/long_capture` | ✅ 已实现并真机验证（Windows 11）：`region.select.request` / `region.selected` 选目标窗口 → 自带 GDI 采集层连续抓帧 → 滚动 → HUD → 保存的完整交互跑通；只在保存时发一条 `capture.done`；作为实验特性随 0.1.0 分发、默认在插件列表里禁用（`plugins.disabled`），在设置页勾选启用后重启生效（§3.3） | ⛔ 未实现；计划走 ScreenCast 的**窗口流**持续取帧 + 复用 `long_capture` 的拼接核心（该核心已在 Windows 真机验证，§3.1） | ⛔ 未实现；计划 `XGetImage` 逐帧 + `XTest`/手动滚动 + 行指纹拼接（§3.2） | ⛔ 未实现；需要 `AXUIElement` 读滚动位置并模拟滚动 |
+| 插件离线 SDK / 自检（`package_sdk`、`--test-plugin`） | ✅ Windows 真机：`package_sdk` 产出核心包（约 0.9 MB）+ OpenCV 叠加包；核心 zip 在**没有 vcpkg** 的环境里解压 → 脚手架生成模板插件 → 编译 exit 0 → `--test-plugin` PASS；仓库 12 个插件与 2 个 demo 自检全部 PASS，Release 宿主 `--capture` 验证两个 demo 的实际效果 | 🟡 WSL Ubuntu 24.04：宿主与自检代码编译通过，`.so` 插件（image_saver / example_processor / clipboard）自检 PASS；无交互桌面，屏幕采集类检查 SKIP。**未发布 Linux SDK** | 🟡 同 Wayland（同一份 `.so` 构建） | ⛔ 无 Linux/macOS SDK 导出（`export_sdk` 只在 Win32 分支定义） |
 
 **结论**：Windows 与 Linux（Ubuntu 24.04 X11 / Ubuntu 26 Wayland，均为单显示器）的核心
 “采集 → 处理 → 保存 → 消费”链路都已在真机跑通，并各自有日志/落盘/剪贴板/通知证据；

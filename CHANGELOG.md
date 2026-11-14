@@ -1,5 +1,55 @@
 # 更新日志
 
+## 0.2.0 — 2026-11-15
+
+"插件开发者版本"：把插件开发变成**不需要宿主源码**的离线流程，并让 AI 能"一句话写插件"。
+
+### 新增
+
+- **离线插件 SDK 拆分**：`export_sdk` 产出核心包（契约头、`shot_plugin_helpers`、构建模块、
+  文档、模板、demo、技能，约 0.9 MB）+ 可选 OpenCV 叠加包（约 13 MB）；`package_sdk` 打成
+  zip + sha256。SDK 自带 `third_party/include`（nlohmann-json 整树、stb），**不装 vcpkg、
+  不 `find_package`** 即可编译；`ShotPlugin.cmake` 新增 SDK 模式，自动补第三方头与
+  （叠加包存在时的）OpenCV 头/库路径，并按 Debug/Release 选择对应 lib。
+- **插件离线自检** `Plugin-shot.exe --test-plugin <dll>`：走真实宿主加载/校验路径（`HostRuntime`），
+  在隔离数据目录里检查加载状态、能力调用（处理器/保存器/采集器/lib provider）、配置回写回读、
+  托盘/热键/i18n 列表贡献、事件派发，输出 PASS/FAIL/SKIP 与 `--json-out`；退出码 0/1/2。
+  不构建整个宿主、不装进 `plugins/` 就能验收插件。文档：`document/PLUGIN_TEST.md`。
+- **插件开发文档与模板**：`document/AUTHORING.md`（从零到安装的单一事实源）；
+  `tools/plugin_sdk/templates/`（generic / image_processor / image_saver / lib_provider）+
+  `tools/new_plugin.cmake` 脚手架；`tools/plugin_sdk/demos/` 两个"一句话需求"完整示例：
+  **截图右下角时间水印**（image_processor）与**按日期归档**（capture.done 订阅者）。
+- **DSH 技能 `plugin-shot-dev`**：`skills/plugin-shot-dev/`（SKILL.md + 6 份 references），
+  并打包成可安装的 DSH 插件 bundle `dsh-plugin-shot-dev/`：下载 SDK → 生成工程 → 编译 →
+  `--test-plugin` 自检 → 征得同意后安装。
+- `PLUGIN_SHOT_DATA_DIR` 环境变量覆盖用户数据目录（自检/便携隔离用）；`Host::Logging::shutdown()`。
+- 发布物料：`tools/package/make_host_package.ps1` 生成宿主便携包；发布资产：
+  - `Plugin-shot-0.2.0-win64.zip`（6,802,480 B，sha256 `ca4099621af6ff4c1960262835fee1f1a3d6e8c6548ae61c161f85d63f9dc854`）
+  - `plugin-shot-sdk-0.2.0-win64.zip`（954,656 B，sha256 `e1ed5b58f0aadfd8d38a0117b210cf272e1a2b2c0776627da317b99714f59811`）
+  - `plugin-shot-sdk-0.2.0-win64-opencv.zip`（13,502,784 B，sha256 `f82f5973536526f7354ce91d31cdbd216ed64409e3064bb666620bc3c479003e`）
+
+### 变更
+
+- 根 `CMakeLists.txt` 尊重 `VCPKG_INSTALLED_DIR`（多构建目录可复用同一份 vcpkg 依赖；
+  copy_dlls / 剪枝 / RPATH 不再写死 `build/<dir>/vcpkg_installed`）。
+- 版本号 0.1.0 → 0.2.0。
+- `document/README_SDK.md` 全面重写（两包、manifest/ABI、SDK 模式构建、自检、Debug/Release、
+  故障排查）；新增 `document/SDK_DOCS.md`（文档映射与防漂移）。
+- 根 README / README.en / AGENTS 补充 SDK、`--test-plugin`、模板/demo/技能与发布流程。
+
+### 修复
+
+- 自检模式 `--test-plugin --help` 不再把 `--help` 当 DLL 路径（打印用法并退出 0）。
+- 插件侧 `shot_i18n.h` 注释过时（SDK 已内置 nlohmann-json，无需 `find_package`）。
+
+### 已知限制
+
+- 预编译包仍只提供 Windows x64；Linux SDK / Linux 预编译包未发布（Linux 宿主源码构建已验证）。
+- `--test-plugin` 与宿主同进程：插件访问违例会带走自检进程（C++ 异常已兜底，SEH 未做）；
+  GUI 类插件只做加载检查；事件试运行可能产生真实副作用（剪贴板/通知）。
+- 自检必须与插件同构建配置（Debug 插件用 Debug 宿主）。
+- 录屏、标注、OCR、上传仍未实现（见 `document/AUTHORING.md` §13 能力边界）。
+
 ## 0.1.0 — 2026-11-14
 
 首个公开版本：Windows 10/11 x64 便携版；Linux（Ubuntu 24.04 X11 / Ubuntu 26 Wayland，单显示器）源码构建已验证。

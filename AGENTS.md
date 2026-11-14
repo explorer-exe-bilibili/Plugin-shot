@@ -18,7 +18,9 @@
 | 宿主产物 | `build\Windows\bin\Plugin-shot.exe`，插件在 `build\Windows\bin\plugins\*.dll` |
 | 配置文件 | `%LOCALAPPDATA%\plugin-shot\config.json` |
 | 日志 | `%LOCALAPPDATA%\plugin-shot\logs\host.log`（UTF-8，中文会显示成乱码是编码问题，不是 bug） |
-| CLI | `--capture` 截一张存盘后退出 / `--settings` 打开设置页后常驻 / `--help` |
+| CLI | `--capture` 截一张存盘后退出 / `--settings` 打开设置页后常驻 / `--test-plugin <dll>` 离线插件自检 / `--help` |
+| 插件 SDK | `bash tools/verify/build.sh --target package_sdk` → `dist/plugin-shot-sdk-<版本>-win64.zip`（核心包）+ `-opencv.zip`（叠加包）；文档见 `document/README_SDK.md`、`document/AUTHORING.md` |
+| 发布物料 | `powershell -File tools/package/make_host_package.ps1 -Version <版本>` → `dist/Plugin-shot-<版本>-win64.zip` |
 | 契约头 | `include/plugin_api.h`（汇总头，只 include）＋ `include/plugin_api/*.h`（按主题的子头；纯 C、append-only、**当前 2.0**） |
 
 最小验证（本机路径见 §8）：
@@ -61,9 +63,14 @@ plugins/            13 个插件工程，各自独立 CMakeLists + metadata.json
   long_capture       手动滚动长截图（Windows P1；真机完整交互已验证：选窗口 → 滚动 → HUD → 保存）
   clipboard          截图 → 剪贴板（Windows CF_DIB；Linux 走 X11 selection，已验证，Wayland 经 XWayland）
   notify             截图结果气泡（Windows Shell 通知；Linux 用 libnotify，已验证）
-document/           设计文档（改代码必须同步，见 §4）
-cmake/              构建规则（ShotPlugin.cmake / ValidatePluginMeta.cmake / export_sdk.cmake …）
+document/           设计文档（改代码必须同步，见 §4）；插件作者入口是 AUTHORING.md / PLUGIN_TEST.md
+cmake/              构建规则（ShotPlugin.cmake / ValidatePluginMeta.cmake / export_sdk.cmake / package_sdk.cmake …）
 tools/verify/       真机验证脚本（带构建锁的 build 包装 + e2e 冒烟，见 tools/verify/README.md）
+tools/plugin_sdk/   SDK 模板（generic/image_processor/image_saver/lib_provider）+ 两个一句话 demo
+                    （watermark/archive）+ new_plugin.cmake 脚手架 + 第三方许可证
+tools/package/      宿主便携包打包脚本（dist/）
+skills/plugin-shot-dev/   DSH 技能正文（下载 SDK→写插件→编译→自检→安装）
+dsh-plugin-shot-dev/      可安装到 DeepSeek Harness 的插件 bundle（携带上面那份技能）
 STYLE.md            ★ 代码风格与工程约定（硬约定）
 ```
 
@@ -264,6 +271,32 @@ plugins/<name>/{CMakeLists.txt, metadata.json, README.md, include/, src/}
 不随 DLL 卸载消失，不注销会在禁用→启用后踩悬空 WndProc，历史上崩过）→ 退订事件总线 →
 join。`host.shutdown` 事件要先响应。
 
+### 5.8 在宿主之外开发一个插件（离线 SDK，不需要宿主源码）
+
+面向第三方/用户/AI 的标准流程（细节见 [`document/AUTHORING.md`](document/AUTHORING.md)）：
+
+1. 拿到 SDK：`bash tools/verify/build.sh --target package_sdk` → `dist/plugin-shot-sdk-<ver>-win64.zip`
+   （核心包；用 OpenCV 再解压 `-opencv.zip` 的 `opencv/` 到 SDK 根）；
+2. 用 SDK 自带脚手架：`cmake -DTEMPLATE=generic -DDEST=<工程目录> -DPLUGIN_ID=<作者.功能> ... -P <SDK>/tools/new_plugin.cmake`
+   （模板：`generic` / `image_processor` / `image_saver` / `lib_provider`；`demos/` 里有两个完整示例）；
+3. 构建：`cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSHOT_SDK_ROOT=<SDK>` + `cmake --build build`；
+   SDK 自带 nlohmann/stb（`third_party/include`），**不要** `find_package` 或装 vcpkg；
+4. 自检：`Plugin-shot.exe --test-plugin build/bin/plugins/<target>.dll --json-out report.json`
+   （真实宿主加载路径 + 隔离数据目录；PASS/FAIL/SKIP + JSON；见 `document/PLUGIN_TEST.md`）；
+5. 安装：把 DLL 放进宿主 `plugins/` 并重启（新插件默认启用；只有 `plugins.disabled` 里的禁用）。
+
+发布 SDK 时注意：`sdk/` 是 gitignored 的生成物，改 `document/*.md`、`templates/`、`skills/`
+后必须重跑 `package_sdk`，否则发布包里的文档/模板是旧的（`manifest.files[]` 有哈希但不会自动重跑）。
+
+### 5.9 新增/修改自检检查项
+
+自检代码在 `src/pluginTest*.cpp`（`--test-plugin` 入口在 `src/main.cpp`）。检查项按
+`metadata.` / `host.` / `capability.` / `config.` / `list.` / `events.` 前缀命名，新增时：
+1. 在 `include/pluginTest.h` 的报告结构里沿用现有 `PluginTestCheck`（不要新增 ABI 结构体）；
+2. 检查要"能行动"：FAIL 的 detail 必须写清是哪个文件/哪个字段/期望什么；
+3. UI 类、需要交互桌面的检查默认 SKIP，不要在无头环境里判 FAIL；
+4. 加完用 `tools/verify/smoke_plugin_test.ps1` + 一个故意写坏的示例 DLL 回归。
+
 ---
 
 ## 6. 构建与验证
@@ -306,6 +339,7 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 | `smoke_settings_i18n.ps1` | 多语言：`core/language=en-US` / `zh-CN` 两次启动设置页，标题/截图/日志锚点（`界面语言 = <tag>`），备份恢复 config |
 | `smoke_i18n_translator.ps1` | 外部语言包：翻译插件扫描官方/用户目录，`@language/` 与 `target` 条目、用户包优先级、坏包只 WARN（与翻译插件同期新增） |
 | `smoke_region_window.ps1` | 区域框选：悬停窗口吸附、单击截窗口（尺寸 = DWM 扩展边界）、拖动选区尺寸、边框/折角主题色（像素抽检）；自己开关目标窗口并恢复 config |
+| `smoke_plugin_test.ps1` | 插件自检：`--test-plugin` 对 `example_processor.dll` exit 0、JSON `result=pass`、plugins ≥ 2；负例（不存在的 DLL）exit 2。**唯一不杀宿主、不碰用户 config 的脚本** |
 
 运行方式（**必须带 `-ExecutionPolicy Bypass`**，原因见 §7 第 15 条）：
 
@@ -381,6 +415,18 @@ harness 等），**不入库**，换机器会丢；需要时按同样思路重�
 19. **X11 没有 `MOD_NOREPEAT` 等价物**：Windows 的 `RegisterHotKey` 可以带 `MOD_NOREPEAT`，
     X11 的 `XGrabKey` 没有对应标志——`plugins/hotkey` 在 X11 上按住热键会按服务器的自动重复
     连续触发。这是已知差异，不要据此判断注册失败（见 `plugins/hotkey/README.md` §10）。
+20. **SDK 的第三方头必须整树拷**：nlohmann-json 的 `json.hpp` 是多文件入口，只拷单个文件编不过
+    （`C1083: nlohmann/adl_serializer.hpp`）；stb 是扁平的 `stb_image_write.h`，不是 `stb/` 目录。
+    `export_sdk.cmake` 已从 vcpkg 抽取整树，**不要**为了"减小 SDK 体积"删 `third_party` 里的文件；
+    改 SDK 后必须重跑 `package_sdk` 并用解压出的 zip 重新做一次离线编译验证。
+21. **多构建目录共用 vcpkg 依赖时不能写死 `CMAKE_BINARY_DIR/vcpkg_installed`**：CI/Release 构建会
+    用 `-DVCPKG_INSTALLED_DIR=<另一份构建>` 复用已装好的依赖，copy_dlls / 剪枝 / RPATH 都走
+    `SHOT_VCPKG_INSTALLED_DIR`（根 CMakeLists §5.1）；写死会报"运行时依赖目录不存在"（本机
+    Release 构建实测踩过）。`shot_add_plugin` 的 `SHOT_DEP_SCAN_DIRS` 同理。
+22. **`--test-plugin` 必须用与插件同配置的宿主**：Debug 插件只能用 Debug 宿主自检（`/MD` 与 CRT
+    不匹配时加载会失败），JSON 里 `build.type` 会写明 Debug/Release；跨配置失败不是插件 bug。
+23. **MSYS bash 里不要 `cmd //c` 调批处理**：参数会被 MSYS 吞掉（表现为只打印 cmd banner、命令没跑）。
+    统一 `powershell.exe -NoProfile -Command "& 'D:\...\x.bat'; exit \$LASTEXITCODE"`（与 §6.1 一致）。
 
 ---
 
@@ -415,6 +461,23 @@ harness 等），**不入库**，换机器会丢；需要时按同样思路重�
    Windows 实际没用工作流 clone 的 vcpkg；本轮未动，等后续单独处理。
 2. ~~把关键验证脚本固化进仓库~~ **已完成**：`tools/verify/`（build + 冒烟 / e2e，见 §6.2）。
    可继续把托盘点菜单、区域框选、DPI 探针也整理进去。
+2.1 ~~离线插件 SDK 产品化~~ **已完成（0.2.0）**：SDK 拆成核心包 + 可选 OpenCV 叠加包
+   （`export_sdk` / `package_sdk`），自带 nlohmann/stb、文档、4 个模板、2 个一句话 demo、
+   脚手架 `new_plugin.cmake`；宿主新增 `--test-plugin` 离线自检（PASS/FAIL/SKIP + JSON）；
+   `document/AUTHORING.md` + `skills/plugin-shot-dev/` + `dsh-plugin-shot-dev/` bundle；
+   发布脚本 `tools/package/make_host_package.ps1`。回归：SDK 核心 zip 在无 vcpkg 机器上
+   生成并编译插件 → `--test-plugin` PASS；两个 demo 装进真机宿主截图验证。
+2.2 **Linux SDK**（P1）：`export_sdk` 目前只在 `WIN32` 定义；Linux 只差头/文档/模板打包
+   （无 OpenCV 时插件只链系统库，有 OpenCV 时走 `.so` + RPATH）。做的时候同步
+   `document/README_SDK.md`、`document/SDK_DOCS.md` 与 skill 的 `sdk-acquire.md`。
+2.3 **tag 触发的 release CI**（P1）：现在发布资产是本地打 `dist/` 后手动上传；可在
+   `.github/workflows` 增加 tag `v*` 触发的 job：Release 构建 → `package_sdk` + 宿主便携包 →
+   上传 GitHub Release。注意 Windows job 的 `VCPKG_ROOT` 隐患（见 backlog 1）。
+2.4 **自检工具独立化 / 崩溃隔离**（P2）：`--test-plugin` 与宿主同进程，插件访问违例会带走
+   自检进程（C++ 异常已兜底，SEH 未做）。后续可抽独立 `shot-plugin-test.exe`（共享检查代码）
+   或加 SEH/子进程看门狗；当前局限已写进 `document/PLUGIN_TEST.md` §7。
+2.5 **DSH 技能上架**（P2）：`dsh-plugin-shot-dev/` 是本地可安装 bundle；若要进插件市场，
+   需要补 `package.json` 元数据、图标、详情页与发布流程（按 DSH 插件规范）。
 3. **跨屏框选**（`region_selector` TODO）：现在只覆盖鼠标所在显示器，跨屏选择被夹在当前屏。
 4. ~~光标合成~~ **已完成**：`plugins/screen_capture` 可选 `include_cursor`（默认开），
    `GetCursorInfo` + `DrawIconEx` 合成；`tools/verify/smoke_cursor_capture.ps1` 用两处光标

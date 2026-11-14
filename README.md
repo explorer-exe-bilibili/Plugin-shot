@@ -22,14 +22,22 @@
 - **三种入口**：`Ctrl+Alt+S` 整屏截图、`Ctrl+Alt+A` 区域框选（悬停窗口吸附、单击截窗）、`Ctrl+Alt+O` 打开设置；Windows / X11 为全局热键，Wayland 用 `session_control` 的 D-Bus 入口 + 桌面自定义快捷键。
 - **截图之后**：自动保存 PNG/JPEG、写入剪贴板、弹系统通知；目录、格式、质量、文件名模板都可改。
 - **能力即插件**：托盘、热键、设置页、保存、通知、剪贴板本身都是插件，可在设置页一键禁用/启用。
-- **可扩展**：用离线 SDK 写一个 DLL，就能把自己的处理或入口接进来，不用改宿主。
+- **可扩展**：官方**离线插件 SDK**（核心包约 1 MB + 可选 OpenCV 叠加包）自带契约头、构建规则、
+  文档、模板与两个"一句话 demo"；写完的插件用宿主 `--test-plugin` 离线自检，不用改宿主、不装 vcpkg。
+  配套 DSH 技能 `plugin-shot-dev` 让 AI 直接"一句话写插件"。
 
 ### 下载
 
-[**Plugin-shot 0.1.0 · Windows x64 便携版**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
+[**Plugin-shot 0.2.0 · GitHub Releases**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
 [更新日志](CHANGELOG.md)
 
-解压后双击 `Plugin-shot.exe` 即可。0.1.0 的**预编译包只提供 Windows**；**Linux 已在 Ubuntu 24.04
+| 资产 | 用途 |
+| --- | --- |
+| `Plugin-shot-0.2.0-win64.zip`（约 6.5 MB） | Windows x64 便携版，解压双击 `Plugin-shot.exe` |
+| `plugin-shot-sdk-0.2.0-win64.zip`（约 0.9 MB） | 离线插件 SDK 核心包：契约头、`shot_plugin_helpers`、构建模块、文档、模板、两个 demo、技能 |
+| `plugin-shot-sdk-0.2.0-win64-opencv.zip`（约 13 MB） | 可选 OpenCV 叠加包；解压后把 `opencv/` 放进核心 SDK 根 |
+
+每个 zip 都有同名 `.sha256`。0.2.0 的**预编译包只提供 Windows**；**Linux 已在 Ubuntu 24.04
 （X11）与 Ubuntu 26（Wayland，单显示器）真机验证**，按 [构建](#构建) 从源码编译
 （分步见 [Linux 编译手册](document/BUILD_LINUX.md)）；macOS 尚未验证。详见 [平台](#平台)。
 
@@ -95,7 +103,7 @@
 | 主题色（`core/theme_color`，6 个预设 + 任意取色；区域框选边框/折角读它） | ✅ 可用（`document/SETTINGS.md` §5/§6） |
 | 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
-| 命令行 `--capture`（工作线程 + 退出前派发一轮事件）/ `--settings` / `--help` | ✅ 可用 |
+| 命令行 `--capture`（工作线程 + 退出前派发一轮事件）/ `--settings` / `--test-plugin <dll>`（插件自检）/ `--help` | ✅ 可用 |
 | GitHub Actions 跨平台 CI（Linux/macOS/Windows 矩阵 + vcpkg 缓存 + preset 构建 + `--help` 冒烟） | ✅ 2026-11-14 的 run 三平台 job 全部通过（Linux 用 ubuntu-24.04）；CI 只跑 `--help`，真实平台状态见「平台」与 [`document/PLATFORMS.md`](document/PLATFORMS.md) |
 | 宿主自身设置（`core` 伪插件：界面语言 / 日志级别 / 控制台 / 文件日志 / 主题色） | ✅ 可用 |
 | 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主加载前读取：预筛 + 依赖拓扑排序） |
@@ -104,7 +112,9 @@
 | 依赖驱动加载顺序（拓扑排序，不满足只跳过该插件） | ✅ 可用 |
 | 插件工程公共构建规则（`shot_add_plugin()`） | ✅ 可用（宿主与离线 SDK 共用） |
 | 多语言 i18n（`core/language` = `auto` 或语言目录 tag；`i18n_source_list` 插件贡献 + 宿主合并生成只读 `i18n_list`；外部语言包 `files/lang/` 与 `%LOCALAPPDATA%\plugin-shot\langs\`；设置页/托盘按 `display(owner,key) ?? key` 解析，旧插件字面量零破坏） | ✅ 可用（`document/I18N.md`；内置 27 个标签，仓库内置译文仅 zh-CN / en-US；外部语言包协议已就绪、翻译插件 `plugins/translator` 已加入（默认关）；Windows / Linux 真机已验证语言包加载与切换，官方 zh-TW 包界面/托盘跟随；字体动态图集 + Segoe UI/Arial 补字，RTL 与韩/泰/阿拉伯字形未做） |
-| 离线插件 SDK 导出（`export_sdk` 目标） | ✅ 可用 |
+| 离线插件 SDK（`export_sdk` / `package_sdk` 目标：核心包 + 可选 OpenCV 叠加包，含 manifest、`contract_sha256`、模板、demo、技能） | ✅ 可用（`document/README_SDK.md`；发布资产 `dist/`） |
+| 插件离线自检 `--test-plugin <dll>`（真实宿主加载路径 + 隔离数据目录 + PASS/FAIL/SKIP JSON） | ✅ 可用（`document/PLUGIN_TEST.md`；Windows 真机验证，Linux WSL 验证） |
+| 插件开发文档与"一句话写插件"技能（`document/AUTHORING.md`、`skills/plugin-shot-dev/`、DSH bundle `dsh-plugin-shot-dev/`） | ✅ 可用（两个 demo：截图时间水印 / 按日期归档） |
 
 > 产物名取自 `CMakeLists.txt` 的 `PROJECT_NAME`（当前 `Plugin-shot`）：宿主叫 `Plugin-shot.exe`，
 > 插件落 `bin/plugins/`。应用图标缺失时 `.rc` 会自动降级成不含 ICON 行，所以改名不会把构建搞挂。
@@ -153,7 +163,10 @@
 │   ├── translator/           # 外部语言包：扫描官方/用户目录，贡献 i18n_source_list（跨平台代码，Windows / Linux 已验证）
 │   └── tray/                 # 托盘入口：数据驱动菜单 + 图标（Windows 托盘 + Linux SNI；Linux 已验证）
 ├── document/
-│   ├── README_SDK.md         # SDK 使用与完整编译约束
+│   ├── AUTHORING.md          # ★ 插件开发单一事实源：从零到安装（离线 SDK，不需要宿主源码）
+│   ├── PLUGIN_TEST.md        # `--test-plugin` 自检：检查项、JSON、退出码、局限
+│   ├── README_SDK.md         # 离线 SDK：两个包、目录、构建、ABI、自检、故障排查
+│   ├── SDK_DOCS.md           # 仓库文档 → SDK 内文档的映射与防漂移
 │   ├── PLATFORMS.md          # 跨平台能力矩阵：每插件状态、平台限制、缺口与 CI 现状
 │   ├── ABI_POLICY.md         # 只追加规则、interface id 登记表
 │   ├── SETTINGS.md           # 设置页：config_list、事件驱动写值/提交、Generic、DPI、插件启停与热卸载
@@ -163,14 +176,20 @@
 │   ├── I18N.md               # 多语言协议：语言目录、外部语言包、两个 i18n 列表、回退链、字体与限制
 │   └── METADATA.md           # metadata.json 的字段定义、权威规则与不写什么
 ├── cmake/
-│   ├── ShotPlugin.cmake        # shot_add_plugin()：插件工程公共构建规则
+│   ├── ShotPlugin.cmake        # shot_add_plugin()：插件工程公共构建规则（宿主与 SDK 共用，含 SDK 模式）
 │   ├── AppendPluginMeta.cmake  # 把 metadata.json 贴到 DLL 尾部
 │   ├── prune_output_dir.cmake  # 产物目录剪枝（不留 pdb/ilk/exp/lib/基础依赖 DLL）
-│   └── ...                     # 运行时依赖布局、SDK 导出、链接前杀进程
+│   ├── export_sdk.cmake        # 导出核心 SDK + 可选 OpenCV 叠加包（含 manifest）
+│   ├── package_sdk.cmake       # 把 SDK 打成 zip + sha256（两个发布资产）
+│   └── ...                     # 运行时依赖布局、链接前杀进程
 ├── tools/
-│   └── verify/                 # 真机验证：带构建锁的 build 包装 + capture/settings/热键/剪贴板/多语言 e2e
-└── sdk/                    # export_sdk 生成的离线 SDK（不入库，见 .gitignore）
-```
+│   ├── verify/                 # 真机验证：带构建锁的 build 包装 + capture/settings/热键/剪贴板/自检 e2e
+│   ├── plugin_sdk/             # SDK 模板（generic/image_processor/image_saver/lib_provider）、
+│   │                           # 两个一句话 demo（watermark/archive）、new_plugin.cmake 脚手架、第三方许可证
+│   └── package/                # 宿主便携包打包脚本（dist/）
+├── skills/plugin-shot-dev/     # DSH 技能：下载 SDK → 写插件 → 编译 → 自检 → 安装（SKILL.md + references）
+├── dsh-plugin-shot-dev/        # 可安装到 DeepSeek Harness 的插件 bundle（携带上面那份技能）
+└── sdk/                    # export_sdk 生成的离线 SDK（不入库，见 .gitignore；含 opencv/ 叠加包）
 
 ## 构建
 
@@ -243,6 +262,7 @@ Linux 的分步编译手册（依赖包、vcpkg、Wayland/X11 差异、运行、
 cd build/Windows/bin && ./Plugin-shot.exe            # 不带参数：托盘常驻
 cd build/Windows/bin && ./Plugin-shot.exe --capture  # 截一张、打印路径后退出
 cd build/Windows/bin && ./Plugin-shot.exe --settings # 打开设置页后继续常驻（调试入口）
+cd build/Windows/bin && ./Plugin-shot.exe --test-plugin plugins/clipboard.dll --json-out report.json  # 插件自检
 cd build/Windows/bin && ./Plugin-shot.exe --help     # 打印用法
 ```
 
@@ -270,6 +290,11 @@ Ubuntu 26 真机验证）。
 `--capture` 成功时日志打印 `Capture saved: <path>`、退出码 `0`；失败（采集/保存/插件缺失/
 请求队列满）退出码 `1`，未知参数 `2`。一次性模式在退出前会**派发一轮事件**，所以剪贴板/
 通知这类订阅者同样能收到本次 `capture.done`（详见 `document/CAPTURE.md` §6）。
+
+`--test-plugin <dll>` 是**插件自检模式**：它用真实的插件加载/校验路径（`HostRuntime`）把被测
+DLL 装进一个隔离数据目录（不读写用户配置与日志），跑加载、能力、配置、列表/i18n 与事件检查，
+输出 PASS/FAIL/SKIP 与可选 JSON，退出码 `0`/`1`/`2`。插件作者不需要构建整个宿主、也不需要
+先装进 `plugins/` 就能验收（详见 [`document/PLUGIN_TEST.md`](document/PLUGIN_TEST.md)）。
 
 日志用 spdlog：控制台 +
 `%LOCALAPPDATA%\plugin-shot\logs\host.log`（追加写）；配置写在
@@ -530,13 +555,23 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void) {
 
 完整可编译样板见 [`plugins/example_processor/`](plugins/example_processor/README.md)：一个 DLL 装两个插件、
 都带配置项，目录结构 `CMakeLists.txt` + `metadata.json` + `include/` + `src/`。
-SDK 说明见 [`document/README_SDK.md`](document/README_SDK.md)，
-只追加规则与 interface id 登记表见 [`document/ABI_POLICY.md`](document/ABI_POLICY.md)。
+
+**没有宿主源码也能开发**：下载离线 SDK（`dist/plugin-shot-sdk-<版本>-win64.zip`，或 GitHub
+Releases 资产），用 SDK 自带的模板与 `tools/new_plugin.cmake` 生成工程，`cmake` 构建后用
+宿主 `--test-plugin` 自检，最后把 DLL 放进 `plugins/`。分步教程：
+[`document/AUTHORING.md`](document/AUTHORING.md)；SDK 布局与构建约束：
+[`document/README_SDK.md`](document/README_SDK.md)；自检：
+[`document/PLUGIN_TEST.md`](document/PLUGIN_TEST.md)。仓库里还有两个"一句话需求"的完整示例：
+[`tools/plugin_sdk/demos/watermark`](tools/plugin_sdk/demos/watermark/README.md)（截图右下角时间水印）与
+[`tools/plugin_sdk/demos/archive`](tools/plugin_sdk/demos/archive/README.md)（按日期归档），它们与模板
+一起随 SDK 分发。用 AI 写插件可安装 DSH 技能/插件包 [`dsh-plugin-shot-dev/`](dsh-plugin-shot-dev/README.md)
+（技能 `plugin-shot-dev`，正文在 [`skills/plugin-shot-dev/`](skills/plugin-shot-dev/SKILL.md)）。
 
 插件工程的 CMakeLists 只有三件事——找模块、列源文件、指元数据：
 
 ```cmake
-list(APPEND CMAKE_MODULE_PATH "${HOST}/cmake")   # 或 <SDK>/cmake
+# SDK 工程：cmake -DSHOT_SDK_ROOT=<SDK 根> -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+list(APPEND CMAKE_MODULE_PATH "${SHOT_SDK_ROOT}/cmake")
 include(ShotPlugin)
 
 shot_add_plugin(acme_tools
@@ -546,13 +581,24 @@ shot_add_plugin(acme_tools
 ```
 
 `shot_add_plugin()` 统一处理 `/MD`、`PREFIX ""`、隐藏符号、产物目录、pdb 重定向、
-贴元数据与产物剪枝——这些规则以前散落在根 `CMakeLists.txt` 里，容易和文档漂移。
+贴元数据与产物剪枝；SDK 模式下还会自动补 `third_party/include`（nlohmann / stb）与
+可选的 `opencv/` 叠加包头库路径——同样这些规则以前散落在根 `CMakeLists.txt` 里，容易和文档漂移。
+
+### 打包发布物料
+
+```bash
+# SDK 两个 zip（核心包 + 可选 OpenCV 叠加包）→ dist/
+bash tools/verify/build.sh --target package_sdk
+# 宿主便携包 → dist/Plugin-shot-<版本>-win64.zip（需要先做 Release 构建）
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package/make_host_package.ps1 -Version 0.2.0
+```
 
 ## 平台
 
-> **0.1.0 发布口径**：预编译包提供 **Windows 10/11 x64**；**Linux（Ubuntu 24.04 X11 /
-> Ubuntu 26 Wayland，单显示器）核心链路已真机验证**，本版本提供源码构建，不提供 Linux 预编译包；
-> macOS 未验证。下面记录的是仓库代码与真机验证状态。
+> **0.2.0 发布口径**：预编译包提供 **Windows 10/11 x64** 宿主 + **离线插件 SDK**（核心包与
+> 可选 OpenCV 叠加包）；**Linux（Ubuntu 24.04 X11 / Ubuntu 26 Wayland，单显示器）核心链路
+> 已真机验证**，本版本仍只提供源码构建，不提供 Linux 预编译包/SDK；macOS 未验证。
+> 下面记录的是仓库代码与真机验证状态。
 
 Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。Linux 的**默认目标是 Wayland**
 （本轮实测环境：Ubuntu 26 / Wayland 会话），X11 保留为**第二优先**并已在 Ubuntu 24.04 / X11

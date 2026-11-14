@@ -24,14 +24,23 @@ plugins, runtime hot-plug, an append-only ABI, and UI data that never enters the
 - **Three entry points**: `Ctrl+Alt+S` full screen, `Ctrl+Alt+A` region capture (hover a window to snap, click to capture it), `Ctrl+Alt+O` settings; Windows / X11 use global hotkeys, while Wayland uses the `session_control` D-Bus entry plus a desktop custom shortcut.
 - **After the shot**: save PNG/JPEG, copy to the clipboard, show a system notification; output folder, format, quality and filename template are configurable.
 - **Everything is a plugin**: tray, hotkeys, settings UI, saving, notifications and clipboard are plugins themselves, each can be disabled or re-enabled in the settings window.
-- **Extend it**: build one DLL with the offline SDK to add your own processor or entry point — no host changes.
+- **Extend it**: the official **offline plugin SDK** (a ~1 MB core package plus an optional OpenCV
+  overlay) ships the contract headers, build rules, docs, templates and two "one-sentence" demos.
+  Self-test a finished plugin with `Plugin-shot.exe --test-plugin` — no host changes, no vcpkg.
+  A DSH skill (`plugin-shot-dev`) lets an AI write plugins from one sentence.
 
 ### Download
 
-[**Plugin-shot 0.1.0 · Windows x64 portable**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
+[**Plugin-shot 0.2.0 · GitHub Releases**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
 [Changelog](CHANGELOG.md)
 
-Unzip and run `Plugin-shot.exe`. 0.1.0 ships a **prebuilt Windows package only**; the **Linux core
+| Asset | Purpose |
+| --- | --- |
+| `Plugin-shot-0.2.0-win64.zip` (~6.5 MB) | Windows x64 portable: unzip and run `Plugin-shot.exe` |
+| `plugin-shot-sdk-0.2.0-win64.zip` (~0.9 MB) | Offline plugin SDK core: contract headers, `shot_plugin_helpers`, build modules, docs, templates, two demos, the skill |
+| `plugin-shot-sdk-0.2.0-win64-opencv.zip` (~13 MB) | Optional OpenCV overlay; unzip the `opencv/` folder into the core SDK root |
+
+Every zip has a matching `.sha256`. 0.2.0 ships a **prebuilt Windows package only**; the **Linux core
 path is verified on real hardware** under Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland, single monitor),
 and is built from source via [Build](#build) (step-by-step: [Linux build manual](document/BUILD_LINUX.md)).
 macOS is not verified yet — see [Platforms](#platforms).
@@ -102,7 +111,7 @@ current main line.
 | Long screenshot plugin `plugins/long_capture` (manual-scroll long capture: asks `region_selector` to pick a target window, then its own GDI capture layer grabs continuous frames and stitches them online, Enter to save; config item `max_height`; Windows P1) | ✅ working (Windows): shipped in 0.1.0 as an **experimental** plugin, **disabled by default in the plugin list** (`plugins.disabled`); tick it in the settings window and restart to enable the tray item and hotkey; the full interaction is verified on real hardware (pick window → scroll → HUD → save) and it publishes a single `capture.done` only on save; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.3 |
 | Mixed-DPI multi-monitor capture (physical virtual desktop 3584x1600; per-call thread DPI context fallback; negative origin not verified on real hardware) | ✅ working (`document/CAPTURE.md` §2.1) |
 | Settings-window DPI (dual-screen 150%+100%: live rescale while dragging across monitors, geometry clamped to the target screen's DPI, non-accumulating; other DPI mixes / 3+ screens unverified) | ✅ working (`document/SETTINGS.md` §6.1) |
-| Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--help` | ✅ working |
+| Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--test-plugin <dll>` (plugin self-test) / `--help` | ✅ working |
 | GitHub Actions cross-platform CI (Linux/macOS/Windows matrix + vcpkg cache + presets + `--help` smoke) | ✅ all three jobs pass in the 2026-11-14 run (Linux on ubuntu-24.04); CI only runs the `--help` smoke, so see Platform for real availability |
 | Host settings (`core` pseudo-plugin: UI language / log level / console / file log / theme color) | ✅ working |
 | Plugin metadata appended to the DLL tail (`metadata.json`, CMake only) | ✅ working (the host reads it before loading: prefilter + dependency topological sort) |
@@ -111,7 +120,9 @@ current main line.
 | Dependency-driven load order (topological sort; an unsatisfied plugin is skipped on its own) | ✅ working |
 | Shared plugin build rules (`shot_add_plugin()`) | ✅ working (host and offline SDK share one module) |
 | i18n / multilingual UI (`core/language` = `auto` or a language-catalog tag; plugins contribute `i18n_source_list`, the host merges it into the read-only `i18n_list`; external packs in `files/lang/` and `%LOCALAPPDATA%\plugin-shot\langs\`; settings window and tray resolve `display(owner,key) ?? key`, literal labels from old plugins keep working) | ✅ working (`document/I18N.md`; 27 built-in tags, only zh-CN / en-US ship translations; external-pack protocol ready, translator plugin `plugins/translator` included (off by default); verified on real hardware on Windows / Linux: the official zh-TW pack loads and the UI/tray follow; dynamic font atlas plus Segoe UI/Arial merge, RTL and Korean/Thai/Arabic glyphs not done) |
-| Offline plugin SDK export (`export_sdk` target) | ✅ working |
+| Offline plugin SDK (`export_sdk` / `package_sdk` targets: core package + optional OpenCV overlay, with manifest, `contract_sha256`, templates, demos and the skill) | ✅ working ([`document/README_SDK.md`](document/README_SDK.md); release assets in `dist/`) |
+| Offline plugin self-test `--test-plugin <dll>` (real host loading path + isolated data dir + PASS/FAIL/SKIP JSON) | ✅ working ([`document/PLUGIN_TEST.md`](document/PLUGIN_TEST.md); verified on Windows, built/run on Linux WSL) |
+| Plugin authoring docs and a "one-sentence plugin" skill ([`document/AUTHORING.md`](document/AUTHORING.md), `skills/plugin-shot-dev/`, DSH bundle `dsh-plugin-shot-dev/`) | ✅ working (two demos: timestamp watermark / archive by date) |
 
 > The binary name comes from `PROJECT_NAME` in `CMakeLists.txt` (currently `Plugin-shot`):
 > the host is `Plugin-shot.exe` and plugins land in `bin/plugins/`. When the icon file is missing,
@@ -161,7 +172,10 @@ current main line.
 │   ├── translator/           # external language packs: scans official/user dirs, contributes i18n_source_list (cross-platform code, verified on Windows / Linux)
 │   └── tray/                 # tray entry: data-driven menu + icon (Win32 tray + Linux SNI; Linux verified)
 ├── document/
-│   ├── README_SDK.md         # SDK layout and every build constraint (written in Chinese)
+│   ├── AUTHORING.md          # ★ single source of truth for plugin authoring: zero → installed (offline SDK, no host source)
+│   ├── PLUGIN_TEST.md        # `--test-plugin` self-test: checks, JSON, exit codes, limits
+│   ├── README_SDK.md         # offline SDK: two packages, layout, build, ABI, self-test, troubleshooting
+│   ├── SDK_DOCS.md           # repo docs → SDK docs mapping and drift prevention
 │   ├── PLATFORMS.md          # cross-platform capability matrix: per-plugin status, limits, gaps and CI state
 │   ├── ABI_POLICY.md         # append-only rules and the interface id registry (Chinese)
 │   ├── SETTINGS.md           # settings window: config_list, event-driven writes/commit, Generic, DPI, plugin enable/disable and hot unload (Chinese)
@@ -171,13 +185,20 @@ current main line.
 │   ├── I18N.md               # i18n protocol: language catalog, external packs, the two i18n lists, fallback chain, fonts and limits (Chinese)
 │   └── METADATA.md           # metadata.json fields, authority rules, what stays out (Chinese)
 ├── cmake/
-│   ├── ShotPlugin.cmake        # shot_add_plugin(): shared plugin build rules
+│   ├── ShotPlugin.cmake        # shot_add_plugin(): shared plugin build rules (host + SDK mode)
 │   ├── AppendPluginMeta.cmake  # appends metadata.json to the DLL tail
 │   ├── prune_output_dir.cmake  # prunes output dirs (no pdb/ilk/exp/lib)
-│   └── ...                     # runtime dependency layout, SDK export, pre-link kill
+│   ├── export_sdk.cmake        # exports the core SDK + optional OpenCV overlay (with manifest)
+│   ├── package_sdk.cmake       # zips the SDK and writes sha256 (two release assets)
+│   └── ...                     # runtime dependency layout, pre-link kill
 ├── tools/
-│   └── verify/                 # on-device verification: build wrapper with a build lock + capture/settings/hotkey/clipboard/i18n e2e
-└── sdk/                    # offline SDK produced by export_sdk (not committed, see .gitignore)
+│   ├── verify/                 # on-device verification: build wrapper with a build lock + capture/settings/hotkey/clipboard/self-test e2e
+│   ├── plugin_sdk/             # SDK templates (generic/image_processor/image_saver/lib_provider),
+│   │                           # two one-sentence demos (watermark/archive), new_plugin.cmake, third-party licenses
+│   └── package/                # host portable package script (dist/)
+├── skills/plugin-shot-dev/     # DSH skill: download SDK → write plugin → build → self-test → install (SKILL.md + references)
+├── dsh-plugin-shot-dev/        # installable DeepSeek Harness plugin bundle carrying that skill
+└── sdk/                    # offline SDK produced by export_sdk (not committed, see .gitignore; includes opencv/ overlay)
 ```
 
 ## Build
@@ -191,8 +212,10 @@ export VCPKG_ROOT=/path/to/vcpkg      # Windows: set VCPKG_ROOT=D:\vcpkg
 cmake -S . -B build/Windows -DCMAKE_BUILD_TYPE=Debug
 cmake --build build/Windows
 
-# export the offline SDK so third-party plugins build without a local OpenCV install
+# export the offline SDK (contract headers, build modules, docs, templates, demos, skill)
 cmake --build build/Windows --target export_sdk
+# package the two SDK release assets (core + optional OpenCV overlay, zip + sha256) into dist/
+cmake --build build/Windows --target package_sdk
 
 # or use the CMake presets (the same path CI and cross-platform builds use; output in build/<platform>/)
 cmake --preset release -DVCPKG_TARGET_TRIPLET=x64-linux   # triplet depends on the platform
@@ -255,6 +278,7 @@ across distributions, and do not copy newer artifacts back to an older distribut
 cd build/Windows/bin && ./Plugin-shot.exe            # no arguments: tray-resident
 cd build/Windows/bin && ./Plugin-shot.exe --capture  # capture once, print the path, exit
 cd build/Windows/bin && ./Plugin-shot.exe --settings # open settings, then stay resident (debug)
+cd build/Windows/bin && ./Plugin-shot.exe --test-plugin plugins/clipboard.dll --json-out report.json  # plugin self-test
 cd build/Windows/bin && ./Plugin-shot.exe --help     # print usage
 ```
 
@@ -289,6 +313,12 @@ verified on real hardware on Ubuntu 26).
 (capture/save failure, missing plugin, full request queue) and 2 on unknown arguments. The
 one-shot mode dispatches one event round before exiting, so subscribers such as the clipboard
 and notification plugins also see the `capture.done` of this run (`document/CAPTURE.md` §6).
+
+`--test-plugin <dll>` is the **plugin self-test mode**: it loads the DLL through the real host
+loading/validation path (`HostRuntime`) inside an isolated data directory (never touching the
+user's config or logs), then runs load, capability, configuration, list/i18n and event checks and
+prints PASS/FAIL/SKIP plus optional JSON; exit code `0`/`1`/`2`. Plugin authors do not need to
+build the whole host or install the DLL into `plugins/` first (`document/PLUGIN_TEST.md`).
 Logging goes through spdlog: console plus `%LOCALAPPDATA%\plugin-shot\logs\host.log` (appended).
 Configuration lives in `%LOCALAPPDATA%\plugin-shot\config.json` (host settings and plugin items,
 keyed as `<owner>/<id>`, matching the `owner` / `id` of a `config_list` entry).
@@ -310,7 +340,7 @@ keyed as `<owner>/<id>`, matching the `owner` / `id` of a `config_list` entry).
 | `bin/` | host exe plus this configuration's runtime DLLs (**no `*.pdb` / `*.ilk`**) |
 | `bin/plugins/` | plugin artifacts only (**no OpenCV or other base dependencies**) |
 | `build/<platform>/pdb/` | every debug symbol |
-| `sdk/` | offline SDK: `include/`, `lib/` (release), `lib/debug/`, `bin/`, `bin/debug/` |
+| `sdk/` | offline SDK: contract headers + `third_party/` + `cmake/` + `docs/` + `templates/` + `demos/` + `skill/` + `manifest.json`, plus the optional `opencv/` overlay |
 
 These rules are enforced at build time by `cmake/copy_runtime_deps.cmake` and
 `cmake/prune_output_dir.cmake`. Plugin artifacts use the platform extension
@@ -571,13 +601,25 @@ SCREENSHOT_API const ShotModule* shot_module_entry(void) {
 
 The complete, buildable sample is [`plugins/example_processor/`](plugins/example_processor/README.md):
 one DLL holding two plugins, both configurable, laid out as `CMakeLists.txt` + `metadata.json` +
-`include/` + `src/`. SDK layout: [`document/README_SDK.md`](document/README_SDK.md); append-only
-rules and the interface id registry: [`document/ABI_POLICY.md`](document/ABI_POLICY.md) (both in Chinese).
+`include/` + `src/`.
+
+**You do not need the host source tree**: download the offline SDK (GitHub Releases asset or
+`dist/plugin-shot-sdk-<version>-win64.zip`), scaffold a project from its templates with
+`tools/new_plugin.cmake`, build with CMake, self-test with the host's `--test-plugin`, then drop
+the DLL into `plugins/`. Step-by-step tutorial: [`document/AUTHORING.md`](document/AUTHORING.md);
+SDK layout and build constraints: [`document/README_SDK.md`](document/README_SDK.md); self-test:
+[`document/PLUGIN_TEST.md`](document/PLUGIN_TEST.md). Two complete "one-sentence" demos ship with
+the SDK: [`tools/plugin_sdk/demos/watermark`](tools/plugin_sdk/demos/watermark/README.md) (timestamp in
+the bottom-right corner) and [`tools/plugin_sdk/demos/archive`](tools/plugin_sdk/demos/archive/README.md)
+(archive by date). For AI authoring, install the DSH skill/plugin bundle
+[`dsh-plugin-shot-dev/`](dsh-plugin-shot-dev/README.md) (skill `plugin-shot-dev`, body in
+[`skills/plugin-shot-dev/`](skills/plugin-shot-dev/SKILL.md)).
 
 A plugin project CMakeLists does three things — find the module, list sources, point at metadata:
 
 ```cmake
-list(APPEND CMAKE_MODULE_PATH "${HOST}/cmake")   # or <SDK>/cmake
+# SDK project: cmake -DSHOT_SDK_ROOT=<SDK root> -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+list(APPEND CMAKE_MODULE_PATH "${SHOT_SDK_ROOT}/cmake")
 include(ShotPlugin)
 
 shot_add_plugin(acme_tools
@@ -587,15 +629,25 @@ shot_add_plugin(acme_tools
 ```
 
 `shot_add_plugin()` owns `/MD`, `PREFIX ""`, hidden visibility, output directories, pdb
-redirection, metadata appending and output pruning — rules that used to be copy-pasted into
-the root `CMakeLists.txt` and drifted away from the docs.
+redirection, metadata appending and output pruning; in SDK mode it also adds
+`third_party/include` (nlohmann / stb) and the optional `opencv/` overlay include/link paths.
+
+### Release packaging
+
+```bash
+# the two SDK zips (core + optional OpenCV overlay) -> dist/
+bash tools/verify/build.sh --target package_sdk
+# host portable zip -> dist/Plugin-shot-<version>-win64.zip (needs a Release build first)
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package/make_host_package.ps1 -Version 0.2.0
+```
 
 ## Platforms
 
-> **0.1.0 release scope**: the prebuilt package is **Windows 10/11 x64**; the **Linux core chain
-> (Ubuntu 24.04 X11 / Ubuntu 26 Wayland, single monitor) is verified on real hardware** and built
-> from source — no prebuilt Linux package is provided in this version. macOS is not verified. This
-> section records the state of the repository code and real-hardware verification.
+> **0.2.0 release scope**: the prebuilt package is **Windows 10/11 x64** (host + offline plugin SDK:
+> core package and optional OpenCV overlay); the **Linux core chain (Ubuntu 24.04 X11 / Ubuntu 26
+> Wayland, single monitor) is verified on real hardware** and built from source — no prebuilt Linux
+> package/SDK is provided in this version. macOS is not verified. This section records the state of
+> the repository code and real-hardware verification.
 
 Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`). On Linux
 the **default target is Wayland** (this round's environment: Ubuntu 26 / Wayland session), with X11
