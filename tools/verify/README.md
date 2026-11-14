@@ -26,6 +26,7 @@
 | `smoke_settings_i18n.ps1` | 多语言冒烟：写 `core/language=en-US` → `--settings` 截图（英文标题/画面）+ 日志锚点 `界面语言 = en-US`；切回 `zh-CN` 再截图 + 锚点；结束恢复 config | settings_ui、宿主 i18n |
 | `smoke_i18n_translator.ps1` | 外部语言包：翻译插件扫描官方/用户目录，贡献 `@language/` 与 `target` 条目；断言语言目录出现、`i18n_list` 重建、托盘 label 用包内译文（用户包覆盖官方）、坏包只 WARN、关闭插件后回退内置文案 | translator、宿主 i18n |
 | `smoke_region_window.ps1` | 区域框选：悬停到目标窗口后选框吸附（截图像素抽检边框/折角是主题色 `#4C9AFF`）、单击截出的尺寸 = 目标窗口 DWM 扩展边界、拖动截出的尺寸 ≈ 拖动矩形；脚本自己开/关一个标题唯一的 cmd 窗口并恢复 config | region_selector、宿主 `core/theme_color` |
+| `smoke_plugin_test.ps1` | `--test-plugin` 插件自检冒烟：`example_processor.dll` exit 0 且 JSON `result=pass`、`plugins` 数量 ≥ 2、`summary.fail=0`；不存在的 DLL 退出码 2 | 无（不需要交互桌面，也不读写用户 config） |
 | `e2e_hotkey_capture.ps1` | 常驻 + 配置里的截屏热键 → 采集落盘（hotkey + 流水线 + 保存 串联） | hotkey/screen_capture/image_saver |
 | `e2e_clipboard.ps1` | 截图后系统剪贴板里有一张图（CF_DIB） | clipboard |
 
@@ -36,6 +37,9 @@
   或把 `build\verify\config.backup.json` 拷回去。备份时原本没有 `config.json` 会写
   `config.backup.absent` 标记，恢复时**删掉本次运行生成的那份**——否则默认值会被下一次
   脚本当成"已存在"，旧的测试值又被恢复回来。
+  **例外**：`smoke_plugin_test.ps1` 用的是 `--test-plugin` 自检模式，进程用隔离数据
+  目录（日志/配置都在系统临时目录并在结束时删除），所以它不 `Stop-Host`、也不碰用户
+  `config.json`；跑它不会干扰正在运行的宿主。
 - 产物（截图、`config.backup.json`）统一落 `build\verify\`（gitignored）。
 - 脚本用 `Check <名字> <条件>` 打 `[PASS]/[FAIL]`，结尾打印 `结果：N/M 通过`，
   有失败时 exit 1。

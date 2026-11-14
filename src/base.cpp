@@ -58,18 +58,27 @@ namespace core{
         if(!appPath.empty() && (appPath.back()=='\\'||appPath.back()=='/')) appPath.pop_back();
     }
     void getDataPath(){
+        // 隔离测试 / 便携模式：环境变量优先。自检模式（--test-plugin）必须在调用本函数
+        // 之前把它指向临时目录，否则日志与配置会落到用户真实数据目录里；Windows 与
+        // POSIX 都要认，Linux 的 CI/容器里同样靠它隔离。空串视为未设置，保持原行为。
+        const char* overridePath = std::getenv("PLUGIN_SHOT_DATA_DIR");
+        if(overridePath != nullptr && overridePath[0] != '\0'){
+            dataPath = overridePath;
+        } else {
 #ifdef _WIN32
-        //获取APPDATA路径
-        char buffer[MAX_PATH];
-        SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, SHGFP_TYPE_CURRENT, buffer);
-        std::string path(buffer);
-        // 目录名与仓库名、包名保持一致（小写）；0.1.0 起对外公布的就是这个路径。
-        dataPath=path+"/plugin-shot/";
+            //获取APPDATA路径
+            char buffer[MAX_PATH];
+            SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, SHGFP_TYPE_CURRENT, buffer);
+            std::string path(buffer);
+            // 目录名与仓库名、包名保持一致（小写）；0.1.0 起对外公布的就是这个路径。
+            dataPath=path+"/plugin-shot/";
 #else
-        // POSIX 用 $HOME；HOME 未设置（极端环境）时退回当前目录，避免空串构造路径。
-        const char* home = std::getenv("HOME");
-        dataPath=std::string(home != nullptr ? home : ".")+"/.plugin-shot/";
+            // POSIX 用 $HOME；HOME 未设置（极端环境）时退回当前目录，避免空串构造路径。
+            const char* home = std::getenv("HOME");
+            dataPath=std::string(home != nullptr ? home : ".")+"/.plugin-shot/";
 #endif
-        if(!dataPath.empty() && (dataPath.back()=='\\'||dataPath.back()=='/')) dataPath.pop_back();
+        }
+        // 末尾分隔符一律去掉；用 while 是为了让环境变量里手写的 "dir//" 也归一化。
+        while(!dataPath.empty() && (dataPath.back()=='\\'||dataPath.back()=='/')) dataPath.pop_back();
     }
 }

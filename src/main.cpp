@@ -15,6 +15,7 @@
 #include "hostLogging.h"
 #include "hostRuntime.h"
 #include "hostServices.h"
+#include "pluginTest.h"
 
 namespace {
 
@@ -77,6 +78,8 @@ void printUsage() {
               << "选项:\n"
               << "  --capture   截取一张屏幕截图并保存，打印路径后退出\n"
               << "  --settings  打开设置页并继续运行（调试入口）\n"
+              << "  --test-plugin <dll>  插件自检：用真实宿主加载路径离线检查指定插件并退出\n"
+              << "               （详见 document/PLUGIN_TEST.md；--json 输出机器可读结果）\n"
               << "  --help      显示本用法并退出\n"
               << "  不带参数    常驻运行（等 capture.request / app.quit 事件）\n";
 }
@@ -93,10 +96,11 @@ int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif
-    // 命令行开关：--capture 截一张就退出；--settings 打开设置页后继续常驻。
-    // 两者同时给出时按 --capture 处理（见下面的警告），--settings 被忽略。
+    // 命令行开关：--capture 截一张就退出；--settings 打开设置页后继续常驻；
+    // --test-plugin 进入插件自检模式（跑完即退，不常驻）。
     bool captureCommand = false;
     bool settingsCommand = false;
+    bool testPluginCommand = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--capture") {
@@ -106,11 +110,28 @@ int main(int argc, char** argv) {
         } else if (arg == "--help" || arg == "-h") {
             printUsage();
             return 0;
+        } else if (arg == "--test-plugin" || arg.rfind("--test-plugin=", 0) == 0) {
+            // 自检模式：命中后其余参数（--json / --json-out / --timeout-ms / …）全部
+            // 交给 Host::runPluginTest 解析；这里不能继续按普通模式扫描，否则会把
+            // 自检参数当成未知参数。
+            testPluginCommand = true;
+            break;
         } else {
             std::cerr << "未知参数: " << arg << "\n";
             printUsage();
             return 2;
         }
+    }
+    if (testPluginCommand) {
+        if (captureCommand || settingsCommand) {
+            std::cerr << "--test-plugin 不能与 --capture / --settings 同时使用\n";
+            printUsage();
+            return 2;
+        }
+        // 自检模式必须在 core::getAppPath()/getDataPath() 之前进入：runPluginTest
+        // 内部先把 PLUGIN_SHOT_DATA_DIR 指向临时目录，再解析 dataPath 并初始化日志，
+        // 这样整个自检过程都不会读写用户真实数据目录。它也不会进入下面的常驻循环。
+        return Host::runPluginTest(argc, argv);
     }
 
     // 路径要在一切之前定下来：日志、配置、插件目录都依赖它们。

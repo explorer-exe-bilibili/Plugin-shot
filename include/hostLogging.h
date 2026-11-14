@@ -47,6 +47,19 @@ void setLevel(const std::string& level);
 std::string level();
 
 /**
+ * @brief 关闭日志系统：flush 并释放全部 logger / sink，之后可以安全删除日志文件。
+ *
+ * 为什么需要它：spdlog::shutdown() 只清 registry 里的 logger，本模块还持有
+ * consoleSink / fileSink 的静态引用（运行期开关要用），文件 sink 因此不会关闭。
+ * 正常宿主退出时无所谓（进程结束由 OS 收尾），但 `--test-plugin` 要删除隔离的
+ * 数据目录：Windows 上日志文件句柄没释放就删不掉。测试模式在清理目录前调它。
+ *
+ * @note 只应在进程即将退出前调用；调用后日志不再工作（init() 可以重新初始化，
+ *       但常规宿主没有这个用法）。可以重复调用。
+ */
+void shutdown();
+
+/**
  * @brief 开/关控制台日志。
  * @param[in] enabled true = 输出，false = 静默。
  * @return true = 已生效；false = 控制台 sink 还没建好（宿主未初始化）。

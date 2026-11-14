@@ -205,6 +205,17 @@ std::string Host::Logging::level() {
     return currentLevel;
 }
 
+void Host::Logging::shutdown() {
+    std::lock_guard<std::mutex> lock(logStateMutex);
+    // 先让 spdlog 清掉 logger（内部会 flush 异步队列），再放掉本模块的静态 sink 引用：
+    // 文件 sink 是 basic_file_sink 的 ofstream，最后一个 shared_ptr 消失才真正关闭句柄。
+    // 反过来的话 spdlog::shutdown 之后 sink 还活着，文件仍被占用（Windows 删不掉）。
+    spdlog::shutdown();
+    consoleSink.reset();
+    fileSink.reset();
+    currentLevel = "info";
+}
+
 bool Host::Logging::setConsoleEnabled(bool enabled) {
     std::lock_guard<std::mutex> lock(logStateMutex);
     if (consoleSink == nullptr) {
