@@ -218,11 +218,11 @@ jobs:
 
       - name: Build
         shell: bash
-        # 显式开并行：Ninja 默认用满 CPU 核数，但经 CMake preset 调构建时
-        # 某些环境/生成器可能退化成串行；--parallel（不写数字）交给构建
-        # 工具用原生并发，三平台统一走多线程编译。
+        # 显式开并行：GitHub 托管 runner 是 4 vCPU，cmake --build 的 -j 4
+        # 等价于 --parallel 4，会被透传给底下的 Ninja（-j 4）。
+        # 不写 --parallel 时不保证每个生成器都并发，所以这里写死 4。
         run: |
-          cmake --build --preset release --parallel
+          cmake --build --preset release -j 4
 
       # ---------------------------------------------------------------------
       #  5. 冒烟测试：--help 在 GUI/插件/日志初始化之前返回，可无头执行。
