@@ -369,7 +369,13 @@ harness 等），**不入库**，换机器会丢；需要时按同样思路重�
     虽然返回成功，但 `WM_HOTKEY` 不会到达插件（本机实测：keybd_event/SendInput 各种方式都不行）。
     带修饰键的 `Ctrl+PrintScreen` 等不受影响（实测能触发并落盘）。hotkey 插件注册裸
     PrintScreen 时会打 WARN；要用裸键需关闭该 Windows 设置。
-18. **X11 没有 `MOD_NOREPEAT` 等价物**：Windows 的 `RegisterHotKey` 可以带 `MOD_NOREPEAT`，
+18. **改公共/窗口 Impl 头文件后必须确认相关 TU 真的重编了**：用 `cp` 恢复源码、或从备份拷回文件时
+    mtime 可能不变，ninja 会认为对象是最新的而不重编 → 不同 TU 看到的 `RegionWindow::Impl` 布局
+    不一致，真机表现是"某个字段读出垃圾值、行为诡异回归"（本项目遇到过：`panelInsets` 被读成
+    1/2560/1600，Windows 全屏误命中，区域截图永远整屏）。改结构体/头文件后如果出现无法解释的
+    回归，先 `cmake --build <dir> --clean-first` 全量重建（注意 `--clean-first` 配合单 target 会
+    把宿主 exe 删掉，之后必须再跑一次全量 build）。
+19. **X11 没有 `MOD_NOREPEAT` 等价物**：Windows 的 `RegisterHotKey` 可以带 `MOD_NOREPEAT`，
     X11 的 `XGrabKey` 没有对应标志——`plugins/hotkey` 在 X11 上按住热键会按服务器的自动重复
     连续触发。这是已知差异，不要据此判断注册失败（见 `plugins/hotkey/README.md` §10）。
 

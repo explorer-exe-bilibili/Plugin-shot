@@ -409,7 +409,8 @@ function Get-SaveDirectory {
     if ($configured -and $configured -ne "<missing>" -and $configured -ne "<no-config>") {
         return $configured
     }
-    return (Join-Path $env:USERPROFILE "Pictures")
+    # 系统「图片」库可能被用户重定位（例如移到 D 盘）：用 KnownFolder 而不是拼 USERPROFILE。
+    return [Environment]::GetFolderPath("MyPictures")
 }
 
 function Get-NewestSavedFile([string]$Directory, [string]$BeforeName = "") {
