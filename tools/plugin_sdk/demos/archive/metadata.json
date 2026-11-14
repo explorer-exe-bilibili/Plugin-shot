@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "demo.archive",
+      "name": "日期归档",
+      "version": "0.1.0",
+      "description": "截图保存后自动按「年-月-日」文件夹归档（可配置归档根目录与移动/复制方式）",
+      "interfaces": ["shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}

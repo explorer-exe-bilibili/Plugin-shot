@@ -56,17 +56,45 @@ endif()
 # vcpkg 运行时 DLL 目录：用来把 applocal 拷进插件目录的基础依赖清掉。
 # 独立构建（没有 vcpkg 工具链）时保持为空，剪枝脚本会自动跳过这一步。
 if(NOT DEFINED SHOT_DEP_SCAN_DIRS AND VCPKG_TARGET_TRIPLET)
+    # 尊重 VCPKG_INSTALLED_DIR（见根 CMakeLists.txt §5.1）：CI / 复用已有依赖时
+    # 依赖目录不在构建目录下，仍按 CMAKE_BINARY_DIR 拼会扫错地方。
+    if(NOT DEFINED SHOT_VCPKG_INSTALLED_DIR OR SHOT_VCPKG_INSTALLED_DIR STREQUAL "")
+        set(SHOT_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed")
+    endif()
     if(WIN32)
         set(SHOT_DEP_SCAN_DIRS
-            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin"
-            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/bin")
+            "${SHOT_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin"
+            "${SHOT_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin")
     else()
         set(SHOT_DEP_SCAN_DIRS
-            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib"
-            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/lib")
+            "${SHOT_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
+            "${SHOT_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib")
     endif()
 endif()
 set(SHOT_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+
+# ---------------------------------------------------------------------------
+# SDK 模式判定（同一份模块同时服务宿主仓库与离线 SDK）
+#
+# 判据 = <本文件目录>/../manifest.json 是否存在：export_sdk 导出的 SDK 根有
+# manifest.json，宿主仓库根没有（仓库根也没有 opencv/、third_party/、lib/），
+# 所以这段对宿主构建完全惰性，13 个插件在仓库内构建的行为不变。
+#
+# 必须用文件作用域的 SHOT_CMAKE_DIR：在 shot_add_plugin() 函数体里
+# CMAKE_CURRENT_LIST_DIR 指向【调用方】的 CMakeLists 目录，判定会永远为假、
+# 静默失效（实测踩过，见 build/sdk-design/design.md 风险 3）。
+#
+# 用普通变量而不是缓存变量：插件工程可以用 if(SHOT_SDK_ROOT) 判断自己是不是
+# 在 SDK 里构建；模板也用 SHOT_SDK_MODE 决定要不要提示"设置 SDK 根"。
+# ---------------------------------------------------------------------------
+set(SHOT_SDK_MODE FALSE)
+set(SHOT_SDK_ROOT "")
+get_filename_component(_shot_sdk_root_candidate "${SHOT_CMAKE_DIR}/.." ABSOLUTE)
+if(EXISTS "${_shot_sdk_root_candidate}/manifest.json")
+    set(SHOT_SDK_MODE TRUE)
+    set(SHOT_SDK_ROOT "${_shot_sdk_root_candidate}")
+    message(STATUS "ShotPlugin: SDK 模式（根 ${SHOT_SDK_ROOT}）")
+endif()
 
 function(shot_add_plugin _target)
     cmake_parse_arguments(PARSE_ARGV 1 _arg "" "METADATA" "SOURCES;INCLUDE_DIRS;LINK_LIBRARIES")
@@ -119,6 +147,35 @@ function(shot_add_plugin _target)
     )
 
     target_include_directories(${_target} PRIVATE "${SHOT_CONTRACT_INCLUDE_DIR}")
+
+    # -----------------------------------------------------------------------
+    # SDK 模式：补上 SDK 自带的第三方头与可选 OpenCV 叠加包路径。
+    # 宿主仓库构建时 SHOT_SDK_MODE 恒为 FALSE，这段完全惰性（13 个仓库内插件不变）。
+    #   third_party/include <- nlohmann/ 整树 + stb_*.h。shot_plugin_helpers.h 无条件
+    #                          包含 <nlohmann/json.hpp>，不补就是 C1083（实测 E1）；
+    #                          stb 是扁平文件名，源码写 "stb_image_write.h"（实测 E2b）。
+    #   opencv/manifest.json <- 可选叠加包，存在才补 OpenCV 头/库目录（实测 E3a/E3b）。
+    #   链接目录必须 per-target + 按配置选（不用全局 link_directories）：
+    #     · 单配置生成器（Ninja）：$<CONFIG:Debug> 由 CMAKE_BUILD_TYPE 决定；
+    #     · 多配置生成器（VS）：每个配置各自解析一次，结果同样正确。
+    #   混用 Release/Debug 变体会在链接期报 LNK2019 cv::debug_build_guard::...（实测 E3e），
+    #   所以这里必须按配置给目录，不能只给 lib。
+    # -----------------------------------------------------------------------
+    if(SHOT_SDK_MODE)
+        if(EXISTS "${SHOT_SDK_ROOT}/third_party/include")
+            target_include_directories(${_target} PRIVATE "${SHOT_SDK_ROOT}/third_party/include")
+        endif()
+        if(EXISTS "${SHOT_SDK_ROOT}/opencv/manifest.json")
+            if(EXISTS "${SHOT_SDK_ROOT}/opencv/include/opencv4")
+                target_include_directories(${_target} PRIVATE
+                    "${SHOT_SDK_ROOT}/opencv/include/opencv4")
+            endif()
+            if(IS_DIRECTORY "${SHOT_SDK_ROOT}/opencv/lib")
+                target_link_directories(${_target} PRIVATE
+                    "$<IF:$<CONFIG:Debug>,${SHOT_SDK_ROOT}/opencv/lib/debug,${SHOT_SDK_ROOT}/opencv/lib>")
+            endif()
+        endif()
+    endif()
 
     # 非 Windows 的共享库不在 exe 旁边：插件被宿主 dlopen 时也要能找到 vcpkg 运行库。
     if(UNIX AND SHOT_VCPKG_LIB_DIRS)

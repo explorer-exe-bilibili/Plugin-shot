@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "{{PLUGIN_ID}}",
+      "name": "{{PLUGIN_NAME}}",
+      "version": "{{VERSION}}",
+      "description": "{{PLUGIN_DESCRIPTION}}",
+      "interfaces": ["shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}

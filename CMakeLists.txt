@@ -30,7 +30,7 @@ set(PROJECT_COPYRIGHT             "Copyright (C) 2026 Plugin-shot contributors")
 
 # --- 版本号 --------------------------------------------------
 set(PROJECT_VERSION_MAJOR         0)
-set(PROJECT_VERSION_MINOR         1)
+set(PROJECT_VERSION_MINOR         2)
 set(PROJECT_VERSION_PATCH         0)
 set(PROJECT_VERSION_BUILD         0)      # 构建号，会被 build_number.txt 覆盖
 
@@ -249,7 +249,16 @@ else()
     set(SHOT_DYN_EXT ".so")
 endif()
 
-set(SHOT_VCPKG_TRIPLET_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
+# vcpkg 安装根目录：默认在构建目录下。CI 或"复用另一份构建已经装好的依赖"时
+# 会用 -DVCPKG_INSTALLED_DIR=<dir> 覆盖（本机 Release 构建就复用了 Debug 构建的
+# x64-windows 依赖）：copy_dlls / 剪枝 / RPATH 都必须跟着这个变量走，否则会去
+# build/<dir>/vcpkg_installed 这个空目录找运行时库，构建直接失败（实测）。
+if(DEFINED VCPKG_INSTALLED_DIR AND NOT VCPKG_INSTALLED_DIR STREQUAL "")
+    set(SHOT_VCPKG_INSTALLED_DIR "${VCPKG_INSTALLED_DIR}")
+else()
+    set(SHOT_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed")
+endif()
+set(SHOT_VCPKG_TRIPLET_DIR "${SHOT_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
 set(SHOT_VCPKG_LIB_DIRS
     "${SHOT_VCPKG_TRIPLET_DIR}/lib"
     "${SHOT_VCPKG_TRIPLET_DIR}/debug/lib")
@@ -678,8 +687,18 @@ set(EXPORT_SDK_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/export_sdk.cmake")
 set(PRUNE_SCRIPT      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/prune_output_dir.cmake")
 set(SDK_OUTPUT_DIR    "${CMAKE_SOURCE_DIR}/sdk")
 
+# ---- SDK 拆分开关：核心包 + 可选 OpenCV 叠加包（用户已拍板）----
+#   ON  —— sdk/ 里除核心内容（契约头/第三方头/构建模块/文档模板）外，另导出
+#          sdk/opencv/（OpenCV 头 + 白名单导入库/DLL）；随后 package_sdk 打两个 zip。
+#   OFF —— 核心包不含任何 OpenCV 内容（Generic / 配置类插件仍可离线构建），
+#          适用于不需要 OpenCV 的发布或 CI 裁剪。
+# 注意：这是【导出】开关，不影响宿主自身从 vcpkg 使用 OpenCV。
+option(SHOT_SDK_WITH_OPENCV "导出离线 SDK 时附带可选 OpenCV 叠加包（sdk/opencv/）" ON)
+set(PLUGIN_SDK_TOOLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tools/plugin_sdk")
+set(SDK_PACKAGE_DIR      "${CMAKE_SOURCE_DIR}/dist")
+
 if(WIN32)
-    set(VCPKG_TRIPLET_DIR   "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
+    set(VCPKG_TRIPLET_DIR   "${SHOT_VCPKG_TRIPLET_DIR}")
     set(VCPKG_BIN_DIR       "${VCPKG_TRIPLET_DIR}/bin")          # release 运行时 DLL
     set(VCPKG_DEBUG_BIN_DIR "${VCPKG_TRIPLET_DIR}/debug/bin")    # debug   运行时 DLL
     set(VCPKG_LIB_DIR       "${VCPKG_TRIPLET_DIR}/lib")
@@ -736,8 +755,35 @@ if(WIN32)
             "-DCONTRACT_INCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/include"
             "-DSHOT_CMAKE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake"
             "-DSDK_OUTPUT_DIR=${SDK_OUTPUT_DIR}"
+            "-DSDK_VERSION=${PROJECT_VERSION_STRING}"
+            "-DHOST_MIN_VERSION=${PROJECT_VERSION_STRING}"
+            "-DPLATFORM=win64"
+            "-DARCH=x64"
+            "-DWITH_OPENCV=${SHOT_SDK_WITH_OPENCV}"
+            "-DPLUGIN_TEMPLATES_DIR=${PLUGIN_SDK_TOOLS_DIR}/templates"
+            "-DPLUGIN_DEMOS_DIR=${PLUGIN_SDK_TOOLS_DIR}/demos"
+            "-DSKILL_DIR=${CMAKE_CURRENT_SOURCE_DIR}/skills/plugin-shot-dev"
+            "-DLICENSES_DIR=${PLUGIN_SDK_TOOLS_DIR}/licenses"
+            "-DNEW_PLUGIN_SCRIPT=${PLUGIN_SDK_TOOLS_DIR}/new_plugin.cmake"
             -P "${EXPORT_SDK_SCRIPT}"
         COMMENT "导出离线 SDK：release 在 lib|bin，debug 在 lib\\debug|bin\\debug，均无 PDB"
+        VERBATIM
+    )
+
+    # ---- SDK 打包（手动 target：cmake --build <dir> --target package_sdk）----
+    # 前置 export_sdk：先导出 sdk/，再 stage 成"单根目录 + zip + sha256"的发布资产。
+    # 产物在 dist/（gitignored）：核心包 zip + 可选 OpenCV 叠加包 zip，各带 .zip.sha256。
+    add_custom_target(package_sdk
+        COMMAND ${CMAKE_COMMAND}
+            "-DSDK_OUTPUT_DIR=${SDK_OUTPUT_DIR}"
+            "-DOUTPUT_DIR=${SDK_PACKAGE_DIR}"
+            "-DSDK_VERSION=${PROJECT_VERSION_STRING}"
+            "-DHOST_PLATFORM=win64"
+            "-DWITH_OPENCV=${SHOT_SDK_WITH_OPENCV}"
+            "-DCMAKE_COMMAND=${CMAKE_COMMAND}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_sdk.cmake"
+        DEPENDS export_sdk
+        COMMENT "打包离线 SDK：核心包 + 可选 OpenCV 叠加包（zip + sha256）"
         VERBATIM
     )
 else()

@@ -19,7 +19,8 @@
 //      resolve() 原样返回 key —— 安静降级，不影响其它功能。
 //
 //  这层不跨 DLL 边界（只被插件源码包含），所以直接用 nlohmann-json 做解析：
-//  header-only、不引入运行库；插件工程需要 find_package(nlohmann_json)。
+//  header-only、不引入运行库；官方离线 SDK 的 third_party/include 里已内置整棵树，
+//  用 SDK 的插件工程不需要 find_package(nlohmann_json)。
 //  本头文件只声明一个类；插件通常只包含汇总头 shot_plugin_helpers.h。
 // ============================================================================
 

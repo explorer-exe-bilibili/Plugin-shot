@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "abi": { "major": 2, "minor": 0 },
+  "plugins": [
+    {
+      "id": "demo.watermark",
+      "name": "时间水印",
+      "version": "0.1.0",
+      "description": "每次截图后在图片右下角加上拍摄时间水印（纯标准库内置 5x7 点阵字体，不依赖 OpenCV）",
+      "interfaces": ["shot.image_processor", "shot.configurable"],
+      "requires": ["core>=0.1.0"],
+      "provides": []
+    }
+  ]
+}
