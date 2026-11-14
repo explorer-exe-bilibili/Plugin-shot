@@ -25,8 +25,8 @@
 - `PLUGIN_SHOT_DATA_DIR` 环境变量覆盖用户数据目录（自检/便携隔离用）；`Host::Logging::shutdown()`。
 - 发布物料：`tools/package/make_host_package.ps1` 生成宿主便携包；发布资产：
   - `Plugin-shot-0.1.0-win64.zip`（6,803,044 B，sha256 `96485e014bf978849f0ad4ef736d4f6b29fb8a204bd84e762c77fe1fdc68aa91`）
-  - `plugin-shot-sdk-0.1.0-win64.zip`（954,614 B，sha256 `31b1244e7e97277c5dd1b86663316c9bafe5a695f23d775363427c8bd7c1b138`）
-  - `plugin-shot-sdk-0.1.0-win64-opencv.zip`（13,502,785 B，sha256 `5cce48d914073542933f6b2cf68f52712df1ab1cc3d480357322e2c6befab0c3`）
+  - `plugin-shot-sdk-0.1.0-win64.zip`（954,890 B，sha256 `cd9f6a239dd10a93c4f11df191224c2ec8de81176e4955e69995764c9394a0f6`）
+  - `plugin-shot-sdk-0.1.0-win64-opencv.zip`（13,502,785 B，sha256 `22ff0ab921fbfd70ff8e8872ea4a9b2c8573425a400b1ee5194e528126096e30`）
 - **GitHub Actions 构建产物上传**：三平台 CI 构建完成后上传 artifact：
   `plugin-shot-<platform>-release`（`build/<platform>/bin` 的 zip，保留 7 天）；Windows 额外上传
   `plugin-shot-windows-dist-<版本>`（宿主便携包 `Plugin-shot-<版本>-win64.zip` +
