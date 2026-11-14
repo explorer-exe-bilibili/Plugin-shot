@@ -31,16 +31,16 @@ plugins, runtime hot-plug, an append-only ABI, and UI data that never enters the
 
 ### Download
 
-[**Plugin-shot 0.2.0 · GitHub Releases**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
+[**Plugin-shot 0.1.0 · GitHub Releases**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
 [Changelog](CHANGELOG.md)
 
 | Asset | Purpose |
 | --- | --- |
-| `Plugin-shot-0.2.0-win64.zip` (~6.5 MB) | Windows x64 portable: unzip and run `Plugin-shot.exe` |
-| `plugin-shot-sdk-0.2.0-win64.zip` (~0.9 MB) | Offline plugin SDK core: contract headers, `shot_plugin_helpers`, build modules, docs, templates, two demos, the skill |
-| `plugin-shot-sdk-0.2.0-win64-opencv.zip` (~13 MB) | Optional OpenCV overlay; unzip the `opencv/` folder into the core SDK root |
+| `Plugin-shot-0.1.0-win64.zip` (~6.5 MB) | Windows x64 portable: unzip and run `Plugin-shot.exe` |
+| `plugin-shot-sdk-0.1.0-win64.zip` (~0.9 MB) | Offline plugin SDK core: contract headers, `shot_plugin_helpers`, build modules, docs, templates, two demos, the skill |
+| `plugin-shot-sdk-0.1.0-win64-opencv.zip` (~13 MB) | Optional OpenCV overlay; unzip the `opencv/` folder into the core SDK root |
 
-Every zip has a matching `.sha256`. 0.2.0 ships a **prebuilt Windows package only**; the **Linux core
+Every zip has a matching `.sha256`. 0.1.0 ships a **prebuilt Windows package only**; the **Linux core
 path is verified on real hardware** under Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland, single monitor),
 and is built from source via [Build](#build) (step-by-step: [Linux build manual](document/BUILD_LINUX.md)).
 macOS is not verified yet — see [Platforms](#platforms).
@@ -638,12 +638,12 @@ redirection, metadata appending and output pruning; in SDK mode it also adds
 # the two SDK zips (core + optional OpenCV overlay) -> dist/
 bash tools/verify/build.sh --target package_sdk
 # host portable zip -> dist/Plugin-shot-<version>-win64.zip (needs a Release build first)
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package/make_host_package.ps1 -Version 0.2.0
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package/make_host_package.ps1 -Version 0.1.0
 ```
 
 ## Platforms
 
-> **0.2.0 release scope**: the prebuilt package is **Windows 10/11 x64** (host + offline plugin SDK:
+> **0.1.0 release scope**: the prebuilt package is **Windows 10/11 x64** (host + offline plugin SDK:
 > core package and optional OpenCV overlay); the **Linux core chain (Ubuntu 24.04 X11 / Ubuntu 26
 > Wayland, single monitor) is verified on real hardware** and built from source — no prebuilt Linux
 > package/SDK is provided in this version. macOS is not verified. This section records the state of

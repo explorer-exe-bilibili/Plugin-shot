@@ -1,6 +1,6 @@
 # 更新日志
 
-## 0.2.0 — 2026-11-15
+## 0.1.0 — 2026-11-15（更新：插件开发链路）
 
 "插件开发者版本"：把插件开发变成**不需要宿主源码**的离线流程，并让 AI 能"一句话写插件"。
 
@@ -24,15 +24,14 @@
   `--test-plugin` 自检 → 征得同意后安装。
 - `PLUGIN_SHOT_DATA_DIR` 环境变量覆盖用户数据目录（自检/便携隔离用）；`Host::Logging::shutdown()`。
 - 发布物料：`tools/package/make_host_package.ps1` 生成宿主便携包；发布资产：
-  - `Plugin-shot-0.2.0-win64.zip`（6,802,480 B，sha256 `ca4099621af6ff4c1960262835fee1f1a3d6e8c6548ae61c161f85d63f9dc854`）
-  - `plugin-shot-sdk-0.2.0-win64.zip`（954,656 B，sha256 `e1ed5b58f0aadfd8d38a0117b210cf272e1a2b2c0776627da317b99714f59811`）
-  - `plugin-shot-sdk-0.2.0-win64-opencv.zip`（13,502,784 B，sha256 `f82f5973536526f7354ce91d31cdbd216ed64409e3064bb666620bc3c479003e`）
+  - `Plugin-shot-0.1.0-win64.zip`（6,802,476 B，sha256 `515384c241ceb627b8809677be17425702bacb01ec752810f0c61f378c5d7cbb`）
+  - `plugin-shot-sdk-0.1.0-win64.zip`（954,614 B，sha256 `31b1244e7e97277c5dd1b86663316c9bafe5a695f23d775363427c8bd7c1b138`）
+  - `plugin-shot-sdk-0.1.0-win64-opencv.zip`（13,502,785 B，sha256 `5cce48d914073542933f6b2cf68f52712df1ab1cc3d480357322e2c6befab0c3`）
 
 ### 变更
 
 - 根 `CMakeLists.txt` 尊重 `VCPKG_INSTALLED_DIR`（多构建目录可复用同一份 vcpkg 依赖；
   copy_dlls / 剪枝 / RPATH 不再写死 `build/<dir>/vcpkg_installed`）。
-- 版本号 0.1.0 → 0.2.0。
 - `document/README_SDK.md` 全面重写（两包、manifest/ABI、SDK 模式构建、自检、Debug/Release、
   故障排查）；新增 `document/SDK_DOCS.md`（文档映射与防漂移）。
 - 根 README / README.en / AGENTS 补充 SDK、`--test-plugin`、模板/demo/技能与发布流程。
@@ -50,7 +49,7 @@
 - 自检必须与插件同构建配置（Debug 插件用 Debug 宿主）。
 - 录屏、标注、OCR、上传仍未实现（见 `document/AUTHORING.md` §13 能力边界）。
 
-## 0.1.0 — 2026-11-14
+## 0.1.0 — 2026-11-14（首发）
 
 首个公开版本：Windows 10/11 x64 便携版；Linux（Ubuntu 24.04 X11 / Ubuntu 26 Wayland，单显示器）源码构建已验证。
 

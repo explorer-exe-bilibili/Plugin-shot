@@ -12,17 +12,17 @@
 ## 0. 30 秒上手
 
 ```bat
-:: 1) 解压核心包（例：C:\sdk\plugin-shot-sdk-0.2.0-win64\）
+:: 1) 解压核心包（例：C:\sdk\plugin-shot-sdk-0.1.0-win64\）
 :: 2) 需要 OpenCV 的插件才叠加：把 opencv 包里的 opencv\ 整个放进核心 SDK 根
 :: 3) 从模板生成一个插件工程
 "D:\src\cmake\bin\cmake.exe" -DTEMPLATE=generic ^
     -DDEST=%USERPROFILE%\src\acme_foo ^
     -DPLUGIN_ID=acme.foo -DPLUGIN_NAME="ACME Foo" ^
-    -P C:\sdk\plugin-shot-sdk-0.2.0-win64\tools\new_plugin.cmake
+    -P C:\sdk\plugin-shot-sdk-0.1.0-win64\tools\new_plugin.cmake
 
 :: 4) 构建（Release；Debug 换 -DCMAKE_BUILD_TYPE=Debug）
 "D:\src\cmake\bin\cmake.exe" -S %USERPROFILE%\src\acme_foo -B %USERPROFILE%\src\acme_foo\build ^
-    -G Ninja -DCMAKE_BUILD_TYPE=Release -DSHOT_SDK_ROOT=C:\sdk\plugin-shot-sdk-0.2.0-win64
+    -G Ninja -DCMAKE_BUILD_TYPE=Release -DSHOT_SDK_ROOT=C:\sdk\plugin-shot-sdk-0.1.0-win64
 "D:\src\cmake\bin\cmake.exe" --build %USERPROFILE%\src\acme_foo\build
 
 :: 5) 产物：acme_foo\build\bin\plugins\acme_foo.dll
@@ -45,8 +45,8 @@ SDK 从 v2 起拆成两个可独立下载的 zip（同一版本、同一次发�
 核心包只保证"契约 + 构建 + 模板"可用；OpenCV 是**可选叠加**，不叠加时 `ShotPlugin.cmake`
 连 `opencv/` 都不会看。
 
-本 SDK 版本：**sdk_version = 0.2.0**，契约 **ABI 2.0**（`major=2` / `minor=0`），
-宿主最低版本 **0.2.0**。这些值以 `<SDK>/manifest.json` 为准（字段说明见 §10）。
+本 SDK 版本：**sdk_version = 0.1.0**，契约 **ABI 2.0**（`major=2` / `minor=0`），
+宿主最低版本 **0.1.0**。这些值以 `<SDK>/manifest.json` 为准（字段说明见 §10）。
 
 ---
 
@@ -55,23 +55,23 @@ SDK 从 v2 起拆成两个可独立下载的 zip（同一版本、同一次发�
 发布资产共 4 个文件（每个 zip 配一个 `.zip.sha256`）：
 
 ```text
-plugin-shot-sdk-0.2.0-win64.zip
-plugin-shot-sdk-0.2.0-win64.zip.sha256
-plugin-shot-sdk-0.2.0-win64-opencv.zip
-plugin-shot-sdk-0.2.0-win64-opencv.zip.sha256
+plugin-shot-sdk-0.1.0-win64.zip
+plugin-shot-sdk-0.1.0-win64.zip.sha256
+plugin-shot-sdk-0.1.0-win64-opencv.zip
+plugin-shot-sdk-0.1.0-win64-opencv.zip.sha256
 ```
 
 `.zip.sha256` 是标准 `sha256sum` 格式（`<64 位 hex><两个空格><文件名>`），任选一种校验：
 
 ```bat
 :: Windows PowerShell
-Get-FileHash .\plugin-shot-sdk-0.2.0-win64.zip -Algorithm SHA256
+Get-FileHash .\plugin-shot-sdk-0.1.0-win64.zip -Algorithm SHA256
 
 :: Windows cmd（老机器 / 无 PowerShell 7）
-certutil -hashfile plugin-shot-sdk-0.2.0-win64.zip SHA256
+certutil -hashfile plugin-shot-sdk-0.1.0-win64.zip SHA256
 
 :: Git Bash / Linux / macOS
-sha256sum -c plugin-shot-sdk-0.2.0-win64.zip.sha256
+sha256sum -c plugin-shot-sdk-0.1.0-win64.zip.sha256
 ```
 
 拿输出和 `.zip.sha256` 里的第一列比较，一致才解压。
@@ -87,8 +87,8 @@ sha256sum -c plugin-shot-sdk-0.2.0-win64.zip.sha256
 两个包都是**单根目录** zip（解压不会把文件撒到当前目录）：
 
 ```text
-plugin-shot-sdk-0.2.0-win64\              ← 核心包解压后 = SDK 根目录
-plugin-shot-sdk-0.2.0-win64-opencv\       ← OpenCV 叠加包解压后
+plugin-shot-sdk-0.1.0-win64\              ← 核心包解压后 = SDK 根目录
+plugin-shot-sdk-0.1.0-win64-opencv\       ← OpenCV 叠加包解压后
     opencv\                               ← 只有这一个目录，把它整个移进 SDK 根
     README-OPENCV.txt
 ```
@@ -96,7 +96,7 @@ plugin-shot-sdk-0.2.0-win64-opencv\       ← OpenCV 叠加包解压后
 叠加完成后的结构（与核心包自己的目录同级）：
 
 ```text
-plugin-shot-sdk-0.2.0-win64\
+plugin-shot-sdk-0.1.0-win64\
 ├── manifest.json
 ├── ...
 └── opencv\                               ← 叠加后才有
@@ -115,7 +115,7 @@ OpenCV 头/库路径：没叠加的 SDK 构建 OpenCV 插件会直接报 `C1083:
 ## 4. SDK 目录树（核心包）
 
 ```text
-plugin-shot-sdk-0.2.0-win64/
+plugin-shot-sdk-0.1.0-win64/
 ├── manifest.json                 # 机器可读清单：版本 / ABI / 契约哈希 / 文件哈希（§10）
 ├── README.md                     # 本文档
 ├── LICENSE                       # 宿主许可证（Apache License 2.0 全文）
@@ -212,12 +212,12 @@ Debug 构建额外需要 OpenCV 叠加包里的 `opencv/lib/debug` 与 `opencv/b
 ```bat
 :: Release
 "D:\src\cmake\bin\cmake.exe" -S %USERPROFILE%\src\acme_foo -B %USERPROFILE%\src\acme_foo\build ^
-    -G Ninja -DCMAKE_BUILD_TYPE=Release -DSHOT_SDK_ROOT=C:\sdk\plugin-shot-sdk-0.2.0-win64
+    -G Ninja -DCMAKE_BUILD_TYPE=Release -DSHOT_SDK_ROOT=C:\sdk\plugin-shot-sdk-0.1.0-win64
 "D:\src\cmake\bin\cmake.exe" --build %USERPROFILE%\src\acme_foo\build
 
 :: Debug（换构建目录，别和 Release 混）
 "D:\src\cmake\bin\cmake.exe" -S %USERPROFILE%\src\acme_foo -B %USERPROFILE%\src\acme_foo\build-debug ^
-    -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSHOT_SDK_ROOT=C:\sdk\plugin-shot-sdk-0.2.0-win64
+    -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSHOT_SDK_ROOT=C:\sdk\plugin-shot-sdk-0.1.0-win64
 "D:\src\cmake\bin\cmake.exe" --build %USERPROFILE%\src\acme_foo\build-debug
 ```
 
@@ -358,8 +358,8 @@ SDK 自带插件作者需要的设计文档（完整列表见 §4 目录树）�
 | --- | --- | --- |
 | `schema` | `1` | 清单格式版本 |
 | `kind` | `"core"` | `core` = 核心包；`opencv` = 叠加包自己的清单 |
-| `sdk_version` | `"0.2.0"` | SDK 包版本（与宿主版本同步） |
-| `host_min_version` | `"0.2.0"` | 首次携带该 ABI 的宿主版本，插件 README 可据此写要求 |
+| `sdk_version` | `"0.1.0"` | SDK 包版本（与宿主版本同步） |
+| `host_min_version` | `"0.1.0"` | 首次携带该 ABI 的宿主版本，插件 README 可据此写要求 |
 | `abi.major` / `abi.minor` | `2` / `0` | 契约头里的 `SHOT_ABI_MAJOR` / `SHOT_ABI_MINOR` |
 | `contract_sha256` | 64 位 hex | 契约头整份文本（汇总头 + 全部子头）的 SHA256 |
 | `platform` / `arch` | `win64` / `x64` | 目标平台 |
@@ -507,7 +507,7 @@ if errorlevel 1 exit /b 1
 ## 17. 反馈与版本
 
 - 版本 / ABI / 契约哈希以 `<SDK>/manifest.json` 为准；插件 README 建议写上
-  "本插件用 SDK x.y.z（ABI 2.0）构建，需要宿主 ≥ 0.2.0"。
+  "本插件用 SDK x.y.z（ABI 2.0）构建，需要宿主 ≥ 0.1.0"。
 - SDK 内容由宿主的 `cmake/export_sdk.cmake` 生成，**不要手改** SDK 里的
   `include/`、`cmake/`、`manifest.json`（改了就和新包对不上；需要什么能力请提给宿主）。
 - 模板与文档的更新随宿主发布；升级时整体替换 SDK 目录，再重新编译插件。

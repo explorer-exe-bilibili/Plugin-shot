@@ -126,8 +126,8 @@ Plugin-shot.exe --test-plugin <dll> --keep-data --verbose
 ```json
 {
   "tool": "plugin-shot-test",
-  "version": "0.2.0",
-  "versionFull": "0.2.0.183",
+  "version": "0.1.0",
+  "versionFull": "0.1.0.183",
   "abiComment": "宿主 ABI 2.0（x64/Debug）：插件必须用同一 ABI 主版本、同一架构……",
   "hostAbi": { "major": 2, "minor": 0 },
   "build": { "platform": "Windows", "architecture": "x64", "compiler": "MSVC", "type": "Debug" },

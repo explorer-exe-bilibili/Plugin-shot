@@ -30,7 +30,7 @@ set(PROJECT_COPYRIGHT             "Copyright (C) 2026 Plugin-shot contributors")
 
 # --- 版本号 --------------------------------------------------
 set(PROJECT_VERSION_MAJOR         0)
-set(PROJECT_VERSION_MINOR         2)
+set(PROJECT_VERSION_MINOR         1)
 set(PROJECT_VERSION_PATCH         0)
 set(PROJECT_VERSION_BUILD         0)      # 构建号，会被 build_number.txt 覆盖
 

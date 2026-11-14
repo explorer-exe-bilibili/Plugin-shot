@@ -28,16 +28,16 @@
 
 ### 下载
 
-[**Plugin-shot 0.2.0 · GitHub Releases**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
+[**Plugin-shot 0.1.0 · GitHub Releases**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
 [更新日志](CHANGELOG.md)
 
 | 资产 | 用途 |
 | --- | --- |
-| `Plugin-shot-0.2.0-win64.zip`（约 6.5 MB） | Windows x64 便携版，解压双击 `Plugin-shot.exe` |
-| `plugin-shot-sdk-0.2.0-win64.zip`（约 0.9 MB） | 离线插件 SDK 核心包：契约头、`shot_plugin_helpers`、构建模块、文档、模板、两个 demo、技能 |
-| `plugin-shot-sdk-0.2.0-win64-opencv.zip`（约 13 MB） | 可选 OpenCV 叠加包；解压后把 `opencv/` 放进核心 SDK 根 |
+| `Plugin-shot-0.1.0-win64.zip`（约 6.5 MB） | Windows x64 便携版，解压双击 `Plugin-shot.exe` |
+| `plugin-shot-sdk-0.1.0-win64.zip`（约 0.9 MB） | 离线插件 SDK 核心包：契约头、`shot_plugin_helpers`、构建模块、文档、模板、两个 demo、技能 |
+| `plugin-shot-sdk-0.1.0-win64-opencv.zip`（约 13 MB） | 可选 OpenCV 叠加包；解压后把 `opencv/` 放进核心 SDK 根 |
 
-每个 zip 都有同名 `.sha256`。0.2.0 的**预编译包只提供 Windows**；**Linux 已在 Ubuntu 24.04
+每个 zip 都有同名 `.sha256`。0.1.0 的**预编译包只提供 Windows**；**Linux 已在 Ubuntu 24.04
 （X11）与 Ubuntu 26（Wayland，单显示器）真机验证**，按 [构建](#构建) 从源码编译
 （分步见 [Linux 编译手册](document/BUILD_LINUX.md)）；macOS 尚未验证。详见 [平台](#平台)。
 
@@ -590,12 +590,12 @@ shot_add_plugin(acme_tools
 # SDK 两个 zip（核心包 + 可选 OpenCV 叠加包）→ dist/
 bash tools/verify/build.sh --target package_sdk
 # 宿主便携包 → dist/Plugin-shot-<版本>-win64.zip（需要先做 Release 构建）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package/make_host_package.ps1 -Version 0.2.0
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package/make_host_package.ps1 -Version 0.1.0
 ```
 
 ## 平台
 
-> **0.2.0 发布口径**：预编译包提供 **Windows 10/11 x64** 宿主 + **离线插件 SDK**（核心包与
+> **0.1.0 发布口径**：预编译包提供 **Windows 10/11 x64** 宿主 + **离线插件 SDK**（核心包与
 > 可选 OpenCV 叠加包）；**Linux（Ubuntu 24.04 X11 / Ubuntu 26 Wayland，单显示器）核心链路
 > 已真机验证**，本版本仍只提供源码构建，不提供 Linux 预编译包/SDK；macOS 未验证。
 > 下面记录的是仓库代码与真机验证状态。

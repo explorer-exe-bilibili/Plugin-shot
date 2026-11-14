@@ -174,7 +174,7 @@ metadata、把 metadata 贴到 DLL 尾、剪枝产物目录。SDK 模式会自�
       "version": "1.0.0",
       "description": "截图保存后按日期归档到子目录",
       "interfaces": ["shot.configurable"],
-      "requires": ["core>=0.2.0"],
+      "requires": ["core>=0.1.0"],
       "provides": []
     }
   ]
@@ -502,7 +502,7 @@ void on_capture_done(void* user, const char* /*topic*/, const void* data, uint32
 
 ```bat
 :: Windows（vcvars64 环境里）
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSHOT_SDK_ROOT="D:\sdk\plugin-shot-sdk-0.2.0-win64"
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSHOT_SDK_ROOT="D:\sdk\plugin-shot-sdk-0.1.0-win64"
 cmake --build build
 ```
 
@@ -705,7 +705,7 @@ log.debug("archived " + path);
 
 | 轴 | 当前值 | 载体 | 变化规则 |
 | --- | --- | --- | --- |
-| 宿主版本 | 0.2.0 | exe / git tag | 产品发布节奏 |
+| 宿主版本 | 0.1.0 | exe / git tag | 产品发布节奏 |
 | SDK 包版本 | 与宿主同版本 | zip 名 / `manifest.sdk_version` | 与宿主同步发布 |
 | ABI 版本 | **2.0** | `include/plugin_api/basics.h`、`metadata.abi`、`ShotModule` | 追加能力 = minor+1；破坏 = major+1 |
 

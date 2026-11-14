@@ -461,7 +461,7 @@ harness 等），**不入库**，换机器会丢；需要时按同样思路重�
    Windows 实际没用工作流 clone 的 vcpkg；本轮未动，等后续单独处理。
 2. ~~把关键验证脚本固化进仓库~~ **已完成**：`tools/verify/`（build + 冒烟 / e2e，见 §6.2）。
    可继续把托盘点菜单、区域框选、DPI 探针也整理进去。
-2.1 ~~离线插件 SDK 产品化~~ **已完成（0.2.0）**：SDK 拆成核心包 + 可选 OpenCV 叠加包
+2.1 ~~离线插件 SDK 产品化~~ **已完成（0.1.0）**：SDK 拆成核心包 + 可选 OpenCV 叠加包
    （`export_sdk` / `package_sdk`），自带 nlohmann/stb、文档、4 个模板、2 个一句话 demo、
    脚手架 `new_plugin.cmake`；宿主新增 `--test-plugin` 离线自检（PASS/FAIL/SKIP + JSON）；
    `document/AUTHORING.md` + `skills/plugin-shot-dev/` + `dsh-plugin-shot-dev/` bundle；

@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-shot-dev",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Plugin-shot plugin development skill for DeepSeek Harness: download the offline SDK, then write, build and self-test a Plugin-shot plugin without the host source tree.",
   "keywords": [
     "dsh-plugin",
