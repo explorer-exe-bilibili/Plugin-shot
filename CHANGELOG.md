@@ -24,9 +24,17 @@
   `--test-plugin` 自检 → 征得同意后安装。
 - `PLUGIN_SHOT_DATA_DIR` 环境变量覆盖用户数据目录（自检/便携隔离用）；`Host::Logging::shutdown()`。
 - 发布物料：`tools/package/make_host_package.ps1` 生成宿主便携包；发布资产：
-  - `Plugin-shot-0.1.0-win64.zip`（6,802,476 B，sha256 `515384c241ceb627b8809677be17425702bacb01ec752810f0c61f378c5d7cbb`）
+  - `Plugin-shot-0.1.0-win64.zip`（6,803,044 B，sha256 `96485e014bf978849f0ad4ef736d4f6b29fb8a204bd84e762c77fe1fdc68aa91`）
   - `plugin-shot-sdk-0.1.0-win64.zip`（954,614 B，sha256 `31b1244e7e97277c5dd1b86663316c9bafe5a695f23d775363427c8bd7c1b138`）
   - `plugin-shot-sdk-0.1.0-win64-opencv.zip`（13,502,785 B，sha256 `5cce48d914073542933f6b2cf68f52712df1ab1cc3d480357322e2c6befab0c3`）
+- **GitHub Actions 构建产物上传**：三平台 CI 构建完成后上传 artifact：
+  `plugin-shot-<platform>-release`（`build/<platform>/bin` 的 zip，保留 7 天）；Windows 额外上传
+  `plugin-shot-windows-dist-<版本>`（宿主便携包 `Plugin-shot-<版本>-win64.zip` +
+  `plugin-shot-sdk-<版本>-win64{,-opencv}.zip` 及 `.sha256`，来自
+  `tools/package/make_host_package.ps1` 与 CMake 目标 `package_sdk`）。Windows 的宿主便携包
+  解压即可运行；Linux / macOS 的 artifact 只是编译产物打包，依赖 vcpkg 动态库且 RPATH 指向
+  构建目录，**不保证**下载后能直接运行。SDK 打包步骤是 best-effort（`continue-on-error`）：
+  若 CI 日志提示 SDK 打包失败，可手动本地跑 `package_sdk`。
 
 ### 变更
 
@@ -40,6 +48,24 @@
 
 - 自检模式 `--test-plugin --help` 不再把 `--help` 当 DLL 路径（打印用法并退出 0）。
 - 插件侧 `shot_i18n.h` 注释过时（SDK 已内置 nlohmann-json，无需 `find_package`）。
+
+### 修复（2026-11-15 续）
+
+- **Release 构建改为 Windows 窗口子系统**：`CMakeLists.txt` 新增 `if(WIN32 AND BUILD_RELEASE)` 段
+  （`WIN32_EXECUTABLE TRUE` + `/ENTRY:mainCRTStartup` + `SHOT_GUI_SUBSYSTEM`），`Release` 宿主双击
+  启动常驻、不弹控制台窗口；`Debug` 仍为控制台子系统，方便在终端看日志与断点调试。`Release` 从
+  终端带参数启动（`--capture` / `--test-plugin` / `--help` / `--settings`）时，`src/main.cpp` 顶部
+  的 `AttachConsole(ATTACH_PARENT_PROCESS)` 会附着父控制台，命令行输出仍可见；双击无参数常驻则
+  完全无窗口。
+- **配置落盘失败不再每秒刷屏**：`HostRuntime::tick` 对配置保存失败改为 **30 秒退避重试**；第一次
+  失败打印一条完整 WARN（提示"受限环境/沙箱/权限"可能导致日志、截图保存、剪贴板一起失败，建议
+  改用普通用户从资源管理器或系统终端启动），后续每次重试只打印"第 N 次失败"。根因是进程没有
+  普通用户桌面与文件权限——典型症状：`File logging disabled`、`Failed to open config file for
+  writing`、`Shell_NotifyIconW NIM_ADD` 失败、截图保存失败、剪贴板为空；**不是缺 OpenCV DLL，
+  也不是发布包损坏**。普通用户从资源管理器或系统终端启动正常（本机已实测）。
+- **插件元数据版本警告消除**：`plugins/long_capture/src/plugin_entry.cpp` 的 `.version` 由
+  `"0.1.0"` 改为 `"0.2.1"`，与 `plugins/long_capture/metadata.json` 一致，"元数据与 get_info
+  不一致"的警告不再出现。
 
 ### 已知限制
 

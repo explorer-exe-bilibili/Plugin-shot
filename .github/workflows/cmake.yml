@@ -43,6 +43,10 @@
 #     依赖产物与源码下载目录用 actions/cache 缓存（命中后 configure 几乎瞬时）。
 #   · 冒烟：无头执行 `Plugin-shot --help`（在打开日志/插件/GUI 之前就返回，
 #     所以 Linux/macOS runner 不需要 X server / 显示器）。
+#   · 产物上传：三平台构建成功后把 build/<platform>/bin/ 打成 zip 上传
+#     （artifact：plugin-shot-<platform>-release，保留 7 天）；Windows 另跑
+#     宿主便携包脚本 + package_sdk，把 dist/ 里的 zip 与 .sha256 一起上传
+#     （artifact：plugin-shot-windows-dist-<版本>）。
 #   · Linux 系统依赖：X11/OpenGL（glfw3 端口编译需要）+ autotools 工具链
 #     （vcpkg 用 autotools 构建 dbus/libxcrypt 等）。nativefiledialog-extended 的
 #     vcpkg 端口在 Linux 用 NFD_PORTAL=ON（dbus 由 vcpkg 源码构建），所以
@@ -232,3 +236,171 @@ jobs:
           else
             "./$BIN/Plugin-shot" --help
           fi
+
+      # ---------------------------------------------------------------------
+      #  6. 版本号：只用于发布物料命名。从 build 目录的 CMakeCache.txt 读
+      #     CMAKE_PROJECT_VERSION（根 CMakeLists 的 project(... VERSION ...) 写入；
+      #     它落盘是 :STATIC/内部类型，`cmake -LA -N` 列不出来，所以直接读文件）。
+      #     读不到回退 0.1.0——以后改版本只改 CMakeLists.txt，CI 不用跟着改。
+      # ---------------------------------------------------------------------
+      - name: Resolve project version (Windows)
+        if: runner.os == 'Windows'
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = ''
+          $cache = 'build/Windows/CMakeCache.txt'
+          if (Test-Path -LiteralPath $cache) {
+            $hit = Select-String -LiteralPath $cache -Pattern '^CMAKE_PROJECT_VERSION:[^=]+=(.+)$' |
+                   Select-Object -First 1
+            if ($null -ne $hit) {
+              $ver = $hit.Matches[0].Groups[1].Value.Trim()
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($ver)) {
+            # 版本只影响发布物料命名，读不到不让 job 死掉。
+            $ver = '0.1.0'
+            Write-Host '::warning title=version::CMAKE_PROJECT_VERSION 读取失败，回退 0.1.0'
+          }
+          Write-Host "PROJECT_VERSION=$ver"
+          # 直接写 LF：artifact 名取自这个值，避免 CRLF 的 \r 混进名字
+          # （Out-File 在 Windows 上会按 CRLF 写）。
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "value=$ver`n")
+
+      # ---------------------------------------------------------------------
+      #  7. 打包编译产物：build/<platform>/bin/ → dist/*.zip
+      #     · zip 内保留 bin/ 目录结构（bin/Plugin-shot[.exe]、bin/plugins/、
+      #       bin/files/），解压即可看到三个平台一致的布局。
+      #     · Linux/macOS 用 runner 自带的 zip；Windows 用 pwsh 自带
+      #       Compress-Archive（不引入第三方 action）。
+      # ---------------------------------------------------------------------
+      - name: Package bin artifact (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLATFORM='${{ matrix.platform }}'
+          BIN="build/${PLATFORM}/bin"
+          ZIP="dist/plugin-shot-${PLATFORM}-release.zip"
+          if [ ! -d "$BIN" ]; then
+            echo "::error title=package::找不到产物目录 $BIN"
+            exit 1
+          fi
+          mkdir -p dist
+          rm -f "$ZIP"
+          ZIP_ABS="$(pwd)/${ZIP}"
+          # cd 到 build/<platform>/ 再打包 bin/，zip 顶层就是 bin/，不会多出
+          # build/<platform>/ 前缀。
+          ( cd "build/${PLATFORM}" && zip -q -r "$ZIP_ABS" bin )
+          test -s "$ZIP"
+          ls -l "$ZIP"
+
+      - name: Package bin artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $platform = '${{ matrix.platform }}'
+          $bin = "build/$platform/bin"
+          if (-not (Test-Path -LiteralPath $bin)) { throw "找不到产物目录 $bin" }
+          New-Item -ItemType Directory -Path 'dist' -Force | Out-Null
+          $zip = "dist/plugin-shot-$platform-release.zip"
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          # -Path 指向目录本身（不是 bin\*）：压缩包顶层保留 bin\。
+          Compress-Archive -Path $bin -DestinationPath $zip -CompressionLevel Optimal
+          if (-not (Test-Path -LiteralPath $zip)) { throw "打包失败：$zip 不存在" }
+          $item = Get-Item -LiteralPath $zip
+          '打包完成：{0}（{1:N2} MB）' -f $item.Name, ($item.Length / 1MB)
+
+      # ---------------------------------------------------------------------
+      #  8. Windows 额外产物：宿主便携包 + 离线 SDK 两个 zip（都在 dist/）。
+      # ---------------------------------------------------------------------
+      - name: Package Windows host portable bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path 'dist' -Force | Out-Null
+          # 复用本地发布脚本（tools/package/README.md）；-ExecutionPolicy Bypass
+          # 规避 runner 上 .ps1 执行策略限制（AGENTS.md §7.15）。
+          & pwsh -NoProfile -ExecutionPolicy Bypass `
+              -File 'tools/package/make_host_package.ps1' `
+              -Version $env:PROJECT_VERSION `
+              -BinDir "build/${{ matrix.platform }}/bin" `
+              -OutDir 'dist'
+          if ($LASTEXITCODE -ne 0) {
+            throw "make_host_package.ps1 失败（exit $LASTEXITCODE）"
+          }
+
+      - name: Package offline SDK zips (Windows, best-effort)
+        if: runner.os == 'Windows'
+        # export_sdk 从 vcpkg 安装目录抽运行库/OpenCV 头与导入库；CI 的
+        # VCPKG_ROOT 与本地可能不同（AGENTS.md backlog：Windows job 的
+        # VCPKG_ROOT 隐患），失败不应拖垮整个 job —— 降级为"没有 SDK 包"，
+        # 宿主便携包与 bin zip 照常上传。失败原因在步骤日志里可见。
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & cmake --build 'build/Windows' --target package_sdk
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host ('::warning title=package_sdk 失败降级::export_sdk/package_sdk 依赖 ' +
+                        'vcpkg 安装目录，CI 环境下可能找不到；本次跳过 SDK 包，' +
+                        '宿主便携包与 bin zip 不受影响。')
+            throw "package_sdk 失败（exit $LASTEXITCODE）"
+          }
+
+      # ---------------------------------------------------------------------
+      #  9. 上传前打印文件清单与大小（artifact 缺文件时先看这一步的日志）。
+      # ---------------------------------------------------------------------
+      - name: List artifacts (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== dist/ =="
+          ls -l dist
+          du -h dist/* || true
+
+      - name: List artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'dist')) { Write-Host 'dist/ 不存在'; exit 0 }
+          Write-Host '== dist/ =='
+          Get-ChildItem -LiteralPath 'dist' -File |
+            Sort-Object Name |
+            ForEach-Object { '{0,12:N0} B  {1}' -f $_.Length, $_.Name }
+
+      # ---------------------------------------------------------------------
+      # 10. 上传 artifact（保留 7 天）
+      #     · 三平台统一：bin/ 的 zip，名字对齐 matrix.platform；
+      #     · Windows 额外：dist/ 全部发布物料（宿主便携包 + 2 个 SDK 包 +
+      #       各自 .sha256），名字带版本号，便于以后 tag 发布直接取用。
+      # ---------------------------------------------------------------------
+      - name: Upload bin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-shot-${{ matrix.platform }}-release
+          path: dist/plugin-shot-${{ matrix.platform }}-release.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Windows host + SDK packages
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          # 说明：dist/ 里也包含上一步生成的 bin zip，因此这个 artifact 是
+          # "Windows 全部发布物料"的超集（bin zip 会多存一份）；bin zip 仍
+          # 单独保留一个 artifact，是为了三平台的命名/内容保持一致。
+          name: plugin-shot-windows-dist-${{ steps.version.outputs.value }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          # package_sdk 是 best-effort：它失败时 dist/ 里仍有宿主包与 bin zip，
+          # 所以这里用 warn 而不是 error；真正缺文件会在上面的 List 步骤暴露。
+          if-no-files-found: warn
+          retention-days: 7

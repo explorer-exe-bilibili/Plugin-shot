@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -112,6 +113,10 @@ private:
     bool m_quitSubscribed = false;      /**< 是否已订阅 app.quit；析构时据此退订 */
     bool m_listsSubscribed = false;     /**< 是否已订阅 lists.*；与 app.quit 共用 user */
     bool m_configDirty = false;         /**< 配置内存有变更、等 tick 落盘 */
+    /** 配置落盘连续失败次数；用于退避重试与"只报一次完整错误"的日志节流。 */
+    int m_configSaveFailures = 0;
+    /** 下一次允许尝试落盘的时间点；未到就跳过，避免主循环每秒刷同一条错误。 */
+    std::chrono::steady_clock::time_point m_nextConfigSaveAttempt{};
     std::string m_lastLanguage;         /**< 上一轮生效的语言；变化时刷新注册表文案 */
 };
 

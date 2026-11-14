@@ -15,7 +15,7 @@
 | --- | --- |
 | 工程根 | `D:\src\repo\plugin-shot\Host`（Windows-first，C++23） |
 | 构建目录 | `build\Windows`（Ninja + MSVC Debug），Linux 用 `build\Linux`（WSL 已验证） |
-| 宿主产物 | `build\Windows\bin\Plugin-shot.exe`，插件在 `build\Windows\bin\plugins\*.dll` |
+| 宿主产物 | `build\Windows\bin\Plugin-shot.exe`，插件在 `build\Windows\bin\plugins\*.dll`；`Release` 为**窗口子系统**（双击启动不弹控制台），`Debug` 为**控制台子系统**（调试 / 看日志用 Debug） |
 | 配置文件 | `%LOCALAPPDATA%\plugin-shot\config.json` |
 | 日志 | `%LOCALAPPDATA%\plugin-shot\logs\host.log`（UTF-8，中文会显示成乱码是编码问题，不是 bug） |
 | CLI | `--capture` 截一张存盘后退出 / `--settings` 打开设置页后常驻 / `--test-plugin <dll>` 离线插件自检 / `--help` |
@@ -341,6 +341,12 @@ Ninja 目录时必须串行；锁目录 `build/.build-lock` 里写 PID，能自�
 | `smoke_region_window.ps1` | 区域框选：悬停窗口吸附、单击截窗口（尺寸 = DWM 扩展边界）、拖动选区尺寸、边框/折角主题色（像素抽检）；自己开关目标窗口并恢复 config |
 | `smoke_plugin_test.ps1` | 插件自检：`--test-plugin` 对 `example_processor.dll` exit 0、JSON `result=pass`、plugins ≥ 2；负例（不存在的 DLL）exit 2。**唯一不杀宿主、不碰用户 config 的脚本** |
 
+> **CI 产物**：CI 现在会在三平台构建完成后上传 artifact（`plugin-shot-<platform>-release`，
+> 即 `build/<platform>/bin` 的 zip；Windows 另有 `plugin-shot-windows-dist-<版本>`，含宿主便携包
+> 与 SDK 包，名称与内容见 `.github/workflows/cmake.yml`）。但 Linux / macOS 的 artifact 只是编译
+> 产物打包，依赖构建目录里的 vcpkg 运行库（RPATH 指向构建目录），**不能直接跨机运行**；需要
+> 可运行产物时用 Windows 包或按 §6.1 从源码构建。
+
 运行方式（**必须带 `-ExecutionPolicy Bypass`**，原因见 §7 第 15 条）：
 
 ```bat
@@ -427,6 +433,18 @@ harness 等），**不入库**，换机器会丢；需要时按同样思路重�
     不匹配时加载会失败），JSON 里 `build.type` 会写明 Debug/Release；跨配置失败不是插件 bug。
 23. **MSYS bash 里不要 `cmd //c` 调批处理**：参数会被 MSYS 吞掉（表现为只打印 cmd banner、命令没跑）。
     统一 `powershell.exe -NoProfile -Command "& 'D:\...\x.bat'; exit \$LASTEXITCODE"`（与 §6.1 一致）。
+24. **受限令牌 / 沙箱环境启动后"功能全坏"不是包坏了**：从某些 agent 终端或受限令牌 / 沙箱
+    环境启动宿主时，会出现 `File logging disabled`、`Failed to open config file for writing`、
+    `Shell_NotifyIconW NIM_ADD 失败`、截图保存失败、剪贴板为空——根因是进程没有普通用户
+    桌面与文件权限，**不是缺 OpenCV DLL，也不是发布包损坏**。`HostRuntime::tick` 现在对配置
+    保存失败做 **30 秒退避重试**（首次失败打完整 WARN，之后只报"第 N 次失败"），不会再每秒
+    刷屏。换普通用户从资源管理器或系统终端启动即正常（本机已实测）。
+25. **Release 是窗口子系统，别把 subsystem 改回 console**：`CMakeLists.txt` 的
+    `if(WIN32 AND BUILD_RELEASE)` 段设置 `WIN32_EXECUTABLE TRUE` + `/ENTRY:mainCRTStartup` +
+    `SHOT_GUI_SUBSYSTEM`，Release 双击启动才不弹控制台；Debug 仍是控制台子系统（调试 /
+    看日志用 Debug）。Release 从终端带参数启动（`--capture` / `--test-plugin` / `--help` /
+    `--settings`）依赖 `src/main.cpp` 顶部的 `AttachConsole(ATTACH_PARENT_PROCESS)` 分支附着
+    父控制台才有命令行输出。改 CMake 前先看这两处，否则控制台窗口会回来。
 
 ---
 

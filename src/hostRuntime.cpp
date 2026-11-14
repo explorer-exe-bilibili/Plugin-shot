@@ -199,11 +199,24 @@ void HostRuntime::tick() {
 
     // 配置落盘统一在 tick 末尾做（loadPlugins/apply_stored 只改内存）。
     // 设置页"应用"时走的 lists.commit 是例外：它明确要求同步落盘。
-    if (m_configDirty) {
+    //
+    // 落盘可能持续失败（只读数据目录、受限令牌/沙箱、磁盘满）：以前每轮 tick 都重试
+    // 并刷一行错误，实测在权限异常时会变成每秒一条的日志风暴。这里改成失败后 30 秒
+    // 退避重试，并且第一次失败打一条可行动的 WARN（提示可能是受限环境），后续只报次数。
+    if (m_configDirty && std::chrono::steady_clock::now() >= m_nextConfigSaveAttempt) {
         if (core::Config::getInstance().saveConfigFile()) {
             m_configDirty = false;
+            m_configSaveFailures = 0;
         } else {
-            spdlog::warn("Failed to persist configuration, will retry on the next tick");
+            ++m_configSaveFailures;
+            m_nextConfigSaveAttempt = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            if (m_configSaveFailures == 1) {
+                spdlog::warn("配置无法写入，30 秒后重试。若程序运行在受限环境（沙箱/受限令牌/只读用户"
+                             "目录），日志、截图保存与剪贴板也会一起失败；请改用普通用户从资源管理器"
+                             "或系统终端启动。");
+            } else {
+                spdlog::warn("配置仍无法写入（第 {} 次失败），30 秒后重试", m_configSaveFailures);
+            }
         }
     }
 }

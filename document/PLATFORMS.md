@@ -178,6 +178,12 @@ X11 的采集 / 热键 / 覆盖层三件套已在 Ubuntu 24.04 / X11 / 单显示
   3. macOS runner 没有真实桌面会话，也给不了屏幕录制/辅助功能 TCC 授权；
   4. Wayland 的 portal/PipeWire 在无头 runner 上通常不可用，CI 通过不代表桌面会话可用。
 
+**构建产物上传**：CI 在构建完成后会上传 artifact（三平台 `plugin-shot-<platform>-release`，即
+`build/<platform>/bin` 的 zip，保留 7 天；Windows 另有 `plugin-shot-windows-dist-<版本>`，含宿主
+便携包与 SDK 包，SDK 打包为 best-effort）。Windows 的宿主便携包可以直接运行；Linux / macOS 的
+artifact 只是把构建产物打包，动态库 RPATH 仍是**构建机路径**、依赖构建机的 vcpkg 运行库，
+**不保证**下载后跨机可用。
+
 ### 4.1 新增 Linux 依赖包清单（供以后补 workflow）
 
 `ubuntu-latest` 的 apt 步骤已装这些包（当前 workflow 的 apt 段，X11 组为

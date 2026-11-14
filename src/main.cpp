@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -87,12 +88,32 @@ void printUsage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+#if defined(SHOT_GUI_SUBSYSTEM)
+    // Release 构建是 Windows 子系统：双击常驻不会弹控制台窗口。
+    // 从终端带参数调用（--capture / --test-plugin / --help）时附着父控制台，
+    // 让命令行输出与日志照常可见；双击无参数则不附着，保持完全无窗口。
+    //
+    // 只在"没有现成 stdout 句柄"时附着：被 cmd 重定向（`> out.txt`）、被
+    // Start-Process -RedirectStandardOutput 或管道捕获时，句柄已经有效，
+    // 这时再 freopen 到 CONOUT$ 会把重定向目标顶掉，脚本拿不到输出。
+    const HANDLE stdoutHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+    const bool hasStdout = (stdoutHandle != nullptr && stdoutHandle != INVALID_HANDLE_VALUE);
+    if (argc > 1 && !hasStdout && AttachConsole(ATTACH_PARENT_PROCESS) != FALSE) {
+        FILE* reopened = nullptr;
+        freopen_s(&reopened, "CONOUT$", "w", stdout);
+        freopen_s(&reopened, "CONOUT$", "w", stderr);
+        freopen_s(&reopened, "CONIN$", "r", stdin);
+    }
+#endif
+#endif
     // DPI 感知必须最先声明：任何窗口创建/屏幕采集之前，且日志系统初始化之前
     // （初始化本身不建窗口，但保持"最早"最稳妥；结果等日志就绪后再记）。
     std::string dpiAwareness;
 #ifdef _WIN32
     dpiAwareness = enableProcessDpiAwareness();
-    // Windows 控制台默认不是 UTF-8，中文路径会乱码
+    // Windows 控制台默认不是 UTF-8，中文路径会乱码（窗口子系统下聊胜于无：
+    // 没有附着控制台时这两个调用只是失败，不影响后续逻辑）。
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif

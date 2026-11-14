@@ -41,6 +41,12 @@
 （X11）与 Ubuntu 26（Wayland，单显示器）真机验证**，按 [构建](#构建) 从源码编译
 （分步见 [Linux 编译手册](document/BUILD_LINUX.md)）；macOS 尚未验证。详见 [平台](#平台)。
 
+> **CI artifact**：三平台 CI 构建完成后会把产物上传到 GitHub Actions 的 artifact
+> （`plugin-shot-<platform>-release`；Windows 另有 `plugin-shot-windows-dist-<版本>`，含宿主便携包
+> 与 SDK 包，名称与内容见 `.github/workflows/cmake.yml`）。Windows 的宿主便携包与 SDK 包可直接
+> 下载使用；Linux / macOS 的 artifact 是编译产物打包，依赖构建机上的 vcpkg 运行库（RPATH 指向
+> 构建目录），需自行补齐依赖或按 [构建](#构建) 从源码编译。
+
 ### 界面
 
 ![Plugin-shot 设置页](document/assets/settings.png)
@@ -267,6 +273,12 @@ cd build/Windows/bin && ./Plugin-shot.exe --help     # 打印用法
 ```
 
 插件目录按相对路径 `./plugins` 解析，因此**必须在 `bin/` 下启动**。
+
+**控制台行为**：`Release` 构建为窗口子系统，双击 `Plugin-shot.exe` 启动时不弹控制台窗口；
+`Debug` 构建保留控制台子系统（方便在终端看日志与断点调试）。`Release` 从终端带参数运行
+（`--capture` / `--test-plugin` / `--help` / `--settings`）时，宿主会
+`AttachConsole(ATTACH_PARENT_PROCESS)` 附着父控制台，命令行输出照常可见；双击无参数常驻则
+完全无窗口。
 
 不带参数启动后宿主不会主动打开设置页（托盘正常时）：托盘菜单「截屏 / 区域截屏 / 打开设置 /
 退出」分别发布 `capture.request`（空负载）/ `capture.request`（负载

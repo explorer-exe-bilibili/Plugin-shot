@@ -45,6 +45,14 @@ path is verified on real hardware** under Ubuntu 24.04 (X11) / Ubuntu 26 (Waylan
 and is built from source via [Build](#build) (step-by-step: [Linux build manual](document/BUILD_LINUX.md)).
 macOS is not verified yet — see [Platforms](#platforms).
 
+> **CI artifacts**: the three-platform CI uploads its build outputs as GitHub Actions artifacts
+> (`plugin-shot-<platform>-release`; Windows additionally gets `plugin-shot-windows-dist-<version>`
+> with the host portable package and SDK packages — see `.github/workflows/cmake.yml` for names and
+> contents). The Windows host portable package and SDK packages are ready to download and use; the
+> Linux / macOS artifacts are packaged build outputs that depend on the build machine's vcpkg
+> runtime libraries (their RPATH points into the build directory), so install those dependencies
+> yourself or [build from source](#build).
+
 ### UI
 
 ![Plugin-shot settings](document/assets/settings.png)
@@ -283,6 +291,13 @@ cd build/Windows/bin && ./Plugin-shot.exe --help     # print usage
 ```
 
 The plugin directory is resolved as the relative path `./plugins`, so **launch from `bin/`**.
+
+**Console behavior**: `Release` builds use the Windows GUI subsystem, so double-clicking
+`Plugin-shot.exe` opens no console window; `Debug` builds keep the console subsystem (handy for
+logs and breakpoints in a terminal). When a `Release` build is started from a terminal with
+arguments (`--capture` / `--test-plugin` / `--help` / `--settings`), the host calls
+`AttachConsole(ATTACH_PARENT_PROCESS)` to attach to the parent console, so command-line output
+stays visible; launched by double-click without arguments it stays completely windowless.
 
 Without arguments the host does not open the settings window on its own while the tray is loaded:
 the tray menu (capture / region capture / open settings / quit) publishes `capture.request`

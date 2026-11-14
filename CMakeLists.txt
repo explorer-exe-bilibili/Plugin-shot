@@ -429,6 +429,16 @@ if(MSVC)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
+# Release 用 Windows 子系统（双击启动不弹控制台窗口）；Debug 保留控制台子系统，
+# 方便从终端看日志/断点调试。两种构建的入口都还是 main()，Win32 子系统默认按
+# WinMain 找入口会链接失败，所以必须显式 /ENTRY:mainCRTStartup（见 src/main.cpp
+# 里 SHOT_GUI_SUBSYSTEM 的 AttachConsole 分支：从终端带参数启动时仍然有输出）。
+if(WIN32 AND BUILD_RELEASE)
+    set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(${PROJECT_NAME} PRIVATE /ENTRY:mainCRTStartup)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE SHOT_GUI_SUBSYSTEM=1)
+endif()
+
 # 缺陷1/缺陷2：链接器与编译器产出的 PDB 一律落到 build 树内的独立目录。
 # 不重定向的话，链接器会把 .pdb 直接丢在目标文件旁边 —— 也就是 bin/ 与
 # bin/plugins/，而这两个目录是禁止出现 pdb 的。从源头移走 + POST_BUILD 兜底。
