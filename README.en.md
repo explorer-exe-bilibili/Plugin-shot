@@ -4,7 +4,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/explorer-exe-bilibili/Plugin-shot?label=release)](https://github.com/explorer-exe-bilibili/Plugin-shot/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4.svg)](#platforms)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%2B%20Linux-0078D4.svg)](#platforms)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C.svg)](#build)
 
 ![Plugin-shot](document/assets/banner.png)
@@ -19,8 +19,9 @@ plugins, runtime hot-plug, an append-only ABI, and UI data that never enters the
 
 ## At a glance
 
-- **Download and run**: portable Windows 10/11 x64 build; unzip and start `Plugin-shot.exe`.
-- **Three entry points**: `Ctrl+Alt+S` full screen, `Ctrl+Alt+A` region capture (hover a window to snap, click to capture it), `Ctrl+Alt+O` settings.
+- **Windows: download and run**: portable Windows 10/11 x64 build; unzip and start `Plugin-shot.exe`.
+- **Linux: verified on real hardware**: the core chain runs on Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland, single monitor); build it from source as described under [Build](#build).
+- **Three entry points**: `Ctrl+Alt+S` full screen, `Ctrl+Alt+A` region capture (hover a window to snap, click to capture it), `Ctrl+Alt+O` settings; Windows / X11 use global hotkeys, while Wayland uses the `session_control` D-Bus entry plus a desktop custom shortcut.
 - **After the shot**: save PNG/JPEG, copy to the clipboard, show a system notification; output folder, format, quality and filename template are configurable.
 - **Everything is a plugin**: tray, hotkeys, settings UI, saving, notifications and clipboard are plugins themselves, each can be disabled or re-enabled in the settings window.
 - **Extend it**: build one DLL with the offline SDK to add your own processor or entry point — no host changes.
@@ -30,9 +31,9 @@ plugins, runtime hot-plug, an append-only ABI, and UI data that never enters the
 [**Plugin-shot 0.1.0 · Windows x64 portable**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
 [Changelog](CHANGELOG.md)
 
-Unzip and run `Plugin-shot.exe`. 0.1.0 ships a Windows build only; the Linux core path has been
-verified on real hardware under Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland), while macOS has not —
-see [Platforms](#platforms).
+Unzip and run `Plugin-shot.exe`. 0.1.0 ships a **prebuilt Windows package only**; the **Linux core
+path is verified on real hardware** under Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland, single monitor),
+and is built from source via [Build](#build). macOS is not verified yet — see [Platforms](#platforms).
 
 ### UI
 
@@ -591,9 +592,10 @@ the root `CMakeLists.txt` and drifted away from the docs.
 
 ## Platforms
 
-> **0.1.0 release scope**: a **Windows 10/11 x64** build only. This section records the state of the
-> repository code and real-hardware verification, not a promise for 0.1.0; unverified capabilities
-> are not shipped in this release.
+> **0.1.0 release scope**: the prebuilt package is **Windows 10/11 x64**; the **Linux core chain
+> (Ubuntu 24.04 X11 / Ubuntu 26 Wayland, single monitor) is verified on real hardware** and built
+> from source — no prebuilt Linux package is provided in this version. macOS is not verified. This
+> section records the state of the repository code and real-hardware verification.
 
 Windows is the primary development and verification platform (MSVC + vcpkg `x64-windows`). On Linux
 the **default target is Wayland** (this round's environment: Ubuntu 26 / Wayland session), with X11

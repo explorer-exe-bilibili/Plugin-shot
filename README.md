@@ -4,7 +4,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/explorer-exe-bilibili/Plugin-shot?label=release)](https://github.com/explorer-exe-bilibili/Plugin-shot/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4.svg)](#平台)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%2B%20Linux-0078D4.svg)](#平台)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C.svg)](#构建)
 
 ![Plugin-shot](document/assets/banner.png)
@@ -17,8 +17,9 @@
 
 ## 30 秒了解
 
-- **下载即用**：Windows 10/11 x64 便携版，解压运行 `Plugin-shot.exe`，无需安装。
-- **三种入口**：`Ctrl+Alt+S` 整屏截图、`Ctrl+Alt+A` 区域框选（悬停窗口吸附、单击截窗）、`Ctrl+Alt+O` 打开设置。
+- **Windows 即用**：Windows 10/11 x64 便携版，解压运行 `Plugin-shot.exe`，无需安装。
+- **Linux 已验证**：Ubuntu 24.04（X11）/ Ubuntu 26（Wayland，单显示器）核心链路已真机跑通，按 [构建](#构建) 编译。
+- **三种入口**：`Ctrl+Alt+S` 整屏截图、`Ctrl+Alt+A` 区域框选（悬停窗口吸附、单击截窗）、`Ctrl+Alt+O` 打开设置；Windows / X11 为全局热键，Wayland 用 `session_control` 的 D-Bus 入口 + 桌面自定义快捷键。
 - **截图之后**：自动保存 PNG/JPEG、写入剪贴板、弹系统通知；目录、格式、质量、文件名模板都可改。
 - **能力即插件**：托盘、热键、设置页、保存、通知、剪贴板本身都是插件，可在设置页一键禁用/启用。
 - **可扩展**：用离线 SDK 写一个 DLL，就能把自己的处理或入口接进来，不用改宿主。
@@ -28,8 +29,9 @@
 [**Plugin-shot 0.1.0 · Windows x64 便携版**](https://github.com/explorer-exe-bilibili/Plugin-shot/releases/latest) ·
 [更新日志](CHANGELOG.md)
 
-解压后双击 `Plugin-shot.exe` 即可。0.1.0 只提供 Windows 构建；Linux 的核心链路已在 Ubuntu 24.04
-（X11）/ Ubuntu 26（Wayland）真机验证，macOS 尚未验证，详见 [平台](#平台)。
+解压后双击 `Plugin-shot.exe` 即可。0.1.0 的**预编译包只提供 Windows**；**Linux 已在 Ubuntu 24.04
+（X11）与 Ubuntu 26（Wayland，单显示器）真机验证**，按 [构建](#构建) 从源码编译；macOS 尚未验证。
+详见 [平台](#平台)。
 
 ### 界面
 
@@ -545,8 +547,9 @@ shot_add_plugin(acme_tools
 
 ## 平台
 
-> **0.1.0 发布口径**：只提供 **Windows 10/11 x64** 构建。下面记录的是仓库代码与真机验证状态，
-> 不是 0.1.0 的发布承诺；未真机验证的能力不随本版本分发。
+> **0.1.0 发布口径**：预编译包提供 **Windows 10/11 x64**；**Linux（Ubuntu 24.04 X11 /
+> Ubuntu 26 Wayland，单显示器）核心链路已真机验证**，本版本提供源码构建，不提供 Linux 预编译包；
+> macOS 未验证。下面记录的是仓库代码与真机验证状态。
 
 Windows 是主要开发与验证平台（MSVC + vcpkg `x64-windows`）。Linux 的**默认目标是 Wayland**
 （本轮实测环境：Ubuntu 26 / Wayland 会话），X11 保留为**第二优先**并已在 Ubuntu 24.04 / X11
