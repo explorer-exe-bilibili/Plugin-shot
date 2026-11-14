@@ -522,14 +522,21 @@ Linux 的入口来自：托盘菜单（`tray` 的 SNI/dbusmenu）、短按 `hotk
   `glfwGetWindowAttrib(GLFW_VISIBLE) == 0`（且至少泵 4 轮）或超时；超时只记
   `覆盖层未在 500ms 内隐藏，继续处理` WARN，**绝不阻塞更久**（UI 线程必须回到事件循环）。
   两个关键事实：
-  ① GLFW 3.4 的 `GLFW_VISIBLE` 是**客户端标志**（`_glfwHideWindowWayland` 里同步置 false），
-  `glfwHideWindow` 返回时它已经是 0，**不能证明**合成器已经 unmap——所以不能"看到 0 就走"，
-  必须泵够轮数让 flush 真正发生、并给合成器一次处理 unmap 的机会；
+  ① `GLFW_VISIBLE` 读的是平台可见性（Wayland 的 `wl.visible`）：hide 真正走到
+  `_glfwHideWindowWayland` 时同步置 false，但它**不能证明**合成器已经处理完 unmap——
+  所以不能"看到 0 就走"，必须泵够轮数让 flush 真正发生、并给合成器一次处理 unmap 的机会；
   ② 不泵的两个真机症状：覆盖层画面留在屏幕上不消失；隐藏后 UI 线程阻塞在条件变量上不再
   处理 Wayland 事件，合成器的 ping 没人应答，GNOME 弹"应用没有响应"。
+  **特别坑（真机日志定位到）**：GLFW 3.4 的 `glfwHideWindow` / `glfwShowWindow` 在
+  `window->monitor != nullptr` 时**直接 return**（`src/window.c`），而 Wayland 的"全屏"
+  正是用 `glfwSetWindowMonitor` 请求的（`_glfwSetWindowMonitorWayland` → `acquireMonitor`
+  → `xdg_toplevel_set_fullscreen`）。所以全屏状态下 hide 是空操作：`GLFW_VISIBLE` 一直
+  为 1、unmap 请求根本不会发出，等待 500ms 后只能 WARN 继续——覆盖层可能就卡在屏幕上。
+  现在的做法是 **hide 前先 `glfwSetWindowMonitor(window, nullptr, ...)` 退出全屏**（日志
+  `已退出 Wayland 全屏…`），再 hide；下次显示时 `requestWaylandFullscreen()` 会重新请求
+  全屏。真机日志里若再看到 500ms 超时，说明 unmap 仍没送达合成器，需要按这条继续查。
   另外 `glfwHideWindow` 在 `wl.visible` 已经是 false 时是**空操作**（不会 `attach(NULL)`），
-  所以 hide 前如果发现 `GLFW_VISIBLE=0` 而覆盖层状态是显示，会先记一条 WARN
-  （真机日志里出现它，说明覆盖层可能根本收不到 unmap 请求）。
+  所以 hide 前如果发现 `GLFW_VISIBLE=0` 而覆盖层状态是显示，会先记一条 WARN。
 - **编码线程**：确认后的"裁剪 + PNG 编码 + 写盘 + 发布 `capture.done`"在**工作线程**
   （`runWaylandCommit`）里做，UI 线程只负责隐藏、算布局、释放 GL 纹理与起线程。整屏 4K
   的 stb PNG 编码要几百毫秒到数秒，留在 UI 线程会让"隐藏之后"的那段时间完全不处理事件。

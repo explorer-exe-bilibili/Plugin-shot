@@ -807,10 +807,25 @@ void RegionWindow::Impl::hideOverlay() {
     if (window != nullptr) {
 #if defined(__linux__)
         if (waylandBackend) {
+            // GLFW 3.4 的 glfwHideWindow / glfwShowWindow 在 window->monitor != nullptr
+            // 时直接 return（src/window.c），而 Wayland 全屏正是用 glfwSetWindowMonitor
+            // 请求的（_glfwSetWindowMonitorWayland → acquireMonitor → xdg_toplevel_set_fullscreen）。
+            // 所以全屏状态下 hide 是空操作：wl.visible 一直为真、unmap 请求根本不会发出，
+            // 真机表现就是 hide 后 GLFW_VISIBLE 仍为 1、等待 500ms 超时、覆盖层卡在屏幕上
+            // （合成器 ping 无人应答 → "应用没有响应"）。先退出全屏再 hide。
+            if (glfwGetWindowMonitor(window) != nullptr) {
+                int fullscreenWidth = 0;
+                int fullscreenHeight = 0;
+                glfwGetWindowSize(window, &fullscreenWidth, &fullscreenHeight);
+                glfwSetWindowMonitor(window, nullptr, 0, 0, fullscreenWidth, fullscreenHeight,
+                                     GLFW_DONT_CARE);
+                log.info(
+                    "region_selector：已退出 Wayland 全屏（glfwHideWindow 对全屏窗口是空操作），"
+                    "继续隐藏");
+            }
             // GLFW 3.4 Wayland 后端的 hide 只在它内部 visible 为真时才销毁 xdg_toplevel
             // 并 attach(NULL)；如果这个标志已经是 0，glfwHideWindow 就是空操作，合成器
-            // 会一直显示最后一帧（真机：覆盖层卡住 + ping 无人应答 → "应用没有响应"）。
-            // 先 show 把内部标志置真，再 hide，保证这次真的走 unmap 路径。
+            // 会一直显示最后一帧。先 show 把内部标志置真，再 hide，保证这次真的走 unmap 路径。
             const bool overlayStillShown = overlayVisible;
             const int visibleFlag = glfwGetWindowAttrib(window, GLFW_VISIBLE);
             if (overlayStillShown && visibleFlag == 0) {
