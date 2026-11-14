@@ -29,7 +29,8 @@
 //    window_target_wayland.cpp  —— 空实现（Wayland 不允许全局窗口枚举，悬停吸附关闭）
 //
 //  X11（文件以 _x11 结尾；与 Wayland 用不同的成员函数名，避免同一符号两份定义）：
-//    region_geometry_x11.cpp   —— X screen 几何 / 光标 / 显示器矩形 + 实测日志
+//    region_geometry_x11.cpp   —— X screen 几何 / 光标 / 显示器矩形 + 实测日志 +
+//                                 _NET_WORKAREA → 面板占位 inset（悬停顶栏/dock 区域）
 //    region_background_x11.cpp —— XGetImage 整屏快照 → GL 纹理
 //    window_target_x11.cpp     —— XQueryTree 顶层窗口枚举 / EWMH 类型过滤 / 命中测试
 //    region_overlay_x11.cpp    —— EWMH 全屏（让 mutter 隐藏顶栏/dock）/ 状态校验与降级 /
@@ -179,6 +180,25 @@ struct ScreenRect {
     int height = 0;
 };
 
+/**
+ * @brief 面板占位：工作区（去掉面板后的可用区域）相对显示器矩形在四条边上的厚度。
+ *
+ * 为什么需要它：GNOME 的 shell 顶栏和 dash-to-dock 是 **shell 自己画的**，不是
+ * `_NET_WM_WINDOW_TYPE_DOCK` 客户端窗口，`XQueryTree` 枚举不到——只按窗口矩形做
+ * 悬停命中时，鼠标移到顶栏/dock 占的区域不会高亮任何目标。X11 上只能反过来用
+ * root 的 `_NET_WORKAREA`（工作区）与显示器矩形相减，得到四条边被面板占掉的像素厚度。
+ *
+ * 四个字段都是 ≥0 的厚度（不是坐标）；全 0 表示没有可识别的面板占位（其它平台、
+ * 读不到 `_NET_WORKAREA`、或数值异常时故意退化成全 0，见
+ * RegionWindow::Impl::x11ReadPanelInsets）。
+ */
+struct PanelInsets {
+    int top = 0;    /**< 上边缘被顶栏占掉的厚度（物理像素）。 */
+    int left = 0;   /**< 左边缘被左侧 dock/任务栏占掉的厚度。 */
+    int right = 0;  /**< 右边缘被右侧 dock/任务栏占掉的厚度。 */
+    int bottom = 0; /**< 下边缘被底部任务栏占掉的厚度。 */
+};
+
 /** @brief 一次框选的交互状态（只在 UI 线程读写）。
  *
  * 位置都是**覆盖窗口内容坐标**（物理像素，与窗口大小同一套单位；X11 / Windows 实测
@@ -207,6 +227,7 @@ enum class HoverTargetKind {
     NoTarget, /**< 光标下没有可吸附的目标。 */
     Window,   /**< 普通顶层窗口：吸附到该窗口矩形。 */
     Panel,    /**< 任务栏 / 面板（Windows Shell_TrayWnd、X11 DOCK）：吸附到当前显示器全屏。 */
+    PanelArea, /**< 面板占位带（X11 `_NET_WORKAREA` 推出的四边）：吸附到当前显示器全屏。 */
     Corner,   /**< 屏幕四角方块（见 kCornerSnapSize）：吸附到当前显示器全屏。 */
 };
 
@@ -214,7 +235,8 @@ enum class HoverTargetKind {
  * @brief 一次悬停判定的结果：命中的类别 + 吸附矩形 + 原生句柄。
  *
  * 矩形是**绝对屏幕坐标**（物理像素），由调用方减去覆盖层窗口位置换成绘制用的
- * 内容坐标。Panel / Corner 的目标是"当前显示器全屏"这个伪窗口，所以没有真实句柄。
+ * 内容坐标。Panel / PanelArea / Corner 的目标是"当前显示器全屏"这个伪窗口，所以
+ * 没有真实句柄。
  */
 struct HoverHit {
     HoverTargetKind kind = HoverTargetKind::NoTarget; /**< 命中类别。 */
@@ -300,6 +322,10 @@ struct RegionWindow::Impl {
     std::uint32_t themeColorRgb = 0x4C9AFFu;  // 主题色（0xRRGGBB，每次显示读一次配置）
     float uiScale = 1.0f;              // 当前显示器 content scale：只放大字号与装饰
     ScreenRect monitorRect;            // 当前覆盖的显示器矩形（绝对物理像素）
+    // 当前显示器四边的面板占位（物理像素）。X11 由 root 的 _NET_WORKAREA 推出（GNOME
+    // 顶栏/dock 是 shell 自己画的，XQueryTree 枚举不到）；其它平台恒 0（Windows 的任务栏
+    // 已有窗口类名识别，不依赖工作区）。每次开始框选重算一次，见 x11ReadPanelInsets。
+    PanelInsets panelInsets;
 #if defined(__linux__)
     // Linux 运行期后端：start() 里按环境变量判定一次，之后整个会话不变。
     LinuxSessionBackend linuxBackend = LinuxSessionBackend::Wayland;
@@ -348,18 +374,21 @@ struct RegionWindow::Impl {
     void updateSelection();
     void updateHover();
     /**
-     * @brief 判定光标下的悬停吸附目标：窗口 / 任务栏面板 / 屏幕四角。
+     * @brief 判定光标下的悬停吸附目标：窗口 / 任务栏面板 / 面板占位带 / 屏幕四角。
      *
-     * 优先级从高到低：屏幕四角 → 任务栏面板 → 普通窗口。角落方块可能整个压在某个
-     * 窗口（尤其最大化窗口）上，用户要的是"这块屏"；任务栏/面板本身在 Z 序最上层，
-     * 命中它就不要再去看它下面的窗口。三者统一返回绝对屏幕坐标矩形，调用方再换算成
-     * 覆盖层内容坐标——这样"全屏"和其他窗口走同一条绘制/确认路径（不新增事件/ABI）。
+     * 优先级从高到低：屏幕四角 → 任务栏面板窗口 → 面板占位带 → 普通窗口。角落方块
+     * 可能整个压在某个窗口（尤其最大化窗口）上，用户要的是"这块屏"；任务栏/面板窗口
+     * 本身在 Z 序最上层，命中它就不要再去看它下面的窗口；X11 的 GNOME 顶栏/dock 不是
+     * 窗口，只能用 `_NET_WORKAREA` 推出的四边面板带（panelInsets）命中——这条排在
+     * 普通窗口之前，否则带内被最大化窗口盖住时永远选不到全屏。三者统一返回绝对屏幕
+     * 坐标矩形，调用方再换算成覆盖层内容坐标——这样"全屏"和其他窗口走同一条
+     * 绘制/确认路径（不新增事件/ABI）。
      *
      * @param[in] screenX 光标的绝对屏幕横坐标（物理像素）。
      * @param[in] screenY 光标的绝对屏幕纵坐标（物理像素）。
      * @return 命中结果；没有目标时 kind == HoverTargetKind::NoTarget。
-     * @note 只读最近一次 windowScan 与 monitorRect（30ms 节流由 updateHover 负责），
-     *       不自己枚举窗口，所以可以在同一帧里被重复调用。
+     * @note 只读最近一次 windowScan、monitorRect 与 panelInsets（30ms 节流由 updateHover
+     *       负责），不自己枚举窗口，所以可以在同一帧里被重复调用。
      */
     HoverHit resolveHoverHit(int screenX, int screenY) const;
     void animateHover();
@@ -503,6 +532,32 @@ struct RegionWindow::Impl {
     std::uintptr_t x11NativeWindowHandle() const;
     /** @brief 把 X screen 尺寸与各显示器矩形写进日志（首次框选时一次）。 */
     void x11LogMonitorMetrics() const;
+    /**
+     * @brief 读 root 的 `_NET_WORKAREA`，换算出当前显示器四条边的面板占位厚度。
+     *
+     * `_NET_WORKAREA` 是 root 上的 `CARDINAL[4 * 虚拟桌面数]`（每个桌面一组
+     * `x,y,width,height`），表示"去掉面板后的工作区"。它减去当前显示器矩形就是四条
+     * 边被面板占掉的厚度：
+     *   top    = max(0, workarea.y - monitor.y)
+     *   left   = max(0, workarea.x - monitor.x)
+     *   right  = max(0, (monitor.x + monitor.width)  - (workarea.x + workarea.w))
+     *   bottom = max(0, (monitor.y + monitor.height) - (workarea.y + workarea.h))
+     *
+     * 为什么要它：GNOME 的顶栏 / dash-to-dock 是 shell 自己画的，不是
+     * `_NET_WM_WINDOW_TYPE_DOCK` 窗口，`XQueryTree` 枚举不到——只按窗口矩形做命中时，
+     * 鼠标移到面板占的区域不会高亮全屏。真机已确认覆盖层能盖住顶栏/dock（EWMH
+     * 全屏），但悬停面板区域仍需要这一层判定。
+     *
+     * 读不到 / 数值异常（负数、零宽高、超出 X screen、完全落在显示器外、inset ≥ 屏宽/
+     * 屏高）时把 out 置全 0 并记 debug 日志，**绝不拿可疑值去做命中**。
+     *
+     * @param[in]  monitor 当前覆盖的显示器矩形（绝对屏幕坐标 / 物理像素）。
+     * @param[out] out     四条边的面板厚度；失败时全 0。
+     * @return true = 读到且数值合理；false = 读不到 / 异常（out 已置全 0）。
+     * @note 每次开始框选、**覆盖层显示之前**调用一次：mutter 为全屏窗口隐藏面板时
+     *       可能临时把 `_NET_WORKAREA` 改回整屏，显示后再读就拿不到面板厚度了。
+     */
+    bool x11ReadPanelInsets(const ScreenRect& monitor, PanelInsets& out) const;
     /** @brief XGetImage 抓整块 X screen 并上传成 GL 纹理；失败时只 WARN、覆盖层退化为纯色底。 */
     bool x11CaptureBackground();
     /** @brief 把隐藏的覆盖层窗口搬到目标显示器、写 EWMH 全屏属性（X11 客户端可以自己定位）。 */

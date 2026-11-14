@@ -518,6 +518,18 @@ bool RegionWindow::Impl::startSelection(const std::string& purpose) {
     }
     monitorRect = monitor;
 
+    // 面板占位：X11 用 root 的 _NET_WORKAREA 推出当前显示器四条边的面板厚度（GNOME 顶栏/
+    // dock 是 shell 自己画的，不在 XQueryTree 的窗口列表里）；其它平台恒 0（Windows 的
+    // 任务栏已有窗口类名识别，不依赖工作区，作为兜底的 _NET_WORKAREA 不适用）。
+    // **必须在覆盖层显示之前读**：mutter 为全屏窗口隐藏面板时可能临时把工作区改回整屏，
+    // 显示后再读就拿不到面板厚度了。每次框选读一次（与主题色同一频率）。
+    panelInsets = PanelInsets{};
+#if defined(__linux__)
+    if (linuxBackend == LinuxSessionBackend::X11) {
+        x11ReadPanelInsets(monitor, panelInsets);
+    }
+#endif
+
     // 无边框窗口搬到目标显示器并铺满整块屏。位置/尺寸都是物理像素（PMv2 实测），
     // 150% 屏幕上就是 2560x1600，不是 1707x1067。整块显示器（不是工作区）——
     // 任务栏区域也在可框选范围内，与整屏截图的内容对齐。

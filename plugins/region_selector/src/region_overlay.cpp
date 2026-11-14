@@ -24,9 +24,12 @@
 // 换算一次，万一将来窗口被系统缩放也不会画歪。content scale 只放大字号与折角/边框
 // 这类装饰，绝不乘进区域坐标。
 //
-// 悬停判定（resolveHoverHit）的优先级：屏幕四角 → 任务栏/面板 → 普通窗口。前两者都
-// 映射成"当前显示器全屏"这个伪窗口矩形（用户要求：悬停在任务栏或屏幕四角时选中整屏），
-// 所以绘制与确认路径完全复用窗口吸附那一套，不新增事件、也不改 ABI。
+// 悬停判定（resolveHoverHit）的优先级：屏幕四角 → 任务栏/面板窗口 → 面板占位带 →
+// 普通窗口。前两者都映射成"当前显示器全屏"这个伪窗口矩形（用户要求：悬停在任务栏或
+// 屏幕四角时选中整屏）；面板占位带是 X11 专有的一层——GNOME 的 shell 顶栏/dock 不是
+// DOCK 客户端窗口，枚举不到，只能用 `_NET_WORKAREA` 推出的四边厚度命中（panelInsets，
+// 见 region_geometry_x11.cpp）。三者绘制与确认路径完全复用窗口吸附那一套，不新增事件、
+// 也不改 ABI。
 //
 // 悬停枚举按平台层分派：Windows 走 EnumWindows + DWM 边界；X11 走 XQueryTree +
 // EWMH 类型过滤；Wayland 恒为空结果（协议不允许枚举，吸附关闭）。交互代码本身与
@@ -128,6 +131,40 @@ bool isInMonitorCorner(const ScreenRect& monitor, int screenX, int screenY) {
     return nearVerticalEdge && nearHorizontalEdge;
 }
 
+/**
+ * @brief 光标是否落在当前显示器四条边的"面板占位带"里（工作区之外的区域）。
+ *
+ * 面板占位来自 X11 的 `_NET_WORKAREA`（见 `RegionWindow::Impl::x11ReadPanelInsets`）：
+ * GNOME 的顶栏 / dash-to-dock 是 shell 自己画的，不在 XQueryTree 的窗口列表里，按窗口
+ * 矩形永远命中不到；工作区与显示器矩形相减得到的四条厚度就是它们实际占的区域。
+ * inset 全 0（其它平台 / 读不到 / 没有面板）时恒返回 false，不影响原有命中。
+ *
+ * 语义与"任务栏/面板窗口"一致：命中后吸附到**当前显示器全屏**，而不是那条带本身。
+ *
+ * @param[in] monitor 当前覆盖的显示器矩形（绝对屏幕坐标）。
+ * @param[in] insets  这块显示器四条边的面板厚度（物理像素，均由 x11ReadPanelInsets 校验）。
+ * @param[in] screenX 光标的绝对屏幕横坐标。
+ * @param[in] screenY 光标的绝对屏幕纵坐标。
+ * @return true = 光标落在上/下/左/右任一条带内，且位于这块显示器上。
+ */
+bool isInPanelInsetBand(const ScreenRect& monitor, const PanelInsets& insets, int screenX,
+                        int screenY) {
+    if (monitor.width <= 0 || monitor.height <= 0) {
+        return false;
+    }
+    if (insets.top <= 0 && insets.left <= 0 && insets.right <= 0 && insets.bottom <= 0) {
+        return false;  // 没有可识别的面板占位（其它平台 / 读不到）：保持原有命中行为
+    }
+    if (!rectContains(monitor, screenX, screenY)) {
+        return false;  // inset 是相对这块显示器算的，不要拿去命中另一块屏
+    }
+    const int localX = screenX - monitor.x;
+    const int localY = screenY - monitor.y;
+    // 上/左边用"距起点多远"，下/右边用"到终点还有多远"（与四角判定同一套左闭右开语义）。
+    return localY < insets.top || localY >= monitor.height - insets.bottom ||
+           localX < insets.left || localX >= monitor.width - insets.right;
+}
+
 }  // namespace
 
 void RegionWindow::Impl::normalizeRect(int ax, int ay, int bx, int by, int& x, int& y,
@@ -187,7 +224,18 @@ HoverHit RegionWindow::Impl::resolveHoverHit(int screenX, int screenY) const {
         }
     }
 
-    // 3) 普通窗口：列表已按 Z 序排好，第一个包含点的就是最上层窗口。
+    // 3) 面板占位带（X11）：GNOME 的 shell 顶栏 / dash-to-dock 不是 DOCK 客户端窗口，
+    //    上面的 panels 列表里没有它们，只能靠 `_NET_WORKAREA` 推出的四边厚度命中。
+    //    排在四角之后、普通窗口之前：面板带全在屏幕边缘，那里通常压着最大化窗口，
+    //    用户要的是"这块屏"；屏幕中间的面板/窗口仍按普通窗口命中。inset 全 0
+    //    （其它平台 / 读不到）时这个分支恒不命中。
+    if (hasMonitor && isInPanelInsetBand(monitorRect, panelInsets, screenX, screenY)) {
+        hit.kind = HoverTargetKind::PanelArea;
+        hit.rect = monitorRect;
+        return hit;
+    }
+
+    // 4) 普通窗口：列表已按 Z 序排好，第一个包含点的就是最上层窗口。
     for (const WindowTarget& target : windowScan.windows) {
         if (!rectContains(target, screenX, screenY)) {
             continue;
@@ -267,8 +315,8 @@ void RegionWindow::Impl::updateHover() {
     if (hit.kind == HoverTargetKind::NoTarget) {
         if (hover.active) {
             shot::Logger(host).debug(
-                "region_selector：光标下没有可吸附目标（窗口 / 任务栏面板 / 屏幕四角），"
-                "隐藏悬停框");
+                "region_selector：光标下没有可吸附目标（窗口 / 任务栏面板 / 面板占位区域 / "
+                "屏幕四角），隐藏悬停框");
         }
         // 下次从"无框"变"有框"时直接落位，不要从上一个目标的旧位置飞进来。
         hover.active = false;
@@ -310,11 +358,16 @@ void RegionWindow::Impl::updateHover() {
                           local.width, local.height);
         } else {
             // "全屏"伪目标没有真实窗口，日志里写清是哪种命中，排查时不用猜。
+            const char* source = "任务栏/面板";
+            if (hit.kind == HoverTargetKind::Corner) {
+                source = "屏幕四角";
+            } else if (hit.kind == HoverTargetKind::PanelArea) {
+                source = "面板区域（X11 _NET_WORKAREA 占位）";
+            }
             std::snprintf(text, sizeof(text),
                           "region_selector：悬停%s → 当前显示器全屏 rect=(%d,%d) %dx%d"
                           "（已换算到覆盖层坐标）",
-                          (hit.kind == HoverTargetKind::Panel) ? "任务栏/面板" : "屏幕四角",
-                          local.x, local.y, local.width, local.height);
+                          source, local.x, local.y, local.width, local.height);
         }
         shot::Logger(host).debug(text);
     }
