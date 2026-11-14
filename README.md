@@ -9,22 +9,32 @@
 
 ![Plugin-shot](document/assets/banner.png)
 
-> **万物皆插件的截图工具。** 宿主只做「宿主」该做的事——加载、校验、调度；
-> 截图、图像处理、长截图、录屏……所有能力都由插件提供。
+> **一句话，给截图工具加个功能。**
+> 万物皆插件：宿主只做加载、校验、调度；截图、保存、剪贴板、通知、托盘、热键、设置页都由插件提供。
+> 缺什么功能，跟 DSH 说一句——它用离线 SDK 写插件、编译、用真实宿主自检，再经你同意装进插件目录。
 
 **Plugin-shot** 是一个 Windows-first 的 C++23 截图工具，也是一次「把桌面工具做成插件宿主」的实验：
 宿主很小，插件可以独立编译、独立分发、运行期热插拔；ABI 只追加，数据形状不进契约。
 
 ## 30 秒了解
 
+- **一句话加功能**：装 DSH 技能 `plugin-shot-dev`，对 DSH 说“每次截图后在右下角加时间水印”，它下 SDK、生成工程、编译、用 `--test-plugin` 自检，再经你同意装进 `plugins/`。
+- **不用宿主源码**：离线 SDK 核心包 0.9 MB，自带契约头、构建规则、4 个模板、2 个 demo；不装 vcpkg、不装 OpenCV（需要时加 13 MB 叠加包）。
+- **真宿主自检**：`--test-plugin` 走真实加载链路 + 隔离数据目录，PASS/FAIL/SKIP + JSON；两个 demo 自检 PASS（水印 22/0/3，归档 15/0/5）。
 - **Windows 即用**：Windows 10/11 x64 便携版，解压运行 `Plugin-shot.exe`，无需安装。
 - **Linux 已验证**：Ubuntu 24.04（X11）/ Ubuntu 26（Wayland，单显示器）核心链路已真机跑通，按 [构建](#构建) 编译。
-- **三种入口**：`Ctrl+Alt+S` 整屏截图、`Ctrl+Alt+A` 区域框选（悬停窗口吸附、单击截窗）、`Ctrl+Alt+O` 打开设置；Windows / X11 为全局热键，Wayland 用 `session_control` 的 D-Bus 入口 + 桌面自定义快捷键。
-- **截图之后**：自动保存 PNG/JPEG、写入剪贴板、弹系统通知；目录、格式、质量、文件名模板都可改。
+- **三种入口 / 截图之后**：`Ctrl+Alt+S` 整屏、`Ctrl+Alt+A` 区域框选（悬停吸附、单击截窗）、`Ctrl+Alt+O` 设置；保存 PNG/JPEG、写剪贴板、弹通知。Windows / X11 为全局热键，Wayland 用 `session_control` 的 D-Bus 入口。
 - **能力即插件**：托盘、热键、设置页、保存、通知、剪贴板本身都是插件，可在设置页一键禁用/启用。
-- **可扩展**：官方**离线插件 SDK**（核心包约 1 MB + 可选 OpenCV 叠加包）自带契约头、构建规则、
-  文档、模板与两个"一句话 demo"；写完的插件用宿主 `--test-plugin` 离线自检，不用改宿主、不装 vcpkg。
-  配套 DSH 技能 `plugin-shot-dev` 让 AI 直接"一句话写插件"。
+
+### 一句话是怎么发生的
+
+1. 在 DSH 里安装 `dsh-plugin-shot-dev/`（设置 → 插件 → 添加插件 → 选择目录；需要 DSH 0.2.x）。
+2. 对 DSH 说清楚想要什么，例如“截图保存后自动按日期归档到「年-月-日」文件夹”。
+3. DSH 判断能力 → 下载 SDK → 脚手架生成工程 → 写代码 / 配置项 / 中英文案。
+4. `cmake` 编译 + `Plugin-shot.exe --test-plugin <dll> --json-out report.json` 自检；PASS 后再交付。
+5. 你确认后 DLL 进 `plugins/`，重启或截一张验收；卸载就是删 DLL。
+
+细节见 [`document/AUTHORING.md`](document/AUTHORING.md)、[`document/PLUGIN_TEST.md`](document/PLUGIN_TEST.md)、[`dsh-plugin-shot-dev/README.md`](dsh-plugin-shot-dev/README.md)。
 
 ### 下载
 
@@ -36,6 +46,8 @@
 | `Plugin-shot-0.1.0-win64.zip`（约 6.5 MB） | Windows x64 便携版，解压双击 `Plugin-shot.exe` |
 | `plugin-shot-sdk-0.1.0-win64.zip`（约 0.9 MB） | 离线插件 SDK 核心包：契约头、`shot_plugin_helpers`、构建模块、文档、模板、两个 demo、技能 |
 | `plugin-shot-sdk-0.1.0-win64-opencv.zip`（约 13 MB） | 可选 OpenCV 叠加包；解压后把 `opencv/` 放进核心 SDK 根 |
+
+> 0.1.0 发布后修复了一批发现在发布包中的问题，当前资产为**修复版**（`--help` / `--capture` / `--test-plugin` 已复测）；SHA-256 见 Release 页。
 
 每个 zip 都有同名 `.sha256`。0.1.0 的**预编译包只提供 Windows**；**Linux 已在 Ubuntu 24.04
 （X11）与 Ubuntu 26（Wayland，单显示器）真机验证**，按 [构建](#构建) 从源码编译

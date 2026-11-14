@@ -9,9 +9,9 @@
 
 ![Plugin-shot](document/assets/banner.png)
 
-> **A screenshot tool where everything is a plugin.** The host does only what a host
-> should — load, validate, dispatch; screenshots, image processing, long capture,
-> screen recording and every other capability come from plugins.
+> **One sentence, one new feature.**
+> Everything is a plugin: the host only loads, validates and dispatches; screenshots, saving, clipboard, notifications, tray, hotkeys and settings are plugins.
+> Missing a feature? Tell DSH — it writes a plugin with the offline SDK, builds it, self-tests it through the real host, and installs it only with your consent.
 
 **Plugin-shot** is a Windows-first C++23 screenshot tool and an experiment in turning a
 desktop utility into a plugin host: a small host, independently built and distributed
@@ -19,15 +19,23 @@ plugins, runtime hot-plug, an append-only ABI, and UI data that never enters the
 
 ## At a glance
 
-- **Windows: download and run**: portable Windows 10/11 x64 build; unzip and start `Plugin-shot.exe`.
-- **Linux: verified on real hardware**: the core chain runs on Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland, single monitor); build it from source as described under [Build](#build).
-- **Three entry points**: `Ctrl+Alt+S` full screen, `Ctrl+Alt+A` region capture (hover a window to snap, click to capture it), `Ctrl+Alt+O` settings; Windows / X11 use global hotkeys, while Wayland uses the `session_control` D-Bus entry plus a desktop custom shortcut.
-- **After the shot**: save PNG/JPEG, copy to the clipboard, show a system notification; output folder, format, quality and filename template are configurable.
-- **Everything is a plugin**: tray, hotkeys, settings UI, saving, notifications and clipboard are plugins themselves, each can be disabled or re-enabled in the settings window.
-- **Extend it**: the official **offline plugin SDK** (a ~1 MB core package plus an optional OpenCV
-  overlay) ships the contract headers, build rules, docs, templates and two "one-sentence" demos.
-  Self-test a finished plugin with `Plugin-shot.exe --test-plugin` — no host changes, no vcpkg.
-  A DSH skill (`plugin-shot-dev`) lets an AI write plugins from one sentence.
+- **One sentence, one feature**: install the DSH skill `plugin-shot-dev`, say “add a timestamp watermark at the bottom-right”, and it downloads the SDK, scaffolds, writes, builds, self-tests with `--test-plugin`, and installs only after you agree.
+- **No host source needed**: the offline SDK core is 0.9 MB with contract headers, build rules, four templates and two demos; no vcpkg, no OpenCV unless you add the 13 MB overlay.
+- **Real-host self-test**: `--test-plugin` runs the real loading path in an isolated data directory and reports PASS/FAIL/SKIP + JSON; the two demos PASS (watermark 22/0/3, archive 15/0/5).
+- **Windows ready**: portable Windows 10/11 x64 build; unzip and start `Plugin-shot.exe`.
+- **Linux verified**: the core chain runs on Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland, single monitor); build it from source under [Build](#build).
+- **Three entry points / after the shot**: `Ctrl+Alt+S` full screen, `Ctrl+Alt+A` region capture (hover-to-snap, click-to-capture), `Ctrl+Alt+O` settings; save PNG/JPEG, copy to the clipboard, show a notification. Windows / X11 use global hotkeys; Wayland uses the `session_control` D-Bus entry.
+- **Everything is a plugin**: tray, hotkeys, settings UI, saving, notifications and clipboard are plugins themselves, each can be disabled or re-enabled.
+
+### How one sentence becomes a plugin
+
+1. Install `dsh-plugin-shot-dev/` in DSH (Settings → Plugins → Add plugin → choose the folder; requires DSH 0.2.x).
+2. Tell DSH what you want, e.g. “archive every screenshot into a YYYY-MM-DD folder”.
+3. DSH picks the capability → downloads the SDK → scaffolds from a template → writes the code, config and translations.
+4. `cmake` build + `Plugin-shot.exe --test-plugin <dll> --json-out report.json` self-test; deliver only after PASS.
+5. With your consent, the DLL goes into `plugins/`; restart or take a shot to verify; uninstall by deleting the DLL.
+
+Details: [`document/AUTHORING.md`](document/AUTHORING.md), [`document/PLUGIN_TEST.md`](document/PLUGIN_TEST.md), [`dsh-plugin-shot-dev/README.md`](dsh-plugin-shot-dev/README.md).
 
 ### Download
 
@@ -39,6 +47,8 @@ plugins, runtime hot-plug, an append-only ABI, and UI data that never enters the
 | `Plugin-shot-0.1.0-win64.zip` (~6.5 MB) | Windows x64 portable: unzip and run `Plugin-shot.exe` |
 | `plugin-shot-sdk-0.1.0-win64.zip` (~0.9 MB) | Offline plugin SDK core: contract headers, `shot_plugin_helpers`, build modules, docs, templates, two demos, the skill |
 | `plugin-shot-sdk-0.1.0-win64-opencv.zip` (~13 MB) | Optional OpenCV overlay; unzip the `opencv/` folder into the core SDK root |
+
+> The 0.1.0 assets were rebuilt after the first release package exposed a batch of issues; the current assets are the **fixed build** (`--help` / `--capture` / `--test-plugin` re-checked). SHA-256 is on the Release page.
 
 Every zip has a matching `.sha256`. 0.1.0 ships a **prebuilt Windows package only**; the **Linux core
 path is verified on real hardware** under Ubuntu 24.04 (X11) / Ubuntu 26 (Wayland, single monitor),
