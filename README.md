@@ -96,7 +96,7 @@
 | 混合 DPI 多显示器采集（物理虚拟桌面 3584x1600；采集线程 DPI 上下文兜底；负 origin 未实机验证） | ✅ 可用（`document/CAPTURE.md` §2.1） |
 | 设置页 DPI（双屏 150%+100%：跨屏拖动重缩放、几何按目标屏 clamp、不累积；其它 DPI 组合/三屏未验证） | ✅ 可用（`document/SETTINGS.md` §6.1） |
 | 命令行 `--capture`（工作线程 + 退出前派发一轮事件）/ `--settings` / `--help` | ✅ 可用 |
-| GitHub Actions 跨平台 CI（Linux/macOS/Windows 矩阵 + vcpkg 缓存 + preset 构建 + `--help` 冒烟） | workflow 已就绪；Windows job 已通过，Linux/macOS 的 configure 失败记录与真实平台状态见「平台」与 [`document/PLATFORMS.md`](document/PLATFORMS.md) |
+| GitHub Actions 跨平台 CI（Linux/macOS/Windows 矩阵 + vcpkg 缓存 + preset 构建 + `--help` 冒烟） | ✅ 2026-11-14 的 run 三平台 job 全部通过（Linux 用 ubuntu-24.04）；CI 只跑 `--help`，真实平台状态见「平台」与 [`document/PLATFORMS.md`](document/PLATFORMS.md) |
 | 宿主自身设置（`core` 伪插件：界面语言 / 日志级别 / 控制台 / 文件日志 / 主题色） | ✅ 可用 |
 | 插件元数据贴尾（`metadata.json` → DLL 尾部，纯 CMake） | ✅ 可用（宿主加载前读取：预筛 + 依赖拓扑排序） |
 | 元数据构建期校验（id 唯一 / interfaces 已注册 / abi 与头一致 / 依赖语法） | ✅ 可用（`cmake/ValidatePluginMeta.cmake`） |
@@ -212,8 +212,8 @@ Linux X11 分支用的是系统 X11 开发包（`libx11-dev` / `libxext-dev` / `
 24.04 编译通过，Windows 侧全量构建 exit 0。
 
 **CI**：`.github/workflows/cmake.yml` 已就绪（Linux / macOS / Windows 矩阵 + vcpkg 清单缓存 +
-CMake preset 构建 + `--help` 无头冒烟）。最近一次可见的 run：Windows job 通过；Linux / macOS 在
-configure 阶段失败（vcpkg baseline，已改但未复跑）。逐条结论与“CI 绿 ≠ 平台可用”见
+CMake preset 构建 + `--help` 无头冒烟）。2026-11-14 的 run 三个 job 全部通过（Linux 用
+ubuntu-24.04）；CI 只证明构建与 `--help` 冒烟，不代表真实桌面可用。逐条结论见
 [`document/PLATFORMS.md`](document/PLATFORMS.md) §4。
 
 **跨平台可编译性现状**：Linux 已在 WSL2 实测（Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 /
@@ -576,7 +576,7 @@ Windows 构建；`session_control` 反过来只在 Linux 构建，D-Bus 触发�
 `example_processor`、`opencv_provider`、`translator`。
 
 **仍未验证**：X11 多显示器 / 多 X screen / 负坐标；Wayland 窗口悬停（协议不允许，属平台限制）；
-macOS 全部；CI 的 Linux / macOS job（等下一轮结果）。
+macOS 全部（CI 的 macOS job 已能通过 configure/build，但没有真机运行）。
 
 **完整的跨平台能力矩阵（Windows / Wayland / X11 / macOS 每格状态、原因与补齐路径）见
 [`document/PLATFORMS.md`](document/PLATFORMS.md)；本节只保留构建与验证结论，不要读成
@@ -588,8 +588,8 @@ macOS 全部；CI 的 Linux / macOS job（等下一轮结果）。
 | Linux（WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`） | ✅ 编译通过（构建环境）：configure + build 通过（0 warning），产出 `Plugin-shot` 与 12 个 `.so`（`screen_capture` / `region_selector` / `session_control` / `clipboard` / `notify` / `tray`（SNI）/ `hotkey`（含 X11 分支）/ `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` / `translator`）；`--help` 退出 0；真机功能验证见下面两行。`SHOT_ENABLE_OPENCV=OFF` 也通过；产物 glibc 上限见上文 |
 | Linux（Wayland，默认目标） | ✅ 已验证（Ubuntu 26 真机，单显示器）：portal ScreenCast 整屏截图（含系统授权弹窗）；门户定格图 + 自有窗口拖选的 B 方案框选（确认后覆盖层立即消失、无“应用无响应”、保存+剪贴板；隐藏后先 `glfwPollEvents`、编码在工作线程）；`session_control` 的 D-Bus 触发；剪贴板（经 XWayland 桥接）；libnotify 通知；设置页（页签/插件页/枚举多语言）；语言包切换；托盘（SNI + dbusmenu，顶栏图标/菜单正常）。剩余：窗口悬停吸附属协议限制（不提供）、多屏 / HiDPI 拼接未实现。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
 | Linux（X11，第二优先） | ✅ 已验证（Ubuntu 24.04 真机，单显示器/单 X screen）：整屏采集（Ctrl+Alt+S / D-Bus）；`XGrabKey` 热键（Ctrl+Alt+A / Ctrl+Alt+S / Ctrl+Alt+O）；框选覆盖层（XComposite 背景快照，不再灰遮罩、覆盖层高于顶栏/dock、悬停窗口吸附、顶栏/dock 与四角吸附=全屏、单击截窗、拖框、Esc 取消、确认后保存+剪贴板）；libnotify 通知（标题/正文、应用名正确、点击打开）；剪贴板；设置页；语言包；D-Bus 触发；托盘（顶栏图标/菜单）。剩余：多显示器 / 多 X screen / 负坐标未验证。见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
-| macOS | **未构建、未在真机验证**：CI 的 macOS job 在 configure 阶段失败（vcpkg/工具链），只有代码审计（`base.cpp` 的 `_NSGetExecutablePath` / 空串 UB / HOME 兜底）；没有真实构建/运行结论 |
-| GitHub Actions | workflow 已就绪；Windows job 已通过，Linux/macOS 有 configure 阶段失败记录（见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §4）；CI 通过也不代表平台可用 |
+| macOS | **未构建、未在真机验证**：CI 的 macOS job 已能通过 configure/build（2026-11-14 run），但只有代码审计（`base.cpp` 的 `_NSGetExecutablePath` / 空串 UB / HOME 兜底）；没有真实构建/运行结论 |
+| GitHub Actions | 2026-11-14 的 run 三平台 job 全部通过（见 [`document/PLATFORMS.md`](document/PLATFORMS.md) §4）；CI 只做 `--help` 冒烟，不代表平台可用 |
 
 表里的 Linux 结论都来自同一份二进制；X11 与 Wayland 的运行能力差别很大（Wayland 不允许全局
 抓屏、全局热键、全局覆盖层），见矩阵的两列。

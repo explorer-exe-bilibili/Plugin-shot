@@ -103,7 +103,7 @@ current main line.
 | Mixed-DPI multi-monitor capture (physical virtual desktop 3584x1600; per-call thread DPI context fallback; negative origin not verified on real hardware) | ✅ working (`document/CAPTURE.md` §2.1) |
 | Settings-window DPI (dual-screen 150%+100%: live rescale while dragging across monitors, geometry clamped to the target screen's DPI, non-accumulating; other DPI mixes / 3+ screens unverified) | ✅ working (`document/SETTINGS.md` §6.1) |
 | Command line `--capture` (worker thread + one dispatch round before exit) / `--settings` / `--help` | ✅ working |
-| GitHub Actions cross-platform CI (Linux/macOS/Windows matrix + vcpkg cache + presets + `--help` smoke) | workflow ready; the Windows job passes, while the Linux/macOS configure failures and the real per-platform status are covered by Platform below and [`document/PLATFORMS.md`](document/PLATFORMS.md) |
+| GitHub Actions cross-platform CI (Linux/macOS/Windows matrix + vcpkg cache + presets + `--help` smoke) | ✅ all three jobs pass in the 2026-11-14 run (Linux on ubuntu-24.04); CI only runs the `--help` smoke, so see Platform for real availability |
 | Host settings (`core` pseudo-plugin: UI language / log level / console / file log / theme color) | ✅ working |
 | Plugin metadata appended to the DLL tail (`metadata.json`, CMake only) | ✅ working (the host reads it before loading: prefilter + dependency topological sort) |
 | Build-time metadata validation (unique ids / registered interfaces / abi matches the header / dependency syntax) | ✅ working (`cmake/ValidatePluginMeta.cmake`) |
@@ -223,10 +223,9 @@ Linux X11 branch uses system X11 development packages (`libx11-dev` / `libxext-d
 The Linux side has been compiled under WSL Ubuntu 24.04, and the full Windows build exits 0.
 
 **CI**: `.github/workflows/cmake.yml` is ready (Linux / macOS / Windows matrix + vcpkg manifest
-cache + CMake presets + headless `--help` smoke test). In the latest visible run the Windows job
-passed while Linux / macOS failed at configure (vcpkg baseline — fixed but not re-run yet). See
-[`document/PLATFORMS.md`](document/PLATFORMS.md) §4 for the per-platform conclusion and why a green
-CI run is not platform support.
+cache + CMake presets + headless `--help` smoke test). The 2026-11-14 run passes all three jobs
+(Linux on ubuntu-24.04); CI only proves the build + `--help` smoke test, not real desktop
+availability. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §4 for the per-platform conclusion.
 
 **Cross-platform status**: Linux has been verified locally under WSL2 (Ubuntu 24.04.5 LTS /
 GCC 13.3.0 / x86_64 / vcpkg `x64-linux` / CMake 3.28.3 / Ninja 1.11.1 / Release): configure +
@@ -625,8 +624,8 @@ compile `hotkey_window_stub.cpp`. Also cross-platform buildable: `settings_ui` (
 `example_processor`, `opencv_provider`, `translator`.
 
 **Still unverified**: X11 multi-monitor / multi X screen / negative origin; Wayland hover-to-pick
-window (not allowed by the protocol, a platform limitation); macOS entirely; the CI Linux / macOS
-jobs (awaiting the next round).
+window (not allowed by the protocol, a platform limitation); macOS entirely (the macOS CI job now
+configures/builds, but there is no real-hardware run).
 
 **The complete capability matrix (Windows / Wayland / X11 / macOS, one status per cell, with
 reasons and porting gaps) is [`document/PLATFORMS.md`](document/PLATFORMS.md); this section keeps
@@ -638,8 +637,8 @@ only build/verification conclusions — do not read it as "supported everywhere"
 | Linux (WSL2 Ubuntu 24.04.5 LTS / GCC 13.3.0 / x86_64 / vcpkg `x64-linux`) | ✅ compiles (build environment): configure + build pass (0 warnings), producing `Plugin-shot` and 12 `.so` files (`screen_capture` / `region_selector` / `session_control` / `clipboard` / `notify` / `tray` (SNI) / `hotkey` (with its X11 branch) / `settings_ui` / `image_saver` / `example_processor` / `opencv_provider` / `translator`); `--help` exits 0; real-hardware verification is covered by the next two rows. `SHOT_ENABLE_OPENCV=OFF` also passes; see the glibc ceiling above |
 | Linux (Wayland, default target) | ✅ verified (Ubuntu 26 real hardware, single monitor): portal ScreenCast full-screen capture (incl. the system permission dialog); the portal-snapshot + drag-selection plan B (the overlay disappears immediately after confirming, no "application not responding", save + clipboard; polls `glfwPollEvents` after hiding, encodes on a worker thread); the `session_control` D-Bus trigger; the X11-selection clipboard (through XWayland); libnotify notifications; the settings window (tabs / plugin page / enum i18n); language-pack switching; the tray (SNI + dbusmenu, top-bar icon/menu work). Remaining: hover-to-pick-window is a protocol limitation (not provided), multi-monitor / HiDPI stitching is not implemented. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.1 |
 | Linux (X11, second priority) | ✅ verified (Ubuntu 24.04 real hardware, single monitor / single X screen): full-screen capture (Ctrl+Alt+S / D-Bus); `XGrabKey` hotkeys (Ctrl+Alt+A / Ctrl+Alt+S / Ctrl+Alt+O); the selection overlay (XComposite background snapshot, no more grey mask, overlay above the top bar/dock, hover-to-pick-window, top bar/dock and screen-corner snapping = full screen, click-to-capture-window, drag selection, Esc to cancel, save + clipboard after confirming); libnotify notifications (title/body, correct app name, click to open); clipboard; settings window; language packs; D-Bus triggering; the tray (top-bar icon/menu). Remaining: multi-monitor / multi X screen / negative origin unverified. See [`document/PLATFORMS.md`](document/PLATFORMS.md) §3.2 |
-| macOS | **not built and not verified on real hardware**: the CI macOS job fails at configure (vcpkg/toolchain); code audit only (`base.cpp`'s `_NSGetExecutablePath` / empty-string UB / HOME fallback); no real build or run result |
-| GitHub Actions | workflow ready; the Windows job passes while Linux/macOS have configure-stage failure records (see [`document/PLATFORMS.md`](document/PLATFORMS.md) §4); a green CI run does not mean the platform is usable |
+| macOS | **not built and not verified on real hardware**: the CI macOS job now configures/builds (2026-11-14 run); code audit only (`base.cpp`'s `_NSGetExecutablePath` / empty-string UB / HOME fallback); no real build or run result |
+| GitHub Actions | all three jobs pass in the 2026-11-14 run (Linux on ubuntu-24.04; see [`document/PLATFORMS.md`](document/PLATFORMS.md) §4); a green CI run only covers build + `--help`, not real platform usability |
 
 The Linux results above come from one binary; X11 and Wayland differ greatly at runtime
 (Wayland disallows global screen capture, global hotkeys and global overlays) — see the two

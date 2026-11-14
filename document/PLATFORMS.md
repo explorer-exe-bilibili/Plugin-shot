@@ -132,7 +132,7 @@ X11 的采集 / 热键 / 覆盖层三件套已在 Ubuntu 24.04 / X11 / 单显示
 
 | 能力 | 要补齐什么 | 现状 / 备注 |
 | --- | --- | --- |
-| 构建 | 先让 vcpkg `arm64-osx` + CMake preset 通过 configure/build；统一本地默认 `x64-osx` 与 CI 的 `arm64-osx`；处理 Mach-O 贴尾对 ad-hoc 签名的影响 | CI 的 macOS job 从未进入编译，历史上在 configure 阶段失败 |
+| 构建 | 先让 vcpkg `arm64-osx` + CMake preset 通过 configure/build；统一本地默认 `x64-osx` 与 CI 的 `arm64-osx`；处理 Mach-O 贴尾对 ad-hoc 签名的影响 | CI 的 macOS job 现已通过 configure/build（2026-11-14 run）；仍无真机运行 |
 | 屏幕采集 | ScreenCaptureKit（macOS 12.3+）或 `CGDisplayStream`；申请“屏幕录制”TCC 权限；多显示器坐标与光标 | 当前只有 GDI 实现，macOS 构建期跳过 |
 | 全局热键 | `RegisterEventHotKey`（Carbon/HIToolbox，不需要辅助功能授权）或 `CGEventTap`（需要“辅助功能”授权） | 没有原生实现；macOS 编 `hotkey_window_stub.cpp`（发布列表与配置项、不注册），且 macOS 从未成功构建 |
 | 剪贴板 | `NSPasteboard` 写 `NSImage`/PNG | 没有实现；`clipboard` 的 CMake 里已留 TODO |
@@ -151,21 +151,20 @@ X11 的采集 / 热键 / 覆盖层三件套已在 Ubuntu 24.04 / X11 / 单显示
 | 平台 | configure | build | 真机运行 | 结论 |
 | --- | --- | --- | --- | --- |
 | Windows | ✅ 本机与 Windows job | ✅ | ✅ 完整采集/设置/热键/剪贴板/通知/框选 e2e（本轮 8 个脚本全绿） | 唯一完整可用平台 |
-| Linux（X11 / Wayland 共用） | 🟡 本地 WSL2 通过（含 Linux 平台插件）；workflow 已补 Linux 依赖，最近可见 run 仍失败在 vcpkg baseline，修复后未复跑 | 🟡 同左 | 🟡 仅 `--help`，真实桌面未跑 | 只证明“能编译” |
-| macOS | ❌ 从未通过 | ❌ 无产物 | ❌ 无真机 | 只有代码审计 |
+| Linux（X11 / Wayland 共用） | ✅ 本机 WSL2 与 Linux job（ubuntu-24.04，2026-11-14 run） | ✅ 12 个 .so | 🟡 仅 `--help`，真实桌面未跑（真机见 §2/§3） | CI 只证明“能编译” |
+| macOS | ✅ macOS job（2026-11-14 run） | ✅ CI 产物 | ❌ 无真机 | CI 只证明能编译，无真机结论 |
 
 - **Windows job**：最近一次可见的 CI run 中通过；本机真机验证（`tools/verify/`）是主要证据。
 - **Linux job**：WSL2 Ubuntu 24.04 + GCC 13.3 全量构建通过，产出宿主与 12 个 `.so`（13 个插件
   工程减去仅 Windows 的 `long_capture`；含 `screen_capture` / `region_selector` /
   `session_control` / `clipboard` / `notify` / `tray` 的 Linux 实现，以及带 X11 分支的 `hotkey`）；
-  `--help` 退出 0。这是**本机 WSL 结论**，不是 CI 结论；workflow 的 apt 步骤已补这些依赖
-  （`fc2d69e`），但 CI run 还没复跑。
-- **macOS job**：从未成功进入编译。历史上失败在 configure 阶段（vcpkg/工具链），本机没有 Mac。
-- **CI 的 Linux job 仍不是绿的**：workflow 已安装 `libglib2.0-dev` / `libportal-dev` /
-  `libpipewire-0.3-dev` / `libspa-0.2-dev` / `libnotify-dev` / `libx11-dev` / `libxext-dev` /
-  `libxfixes-dev` / `libxrandr-dev` 等依赖；最近一次可见的失败点是 `vcpkg-configuration.json` 的
-  builtin-baseline（已改，未复跑）。本机 WSL 已装齐这些包，所以本地构建通过；在 CI 复跑变绿之前，
-  不要把本项目写成“CI 已通过 Linux 构建”。
+  `--help` 退出 0。2026-11-14 的 CI run（ubuntu-24.04）中 Linux job 通过；CI 只跑 `--help`，
+  真实桌面仍以真机验证为准。
+- **macOS job**：2026-11-14 的 CI run 中通过 configure/build；本机没有 Mac，仍无真机运行。
+- **CI 的 Linux job 已绿**：2026-11-14 的 run 在 `ubuntu-24.04` 上通过（此前 22.04 因 libportal /
+  pipewire 版本太旧失败）；workflow 已安装 `libglib2.0-dev` / `libportal-dev` /
+  `libpipewire-0.3-dev` / `libspa-0.2-dev` / `libnotify-dev` / X11 开发包。CI 只跑 `--help`，
+  runner 没有真实 Wayland 会话，不能据此判断桌面可用。
 - **CI 绿 ≠ 平台可用**：
   1. `--help` 在日志、插件加载和 GUI 初始化之前就返回，连插件都没加载；
   2. Linux 构建产物里已经有 `screen_capture`，但 runner 没有真实 Wayland 会话，portal/PipeWire
