@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-shot-dev",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Plugin-shot plugin development skill for DeepSeek Harness: download the offline SDK, then write, build and self-test a Plugin-shot plugin without the host source tree.",
   "keywords": [
     "dsh-plugin",
@@ -20,13 +20,27 @@
     "lib",
     "skills",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "author": "explorer-exe-bilibili",
+  "homepage": "https://github.com/explorer-exe-bilibili/Plugin-shot/tree/main/dsh-plugin-shot-dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/explorer-exe-bilibili/Plugin-shot.git",
+    "directory": "dsh-plugin-shot-dev"
+  },
+  "bugs": {
+    "url": "https://github.com/explorer-exe-bilibili/Plugin-shot/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "license": "Apache-2.0"
 }

@@ -10,30 +10,30 @@
 3. **要换"保存"本身（格式/目录/命名/质量）？** → `shot.image_saver`（`image_saver` 模板）。
    注意：内置保存器先加载，换保存器通常要禁用内置 `image_saver.main`，影响所有截图。
 
-| 需求原话（示例） | 实现位置 | 模板 |
-| --- | --- | --- |
-| "右下角加时间水印" / "打码" / "模糊" / "调色" / "加边框" | `ShotImageProcessorV1::process` 原地改像素 | `image_processor` |
-| "按日期归档到文件夹" | 订阅 `capture.done`，拿 `path` 移动/复制 | `generic` |
-| "另存一份宽度 1280 的图" | 订阅 `capture.done`，自带 stb 解码→缩放→写文件 | `generic`（SDK 已含 stb） |
-| "截图后复制到剪贴板 / 弹通知" | 订阅 `capture.done`（剪贴板/通知 API 自己调） | `generic` |
-| "托盘多一个菜单项" | `create` 里 `lists.add` 到 `tray_command_list` | `generic` 片段 |
-| "功能热键（如长截图/自定义动作）" | `create` 里 `lists.add` 到 `hotkey_list`（**不要自己 RegisterHotKey**） | `generic` 片段 |
-| "加几个设置项" | 实现 `shot.configurable` | 任意模板 |
-| "把 OpenCV 带进进程供别的插件用" | `shot.lib_provider` + metadata `provides` | `lib_provider` |
-| "换保存格式/目录/命名" | `shot.image_saver` + `shot.configurable` | `image_saver` |
-| "自定义窗口/覆盖层/托盘" | `shot.ui_provider` | 无模板 |
-| "替换抓屏（GDI → 别的 API）" | `shot.screen_capture` | 无模板 |
+| 需求原话（示例）                                         | 实现位置                                                                            | 模板                        |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------- | --------------------------- |
+| "右下角加时间水印" / "打码" / "模糊" / "调色" / "加边框" | `ShotImageProcessorV1::process` 原地改像素                                        | `image_processor`         |
+| "按日期归档到文件夹"                                     | 订阅 `capture.done`，拿 `path` 移动/复制                                        | `generic`                 |
+| "另存一份宽度 1280 的图"                                 | 订阅 `capture.done`，自带 stb 解码→缩放→写文件                                  | `generic`（SDK 已含 stb） |
+| "截图后复制到剪贴板 / 弹通知"                            | 订阅 `capture.done`（剪贴板/通知 API 自己调）                                     | `generic`                 |
+| "托盘多一个菜单项"                                       | `create` 里 `lists.add` 到 `tray_command_list`                                | `generic` 片段            |
+| "功能热键（如长截图/自定义动作）"                        | `create` 里 `lists.add` 到 `hotkey_list`（**不要自己 RegisterHotKey**） | `generic` 片段            |
+| "加几个设置项"                                           | 实现 `shot.configurable`                                                          | 任意模板                    |
+| "把 OpenCV 带进进程供别的插件用"                         | `shot.lib_provider` + metadata `provides`                                       | `lib_provider`            |
+| "换保存格式/目录/命名"                                   | `shot.image_saver` + `shot.configurable`                                        | `image_saver`             |
+| "自定义窗口/覆盖层/托盘"                                 | `shot.ui_provider`                                                                | 无模板                      |
+| "替换抓屏（GDI → 别的 API）"                            | `shot.screen_capture`                                                             | 无模板                      |
 
 ## 2. 能力契约速查（ABI 2.0）
 
-| interface id | 结构体 | 关键语义 |
-| --- | --- | --- |
-| `shot.image_processor` | `ShotImageProcessorV1` | `process(self, ShotImage*)`：就地改像素，返回 0 = 成功；必须按 `stride` 逐行寻址，`stride` 可为负 |
-| `shot.image_saver` | `ShotImageSaverV1` | `save(self, image, directory, basename, path, path_size)`：`0`=落盘、`1`=参数非法、`2`=path 缓冲不足、`3`=保存失败；成功时写回最终绝对路径 |
-| `shot.screen_capture` | `ShotScreenCaptureV1` | `describe` 报虚拟桌面几何（物理像素），`capture` 写宿主分配的 BGRA8 缓冲；插件从不分配图像内存 |
-| `shot.configurable` | `ShotConfigurableV1` | 声明配置项 + 字符串读写；未知 key 返回负值；宿主自动渲染进设置页 |
-| `shot.lib_provider` | `ShotLibProviderV1` | 只报告库名/版本；`metadata.provides` 提供依赖名 |
-| `shot.ui_provider` | `ShotUIProviderV1` | 宿主只调 `init`/`deinit`/`post_to_plugin`；窗口/线程全归插件 |
+| interface id             | 结构体                   | 关键语义                                                                                                                                             |
+| ------------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shot.image_processor` | `ShotImageProcessorV1` | `process(self, ShotImage*)`：就地改像素，返回 0 = 成功；必须按 `stride` 逐行寻址，`stride` 可为负                                              |
+| `shot.image_saver`     | `ShotImageSaverV1`     | `save(self, image, directory, basename, path, path_size)`：`0`=落盘、`1`=参数非法、`2`=path 缓冲不足、`3`=保存失败；成功时写回最终绝对路径 |
+| `shot.screen_capture`  | `ShotScreenCaptureV1`  | `describe` 报虚拟桌面几何（物理像素），`capture` 写宿主分配的 BGRA8 缓冲；插件从不分配图像内存                                                   |
+| `shot.configurable`    | `ShotConfigurableV1`   | 声明配置项 + 字符串读写；未知 key 返回负值；宿主自动渲染进设置页                                                                                     |
+| `shot.lib_provider`    | `ShotLibProviderV1`    | 只报告库名/版本；`metadata.provides` 提供依赖名                                                                                                    |
+| `shot.ui_provider`     | `ShotUIProviderV1`     | 宿主只调 `init`/`deinit`/`post_to_plugin`；窗口/线程全归插件                                                                                   |
 
 宿主服务：`shot.host.config`、`shot.host.event_bus`、`shot.host.plugin_lists`、
 `shot.host.plugin_registry`、`shot.host.board_msg`（旧接口）。
@@ -42,16 +42,16 @@
 
 ## 3. 事件与负载（订阅/发布）
 
-| 主题 | 方向 | 负载 |
-| --- | --- | --- |
-| `capture.request` | 任意 → 流水线 | 空 = 整屏；`{"mode":"region","region":{x,y,width,height}}` = 裁剪；`{"mode":"region"}` = 请求框选（流水线忽略） |
-| `capture.done` | 流水线 → 订阅者 | `{"path":"...","width":1920,"height":1080,"processors":2}`；`path` 是**最终绝对路径**，`path` 可能为空（保存器没写回时只警告） |
-| `capture.failed` | 流水线 → 订阅者 | `{"stage":"capture"\|"save","reason":"..."}` |
-| `config.applied` | 宿主 → 插件 | 空；一批设置提交完成，插件可据此重算派生状态 |
-| `lists.changed` | 宿主 → 订阅者 | `{"list":"<list id>"}` |
-| `plugins.changed` | 宿主 → 插件 | JSON：插件启停结果 |
-| `settings.open` | 托盘 → 设置页 | 空 |
-| `app.quit` | 任意 → 宿主 | 空；插件应响应并清理 |
+| 主题                | 方向             | 负载                                                                                                                                       |
+| ------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `capture.request` | 任意 → 流水线   | 空 = 整屏；`{"mode":"region","region":{x,y,width,height}}` = 裁剪；`{"mode":"region"}` = 请求框选（流水线忽略）                        |
+| `capture.done`    | 流水线 → 订阅者 | `{"path":"...","width":1920,"height":1080,"processors":2}`；`path` 是**最终绝对路径**，`path` 可能为空（保存器没写回时只警告） |
+| `capture.failed`  | 流水线 → 订阅者 | `{"stage":"capture"\|"save","reason":"..."}`                                                                                              |
+| `config.applied`  | 宿主 → 插件     | 空；一批设置提交完成，插件可据此重算派生状态                                                                                               |
+| `lists.changed`   | 宿主 → 订阅者   | `{"list":"<list id>"}`                                                                                                                   |
+| `plugins.changed` | 宿主 → 插件     | JSON：插件启停结果                                                                                                                         |
+| `settings.open`   | 托盘 → 设置页   | 空                                                                                                                                         |
+| `app.quit`        | 任意 → 宿主     | 空；插件应响应并清理                                                                                                                       |
 
 限制：单条负载 ≤ **64 KiB**，队列 4096；订阅回调只在宿主 **main 线程**执行；回调里不要阻塞。
 
@@ -82,16 +82,10 @@ bus.publish("lists.add", R"json({
 
 ## 5. 能力边界话术（不要写代码，照着说）
 
-| 需求 | 对用户说 |
-| --- | --- |
-| 录屏 / GIF / 多帧 | "当前插件契约只支持单帧截图，录屏需要宿主新增采集能力，得改宿主源码，离线 SDK 做不到。" |
-| OCR / 人脸/物体识别 | "离线 SDK 不含 OCR/模型运行时；要做得自带模型或第三方库，属于定制项目。" |
-| 标注/画框/图片编辑器 | "这需要一个完整的 UI 插件（窗口+交互+撤销），工作量和独立应用相当，建议单独立项。" |
-| 上传图床/网盘 | "可以写，但需要你提供接口地址与凭据，并确认允许插件以你的权限联网；还会涉及重试与失败处理。先做本地归档吗？" |
-| 改区域截图/多屏/热键注册逻辑 | "这些在宿主核心或内置插件里，离线 SDK 改不了，需要宿主源码。" |
-| 新增一种能力/改 ABI | "契约是只追加的，新增能力要改宿主并重编，不是插件能做的。" |
-| 定时截图/监控 | "插件可自带定时器，但需要确认间隔、停止条件、是否落盘，属于定制。" |
-| 替换内置保存器/采集器 | "可以，但内置插件先加载，要禁用内置的，会影响所有截图；确认要做吗？" |
+| 需求                | 对用户说                                                                                |
+| ------------------- | --------------------------------------------------------------------------------------- |
+| 录屏 / GIF / 多帧   | "当前插件契约只支持单帧截图，录屏需要宿主新增采集能力，得改宿主源码，离线 SDK 做不到。" |
+| 新增一种能力/改 ABI | "契约是只追加的，新增能力要改宿主并重编，不是插件能做的。"                              |
 
 ## 6. 选错能力的典型后果
 

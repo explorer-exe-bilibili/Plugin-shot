@@ -22,9 +22,12 @@ agent 会自己下载 Plugin-shot 离线 SDK、生成插件工程、写代码、
 
 任选一种（DSH 的插件管理入口版本不同，文案可能是「插件」「Bundles」「添加插件」）：
 
-1. **本地路径**：设置 → 插件 → 添加插件 → 选择本目录（`dsh-plugin-shot-dev/`）；
-2. **开发模式**：在 DSH profile 的 workspace 里 `pnpm add file:<本目录绝对路径>`，重启 DSH；
-3. 安装后在「插件」列表里应看到 `dsh-plugin-shot-dev`（技能行），刷新页面/重启后
+1. **npm**：在 DSH profile 的 workspace 里 `pnpm add dsh-plugin-shot-dev`，重启 DSH；
+   npm 包：https://www.npmjs.com/package/dsh-plugin-shot-dev 。
+2. **本地路径**：设置 → 插件 → 添加插件 → 选择本目录（`dsh-plugin-shot-dev/`）；
+3. **开发模式**：在 DSH profile 的 workspace 里 `pnpm add file:<本目录绝对路径>`，重启 DSH；
+4. **自定义插件市场**：DSH 没有官方市场；本包的插件市场索引将在后续提供。
+5. 安装后在「插件」列表里应看到 `dsh-plugin-shot-dev`（技能行），刷新页面/重启后
    技能列表里出现 `plugin-shot-dev`。
 
 要求 DSH 版本支持技能注册表（`ctx.skills.registerProvider`，DSH 0.2.x 起）。

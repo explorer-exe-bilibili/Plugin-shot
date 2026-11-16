@@ -4,14 +4,14 @@
 
 ## 1. 前提
 
-| 项 | 要求 |
-| --- | --- |
-| CMake | ≥ 3.20（SDK/宿主同口径；建议 3.28+） |
-| 生成器 | Ninja（推荐）或 VS；多配置生成器请每配置一个 build 目录 |
+| 项     | 要求                                                                    |
+| ------ | ----------------------------------------------------------------------- |
+| CMake  | ≥ 3.20（SDK/宿主同口径；建议 3.28+）                                   |
+| 生成器 | Ninja（推荐）或 VS；多配置生成器请每配置一个 build 目录                 |
 | 编译器 | MSVC v143+（VS2022/VS18，C++23）＋ Windows SDK；Linux GCC 13+/Clang 16+ |
-| 运行库 | MSVC 必须 `/MD`（`shot_add_plugin` 已强制），与宿主一致 |
-| 不要 | vcpkg、`find_package(opencv)`、宿主源码；OpenCV 才需要叠加包 |
-| 磁盘 | ≥ 1.5 GB（SDK + 构建产物 + 可选 OpenCV） |
+| 运行库 | MSVC 必须 `/MD`（`shot_add_plugin` 已强制），与宿主一致             |
+| 不要   | vcpkg、`find_package(opencv)`、宿主源码；OpenCV 才需要叠加包          |
+| 磁盘   | ≥ 1.5 GB（SDK + 构建产物 + 可选 OpenCV）                               |
 
 Windows 下 `cl` 不在 PATH 是正常的：先在 cmd 里执行一次 `vcvars64.bat`，再跑 cmake。
 PowerShell 可 `cmd /c "call vcvars64.bat && cmake ..."`。
@@ -40,21 +40,21 @@ cmake --build build -j
 
 ## 3. 构建失败分类
 
-| 现象（原文关键词） | 原因 | 修法 |
-| --- | --- | --- |
-| `fatal error C1083: 无法打开包括文件: "nlohmann/json.hpp"` | 没走 SDK 模式，`third_party/include` 没进 include | 传 `-DSHOT_SDK_ROOT`；检查 SDK 是否完整；不要手工拷头 |
-| `fatal error C1083: ... "stb_image_write.h"` | 同上（stb 未进 include） | 同上；stb 是扁平文件名，不要放到子目录 |
-| `fatal error C1083: ... "opencv2/core.hpp"` | 没解压 OpenCV 叠加包 | 把 `opencv/` 解压进 SDK 根 |
-| `LNK1181: 无法打开输入文件"opencv_core4.lib"` | 只给了头没给库目录 / 没解压叠加包 | 解压叠加包；模板不用手写 link 目录 |
-| `LNK2019: 无法解析的外部符号 ... cv::debug_build_guard::...` | Release/Debug 变体混用 | Debug 用 `opencv_*d` + `lib/debug`，整工程重配 |
-| `LNK2019: 无法解析的外部符号 shot_module_entry` | 导出宏丢失 / 定义了 `SCREENSHOT_HOST_EXPORTS` / 没写 `extern "C"` | 照模板恢复；只导出这一个符号 |
-| `LNK4098: 默认库"MSVCRT"与其他库的使用冲突` | `/MT` 与 `/MD` 混用 | 用 `shot_add_plugin`，它会设 `/MD`；删掉工程里的 `/MT` |
-| configure 报 `ShotPlugin: SDK 模式` 缺失 / 找不到 `ShotPlugin.cmake` | 没用模板的 SDK 定位逻辑 | 传 `-DSHOT_SDK_ROOT=<含 manifest.json 的目录>` |
-| `ValidatePluginMeta: ... id(...) 重复` / `interfaces 里的 id 不在契约里` | metadata 写错 | 按报错改 metadata，不改契约头 |
-| `abi.major(1) 与契约头(2) 不一致` | metadata 用了旧 ABI | 改成 SDK `manifest.abi` |
-| `这个工程还是模板` | 占位符没替换 | 用 `new_plugin.cmake` 生成，或手工替换 `{{TARGET}}` |
-| `unknown pool name 'shot_link'` | 极旧 SDK / 手工拼的 CMake | 用 SDK 自带 `ShotPlugin.cmake` |
-| `prune_output_dir ... 清理后仍存在违规文件` | 产物目录被外部占用 | 关掉占用程序重试 |
+| 现象（原文关键词）                                                           | 原因                                                                  | 修法                                                         |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `fatal error C1083: 无法打开包括文件: "nlohmann/json.hpp"`                 | 没走 SDK 模式，`third_party/include` 没进 include                   | 传 `-DSHOT_SDK_ROOT`；检查 SDK 是否完整；不要手工拷头      |
+| `fatal error C1083: ... "stb_image_write.h"`                               | 同上（stb 未进 include）                                              | 同上；stb 是扁平文件名，不要放到子目录                       |
+| `fatal error C1083: ... "opencv2/core.hpp"`                                | 没解压 OpenCV 叠加包                                                  | 把 `opencv/` 解压进 SDK 根                                 |
+| `LNK1181: 无法打开输入文件"opencv_core4.lib"`                              | 只给了头没给库目录 / 没解压叠加包                                     | 解压叠加包；模板不用手写 link 目录                           |
+| `LNK2019: 无法解析的外部符号 ... cv::debug_build_guard::...`               | Release/Debug 变体混用                                                | Debug 用 `opencv_*d` + `lib/debug`，整工程重配           |
+| `LNK2019: 无法解析的外部符号 shot_module_entry`                            | 导出宏丢失 / 定义了 `SCREENSHOT_HOST_EXPORTS` / 没写 `extern "C"` | 照模板恢复；只导出这一个符号                                 |
+| `LNK4098: 默认库"MSVCRT"与其他库的使用冲突`                                | `/MT` 与 `/MD` 混用                                               | 用 `shot_add_plugin`，它会设 `/MD`；删掉工程里的 `/MT` |
+| configure 报 `ShotPlugin: SDK 模式` 缺失 / 找不到 `ShotPlugin.cmake`     | 没用模板的 SDK 定位逻辑                                               | 传 `-DSHOT_SDK_ROOT=<含 manifest.json 的目录>`             |
+| `ValidatePluginMeta: ... id(...) 重复` / `interfaces 里的 id 不在契约里` | metadata 写错                                                         | 按报错改 metadata，不改契约头                                |
+| `abi.major(1) 与契约头(2) 不一致`                                          | metadata 用了旧 ABI                                                   | 改成 SDK `manifest.abi`                                    |
+| `这个工程还是模板`                                                         | 占位符没替换                                                          | 用 `new_plugin.cmake` 生成，或手工替换 `{{TARGET}}`      |
+| `unknown pool name 'shot_link'`                                            | 极旧 SDK / 手工拼的 CMake                                             | 用 SDK 自带 `ShotPlugin.cmake`                             |
+| `prune_output_dir ... 清理后仍存在违规文件`                                | 产物目录被外部占用                                                    | 关掉占用程序重试                                             |
 
 ## 4. 自检：`--test-plugin`
 
@@ -100,17 +100,17 @@ cmake --build build -j
 检查 id 由自检工具生成，按前缀定位（以 `report.json` 实际 id 为准）：
 `metadata.*`、`host.*`、`capability.*`、`config.*`、`list.*`、`events.*`。
 
-| 检查（id 关键词） | 原因 | 修法 |
-| --- | --- | --- |
-| `metadata.*` | 缺 metadata / JSON 不合法 / abi 不匹配 | 修 `metadata.json`，重新构建（贴尾在 POST_BUILD） |
-| `host.init` / `host.*` | 宿主在隔离目录里初始化失败 / 被测 DLL 让加载崩溃 | 看 detail 与 `--keep-data` 留下的日志 |
-| `capability.image_processor.*` | process 返回非 0 / 改结构体字段 / 越界写填充 | 只改像素、按 stride 写、返回 0 |
-| `capability.image_saver.*` | 未落盘 / path 未写回 / 返回码不对 | 返回最终绝对路径；path 不足返回 2 |
-| `capability.screen_capture.*` | describe/capture 返回非 0 / 越界 / 全黑 | 无桌面的机器会 SKIP；检查 stride 与几何 |
-| `capability.lib_provider.*` | 库名/版本为空或不可解析 | 返回静态字符串的真实版本 |
-| `config.*` | desc 的 key/label/kind 非法、get/set 不回读、未知 key 没返回负值 | 对齐 `ShotConfigDesc` 规则 |
-| `list.*` | `lists.add` 的 owner 不是自己 / 条目缺 `id` / 写宿主生成列表 | owner = 插件 id；只写自己的 list 条目；不写 config/i18n list |
-| `events.*` | `capture.done/failed` 试运行时插件回调崩溃 | 回调里不要阻塞/越界；异常自行兜底 |
+| 检查（id 关键词）                | 原因                                                             | 修法                                                         |
+| -------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ |
+| `metadata.*`                   | 缺 metadata / JSON 不合法 / abi 不匹配                           | 修 `metadata.json`，重新构建（贴尾在 POST_BUILD）          |
+| `host.init` / `host.*`       | 宿主在隔离目录里初始化失败 / 被测 DLL 让加载崩溃                 | 看 detail 与 `--keep-data` 留下的日志                      |
+| `capability.image_processor.*` | process 返回非 0 / 改结构体字段 / 越界写填充                     | 只改像素、按 stride 写、返回 0                               |
+| `capability.image_saver.*`     | 未落盘 / path 未写回 / 返回码不对                                | 返回最终绝对路径；path 不足返回 2                            |
+| `capability.screen_capture.*`  | describe/capture 返回非 0 / 越界 / 全黑                          | 无桌面的机器会 SKIP；检查 stride 与几何                      |
+| `capability.lib_provider.*`    | 库名/版本为空或不可解析                                          | 返回静态字符串的真实版本                                     |
+| `config.*`                     | desc 的 key/label/kind 非法、get/set 不回读、未知 key 没返回负值 | 对齐 `ShotConfigDesc` 规则                                 |
+| `list.*`                       | `lists.add` 的 owner 不是自己 / 条目缺 `id` / 写宿主生成列表 | owner = 插件 id；只写自己的 list 条目；不写 config/i18n list |
+| `events.*`                     | `capture.done/failed` 试运行时插件回调崩溃                     | 回调里不要阻塞/越界；异常自行兜底                            |
 
 自检修 3 轮仍无进展：停止，把 `report.json` 里 FAIL 条目与已尝试修改告诉用户。
 

@@ -2,7 +2,6 @@
 name: plugin-shot-dev
 description: Use when the user wants to add a feature to Plugin-shot (the plugin-based screenshot tool) or to write/build/debug/package a Plugin-shot plugin: screenshot watermark or timestamp, annotation-free pixel effects, resize, auto-archive by date, clipboard copy, notification, tray command, global hotkey action, configurable options, custom image saver, or a lib provider such as OpenCV. Works without the host source tree — download the official offline SDK (plugin-shot-sdk-<ver>-win64.zip), scaffold from a template, implement, build with CMake+Ninja, self-test with `Plugin-shot.exe --test-plugin`, then install into the host only with the user's consent.
 ---
-
 # Plugin-shot 插件开发（离线 SDK）
 
 把一句话需求做成一个可安装的插件 DLL：**下载官方离线 SDK → 从模板生成工程 → 写代码 → 编译 →
@@ -14,24 +13,22 @@ description: Use when the user wants to add a feature to Plugin-shot (the plugin
 
 ## 0. 先判断能不能做（30 秒）
 
-| 用户想要 | 用哪种能力/机制 | 模板 |
-| --- | --- | --- |
-| 截图后改像素：时间水印/打码/模糊/调色/加边框 | `shot.image_processor`（原地改像素） | `image_processor` |
-| 截图后做别的事：归档/复制/上传/通知/跑命令/缩图另存 | 订阅 `capture.done`（Generic 插件） | `generic` |
-| 换保存格式/目录/命名（替换内置保存器） | `shot.image_saver` | `image_saver` |
-| 加托盘菜单项或"功能热键" | 在插件 `create` 里发 `lists.add`（`tray_command_list` / `hotkey_list`） | `generic` 片段 |
-| 加设置项（自动出现在设置页） | `shot.configurable` | 任意模板 |
-| 把 OpenCV 等运行库带进进程 | `shot.lib_provider` | `lib_provider` |
-| 自定义窗口/覆盖层/托盘、替换抓屏 | `shot.ui_provider` / `shot.screen_capture` | 无模板，默认劝退 |
+| 用户想要                                            | 用哪种能力/机制                                                                 | 模板                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| 截图后改像素：时间水印/打码/模糊/调色/加边框        | `shot.image_processor`（原地改像素）                                          | `image_processor`                                  |
+| 截图后做别的事：归档/复制/上传/通知/跑命令/缩图另存 | 订阅 `capture.done`（Generic 插件）                                           | `generic`                                          |
+| 换保存格式/目录/命名（替换内置保存器）              | `shot.image_saver`                                                            | `image_saver`                                      |
+| 加托盘菜单项或"功能热键"                            | 在插件 `create` 里发 `lists.add`（`tray_command_list` / `hotkey_list`） | `generic` 片段                                     |
+| 加设置项（自动出现在设置页）                        | `shot.configurable`                                                           | 任意模板                                             |
+| 把 OpenCV 等运行库带进进程                          | `shot.lib_provider`                                                           | `lib_provider`                                     |
+| 自定义窗口/覆盖层/托盘、替换抓屏                    | `shot.ui_provider` / `shot.screen_capture`                                  | 宿主源码库中才有模板，克隆宿主源码库，`setting_ui` |
 
 **做不了 / 要改宿主源码的**（不要写代码，按话术向用户解释）：
 
-| 需求 | 结论 |
-| --- | --- |
-| 录屏/动图/多帧 | ❌ 契约当前只支持单帧采集 |
-| OCR / 人脸识别 / 标注编辑器 | ❌ 需要模型或重型 UI，离线 SDK 不含；属于定制 |
+| 需求            | 结论                                                            |
+| --------------- | --------------------------------------------------------------- |
+| 录屏/动图/多帧  | ❌ 契约当前只支持单帧采集                                       |
 | 上传到图床/网盘 | ⚠️ 能写但不"一句话"：需要地址/凭据/重试策略，且以用户权限联网 |
-| 改采集/区域/多屏/热键注册逻辑、新增能力/改 ABI | ❌ 必须改宿主源码并重编宿主 |
 
 拿不准先读 [能力决策表](references/capability-decision.md)（含事件 payload 与边界话术）。
 需求含糊（存到哪？要不要界面？）只问**阻塞性**问题，最多 2 个；其余给默认值并在交付说明写清。
@@ -39,7 +36,7 @@ description: Use when the user wants to add a feature to Plugin-shot (the plugin
 成功标准（全部满足才算完成）：编译 exit 0；`--test-plugin` 无 FAIL；DLL 只导出
 `shot_module_entry`；宿主 `--capture` 冒烟 exit 0 且能看到插件效果；交付说明含安装/验证/卸载/限制。
 
-## 1. 环境检查（不通过就停）
+## 1. 环境检查
 
 ```bash
 cmake --version            # 需要 >= 3.20（SDK 与宿主同口径；建议 3.28+）
@@ -49,9 +46,7 @@ ninja --version            # 或 cmake --build 自动调用的 Ninja
 # Linux：g++ --version（GCC 13+ / Clang 16+）
 ```
 
-缺工具链时告诉用户需要 **VS Build Tools（C++ 桌面开发）+ CMake + Ninja**（约 2–4 GB，
-需要用户同意，不要静默安装）。磁盘至少留 1 GB（SDK 核心包约 3–5 MB，OpenCV 叠加包
-解压后约 58 MB，再加构建产物）。
+缺工具链时自己下载免安装版GCC/MSVC+CMake+Ninja
 
 ## 2. 获取并校验 SDK
 
@@ -74,6 +69,7 @@ ninja --version            # 或 cmake --build 自动调用的 Ninja
    （与 `include/` 同级出现 `opencv/`），`ShotPlugin.cmake` 会自动补头/库路径。
 5. 解压到缓存目录，不要污染用户工程。下载/校验/离线回退的完整阶梯见
    [SDK 获取](references/sdk-acquire.md)。
+6. GitHub无法连接成功则使用公共镜像/代理下载GitHub文件
 
 ## 3. 生成工程（模板 + 脚手架）
 
@@ -97,13 +93,13 @@ cmake -DTEMPLATE=generic \
 
 ## 4. 实现（改这些文件）
 
-| 文件 | 改什么 |
-| --- | --- |
-| `metadata.json` | `plugins[]` 顺序 = `create(index)` 顺序；`id/name/version`；`interfaces` 与 `query_interface` 实际回答一致；`requires` 写 `core>=<host_min>`，用 OpenCV 才加 `opencv>=4.12` |
-| `src/plugin_entry.cpp` | **唯一导出 `shot_module_entry`**：模块表、能力目录、`create/destroy`；ABI 胶水只放这里 |
-| `src/*.cpp` | 业务实现；图像按 `stride` 逐行写 `width*channels` 字节，不碰结构体字段 |
-| `src/lang_tables.cpp` | 每语言一张单行 JSON（`@meta` 必填）；至少 `plugin.name` / `plugin.description` / `config.<key>.label` / `.tooltip` |
-| `README.md` | 功能、构建、配置表、验证步骤、限制（交付时原样给用户） |
+| 文件                     | 改什么                                                                                                                                                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `metadata.json`        | `plugins[]` 顺序 = `create(index)` 顺序；`id/name/version`；`interfaces` 与 `query_interface` 实际回答一致；`requires` 写 `core>=<host_min>`，用 OpenCV 才加 `opencv>=4.12` |
+| `src/plugin_entry.cpp` | **唯一导出 `shot_module_entry`**：模块表、能力目录、`create/destroy`；ABI 胶水只放这里                                                                                            |
+| `src/*.cpp`            | 业务实现；图像按 `stride` 逐行写 `width*channels` 字节，不碰结构体字段                                                                                                                  |
+| `src/lang_tables.cpp`  | 每语言一张单行 JSON（`@meta` 必填）；至少 `plugin.name` / `plugin.description` / `config.<key>.label` / `.tooltip`                                                                |
+| `README.md`            | 功能、构建、配置表、验证步骤、限制（交付时原样给用户）                                                                                                                                      |
 
 **线程与生命周期（硬要求）**：能力回调在采集 worker 线程；`set_config` 与事件回调在
 main 线程；订阅在 `create`、退订在 `destroy`；自起线程必须 `join`；异常绝不跨 DLL 边界；
@@ -154,16 +150,16 @@ cmake --build build -j
 
 ## 7. 迭代修错
 
-| 现象 | 先查 | 处理 |
-| --- | --- | --- |
-| configure 失败 | `SHOT_SDK_ROOT` 是否传、SDK 是否解压完整 | 修正路径；重新解压 |
-| C1083 找不到 `nlohmann/json.hpp` | 是否真的走 SDK 模式（日志有 `ShotPlugin: SDK 模式`） | 传 `-DSHOT_SDK_ROOT`，不要自己拷头文件 |
-| C1083 找不到 `opencv2/...` | 是否解压了 OpenCV 叠加包 | 解压 `opencv/` 到 SDK 根，或去掉 OpenCV 依赖 |
-| LNK2019 `shot_module_entry` | 导出宏/`extern "C"` 丢失、定义了 `SCREENSHOT_HOST_EXPORTS` | 照模板恢复 |
-| metadata 校验失败 | id 重复、`interfaces` 拼错、abi 不匹配、`requires` 语法 | 按报错改 metadata，不改契约 |
-| 宿主没加载 | ABI major 不符、无 metadata、依赖缺失、架构不对 | 看 `host.log` 里 `plugin.error.*` / 失败原因行 |
-| 加载了但没效果 | 主题拼错、订阅晚于发布、返回非 0、路径不可写 | 加 `shot::Logger` 日志；用 `--capture` 单次复现 |
-| 宿主崩溃 | 像素越界、异常跨边界、UI 窗口类未注销 | 立即移除该 DLL；按排错章节修 |
+| 现象                               | 先查                                                           | 处理                                                |
+| ---------------------------------- | -------------------------------------------------------------- | --------------------------------------------------- |
+| configure 失败                     | `SHOT_SDK_ROOT` 是否传、SDK 是否解压完整                     | 修正路径；重新解压                                  |
+| C1083 找不到 `nlohmann/json.hpp` | 是否真的走 SDK 模式（日志有 `ShotPlugin: SDK 模式`）         | 传 `-DSHOT_SDK_ROOT`，不要自己拷头文件            |
+| C1083 找不到 `opencv2/...`       | 是否解压了 OpenCV 叠加包                                       | 解压 `opencv/` 到 SDK 根，或去掉 OpenCV 依赖      |
+| LNK2019 `shot_module_entry`      | 导出宏/`extern "C"` 丢失、定义了 `SCREENSHOT_HOST_EXPORTS` | 照模板恢复                                          |
+| metadata 校验失败                  | id 重复、`interfaces` 拼错、abi 不匹配、`requires` 语法    | 按报错改 metadata，不改契约                         |
+| 宿主没加载                         | ABI major 不符、无 metadata、依赖缺失、架构不对                | 看 `host.log` 里 `plugin.error.*` / 失败原因行  |
+| 加载了但没效果                     | 主题拼错、订阅晚于发布、返回非 0、路径不可写                   | 加 `shot::Logger` 日志；用 `--capture` 单次复现 |
+| 宿主崩溃                           | 像素越界、异常跨边界、UI 窗口类未注销                          | 立即移除该 DLL；按排错章节修                        |
 
 ## 8. 安装到真实宿主（可选，先征得同意）
 
